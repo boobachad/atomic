@@ -4,9 +4,16 @@ import { AtomCard } from './AtomCard';
 interface AtomGridProps {
   atoms: AtomWithTags[];
   onAtomClick: (atomId: string) => void;
+  getMatchingChunkContent?: (atomId: string) => string | undefined;
+  onRetryEmbedding?: (atomId: string) => void;
 }
 
-export function AtomGrid({ atoms, onAtomClick }: AtomGridProps) {
+export function AtomGrid({
+  atoms,
+  onAtomClick,
+  getMatchingChunkContent,
+  onRetryEmbedding,
+}: AtomGridProps) {
   if (atoms.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center h-full text-center p-8">
@@ -39,6 +46,8 @@ export function AtomGrid({ atoms, onAtomClick }: AtomGridProps) {
           atom={atom}
           onClick={() => onAtomClick(atom.id)}
           viewMode="grid"
+          matchingChunkContent={getMatchingChunkContent?.(atom.id)}
+          onRetryEmbedding={onRetryEmbedding ? () => onRetryEmbedding(atom.id) : undefined}
         />
       ))}
     </div>

@@ -4,9 +4,16 @@ import { AtomCard } from './AtomCard';
 interface AtomListProps {
   atoms: AtomWithTags[];
   onAtomClick: (atomId: string) => void;
+  getMatchingChunkContent?: (atomId: string) => string | undefined;
+  onRetryEmbedding?: (atomId: string) => void;
 }
 
-export function AtomList({ atoms, onAtomClick }: AtomListProps) {
+export function AtomList({
+  atoms,
+  onAtomClick,
+  getMatchingChunkContent,
+  onRetryEmbedding,
+}: AtomListProps) {
   if (atoms.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center h-full text-center p-8">
@@ -39,6 +46,8 @@ export function AtomList({ atoms, onAtomClick }: AtomListProps) {
           atom={atom}
           onClick={() => onAtomClick(atom.id)}
           viewMode="list"
+          matchingChunkContent={getMatchingChunkContent?.(atom.id)}
+          onRetryEmbedding={onRetryEmbedding ? () => onRetryEmbedding(atom.id) : undefined}
         />
       ))}
     </div>

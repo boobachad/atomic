@@ -4,6 +4,7 @@ import remarkGfm from 'remark-gfm';
 import { Button } from '../ui/Button';
 import { Modal } from '../ui/Modal';
 import { TagChip } from '../tags/TagChip';
+import { RelatedAtoms } from './RelatedAtoms';
 import { AtomWithTags } from '../../stores/atoms';
 import { useAtomsStore } from '../../stores/atoms';
 import { useTagsStore } from '../../stores/tags';
@@ -19,7 +20,7 @@ interface AtomViewerProps {
 export function AtomViewer({ atom, onClose, onEdit }: AtomViewerProps) {
   const { deleteAtom } = useAtomsStore();
   const { fetchTags } = useTagsStore();
-  const { setSelectedTag, closeDrawer } = useUIStore();
+  const { setSelectedTag, closeDrawer, openDrawer } = useUIStore();
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
 
@@ -40,6 +41,11 @@ export function AtomViewer({ atom, onClose, onEdit }: AtomViewerProps) {
   const handleTagClick = (tagId: string) => {
     setSelectedTag(tagId);
     closeDrawer();
+  };
+
+  const handleRelatedAtomClick = (atomId: string) => {
+    // Open the related atom in the viewer
+    openDrawer('viewer', atomId);
   };
 
   return (
@@ -106,6 +112,11 @@ export function AtomViewer({ atom, onClose, onEdit }: AtomViewerProps) {
           <p>Updated: {formatDate(atom.updated_at)}</p>
         </div>
       </div>
+
+      {/* Related Atoms - only show if embedding is complete */}
+      {atom.embedding_status === 'complete' && (
+        <RelatedAtoms atomId={atom.id} onAtomClick={handleRelatedAtomClick} />
+      )}
 
       {/* Footer */}
       <div className="px-6 py-4 border-t border-[#3d3d3d]">

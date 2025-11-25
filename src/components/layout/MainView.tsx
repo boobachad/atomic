@@ -2,22 +2,48 @@ import { useMemo } from 'react';
 import { AtomGrid } from '../atoms/AtomGrid';
 import { AtomList } from '../atoms/AtomList';
 import { FAB } from '../ui/FAB';
-import { useAtomsStore } from '../../stores/atoms';
+import { SemanticSearch } from '../search/SemanticSearch';
+import { useAtomsStore, SemanticSearchResult } from '../../stores/atoms';
 import { useUIStore } from '../../stores/ui';
 
 export function MainView() {
-  const { atoms, isLoading } = useAtomsStore();
-  const { viewMode, setViewMode, searchQuery, setSearchQuery, openDrawer } = useUIStore();
+  const {
+    atoms,
+    isLoading,
+    semanticSearchResults,
+    semanticSearchQuery,
+    retryEmbedding,
+  } = useAtomsStore();
+  const { viewMode, setViewMode, searchQuery, openDrawer } = useUIStore();
 
-  // Filter atoms by search query
-  const filteredAtoms = useMemo(() => {
+  // Determine what to display
+  const displayAtoms = useMemo(() => {
+    // If semantic search is active, use those results
+    if (semanticSearchResults !== null) {
+      return semanticSearchResults;
+    }
+
+    // Otherwise, filter by text search
     if (!searchQuery.trim()) return atoms;
     const query = searchQuery.toLowerCase();
-    return atoms.filter((atom) =>
-      atom.content.toLowerCase().includes(query) ||
-      atom.tags.some((tag) => tag.name.toLowerCase().includes(query))
+    return atoms.filter(
+      (atom) =>
+        atom.content.toLowerCase().includes(query) ||
+        atom.tags.some((tag) => tag.name.toLowerCase().includes(query))
     );
-  }, [atoms, searchQuery]);
+  }, [atoms, searchQuery, semanticSearchResults]);
+
+  // Check if we're showing semantic search results
+  const isSemanticSearch = semanticSearchResults !== null;
+
+  // Get matching chunk content for semantic search results
+  const getMatchingChunkContent = (atomId: string): string | undefined => {
+    if (!isSemanticSearch) return undefined;
+    const result = semanticSearchResults.find((r) => r.id === atomId) as
+      | SemanticSearchResult
+      | undefined;
+    return result?.matching_chunk_content;
+  };
 
   const handleAtomClick = (atomId: string) => {
     openDrawer('viewer', atomId);
@@ -27,35 +53,20 @@ export function MainView() {
     openDrawer('editor');
   };
 
+  const handleRetryEmbedding = async (atomId: string) => {
+    try {
+      await retryEmbedding(atomId);
+    } catch (error) {
+      console.error('Failed to retry embedding:', error);
+    }
+  };
+
   return (
     <main className="flex-1 flex flex-col h-full bg-[#1e1e1e] overflow-hidden">
       {/* Header */}
       <header className="flex items-center gap-4 px-4 py-3 border-b border-[#3d3d3d]">
-        {/* Search */}
-        <div className="flex-1 max-w-md">
-          <div className="relative">
-            <svg
-              className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[#888888]"
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24"
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth={2}
-                d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"
-              />
-            </svg>
-            <input
-              type="text"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Search atoms..."
-              className="w-full pl-10 pr-4 py-2 bg-[#2d2d2d] border border-[#3d3d3d] rounded-md text-[#dcddde] placeholder-[#888888] focus:outline-none focus:ring-2 focus:ring-[#7c3aed] focus:border-transparent transition-colors text-sm"
-            />
-          </div>
-        </div>
+        {/* Semantic Search */}
+        <SemanticSearch />
 
         {/* View Mode Toggle */}
         <div className="flex items-center bg-[#2d2d2d] rounded-md border border-[#3d3d3d]">
@@ -99,9 +110,22 @@ export function MainView() {
 
         {/* Atom count */}
         <span className="text-sm text-[#888888]">
-          {filteredAtoms.length} atom{filteredAtoms.length !== 1 ? 's' : ''}
+          {displayAtoms.length} atom{displayAtoms.length !== 1 ? 's' : ''}
         </span>
       </header>
+
+      {/* Search results header */}
+      {isSemanticSearch && (
+        <div className="px-4 py-2 text-sm text-[#888888] border-b border-[#3d3d3d]">
+          {semanticSearchResults.length > 0 ? (
+            <span>
+              {semanticSearchResults.length} results for "{semanticSearchQuery}"
+            </span>
+          ) : (
+            <span>No atoms match your search</span>
+          )}
+        </div>
+      )}
 
       {/* Content */}
       <div className="flex-1 overflow-y-auto">
@@ -127,9 +151,19 @@ export function MainView() {
             </div>
           </div>
         ) : viewMode === 'grid' ? (
-          <AtomGrid atoms={filteredAtoms} onAtomClick={handleAtomClick} />
+          <AtomGrid
+            atoms={displayAtoms}
+            onAtomClick={handleAtomClick}
+            getMatchingChunkContent={isSemanticSearch ? getMatchingChunkContent : undefined}
+            onRetryEmbedding={handleRetryEmbedding}
+          />
         ) : (
-          <AtomList atoms={filteredAtoms} onAtomClick={handleAtomClick} />
+          <AtomList
+            atoms={displayAtoms}
+            onAtomClick={handleAtomClick}
+            getMatchingChunkContent={isSemanticSearch ? getMatchingChunkContent : undefined}
+            onRetryEmbedding={handleRetryEmbedding}
+          />
         )}
       </div>
 
