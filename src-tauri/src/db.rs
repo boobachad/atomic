@@ -53,13 +53,61 @@ impl Database {
             conn.load_extension_enable()
                 .map_err(|e| format!("Failed to enable extension loading: {}", e))?;
 
-            // Load sqlite-lembed extension
-            let lembed_path = resource_dir.join("lembed0");
-            conn.load_extension(&lembed_path, None)
-                .map_err(|e| format!("Failed to load sqlite-lembed extension: {}", e))?;
+            // Determine the extension filename based on OS and architecture
+            let extension_filename = Self::get_lembed_extension_filename();
+            let lembed_path = resource_dir.join(&extension_filename);
+
+            // For load_extension, we need to strip the extension as SQLite adds it automatically
+            // But since we have architecture-specific names, we'll use the full path
+            // and strip just the platform extension (.so, .dylib, .dll)
+            let lembed_path_str = lembed_path.to_str()
+                .ok_or("Invalid lembed path")?;
+
+            // Strip the extension (.so, .dylib, .dll) from the path
+            let lembed_path_without_ext = if lembed_path_str.ends_with(".so") {
+                &lembed_path_str[..lembed_path_str.len() - 3]
+            } else if lembed_path_str.ends_with(".dylib") {
+                &lembed_path_str[..lembed_path_str.len() - 6]
+            } else if lembed_path_str.ends_with(".dll") {
+                &lembed_path_str[..lembed_path_str.len() - 4]
+            } else {
+                lembed_path_str
+            };
+
+            // Specify the entry point explicitly since we use architecture-specific filenames
+            conn.load_extension(lembed_path_without_ext, Some("sqlite3_lembed_init"))
+                .map_err(|e| format!("Failed to load sqlite-lembed extension from {}: {}", lembed_path_str, e))?;
         }
 
         Ok(())
+    }
+
+    /// Get the platform-specific extension filename for sqlite-lembed
+    fn get_lembed_extension_filename() -> String {
+        #[cfg(target_os = "linux")]
+        {
+            "lembed0.so".to_string()
+        }
+        
+        #[cfg(target_os = "macos")]
+        {
+            // On macOS, use architecture-specific binaries
+            match std::env::consts::ARCH {
+                "aarch64" => "lembed0-aarch64.dylib".to_string(),
+                "x86_64" => "lembed0-x86_64.dylib".to_string(),
+                arch => panic!("Unsupported macOS architecture: {}", arch),
+            }
+        }
+        
+        #[cfg(target_os = "windows")]
+        {
+            "lembed0.dll".to_string()
+        }
+        
+        #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+        {
+            compile_error!("Unsupported operating system");
+        }
     }
 
     /// Register the embedding model for a connection
