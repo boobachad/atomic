@@ -1,10 +1,18 @@
 # Atomic - Note-Taking Desktop Application
 
 ## Project Overview
-Atomic is a Tauri v2 desktop application for note-taking with a React frontend. It features markdown editing, hierarchical tagging, and AI-powered semantic search using local embeddings.
+Atomic is a Tauri v2 desktop application for note-taking with a React frontend. It features markdown editing, hierarchical tagging, AI-powered semantic search using local embeddings, and automatic tag extraction using OpenRouter LLM.
 
-## Current Status: Phase 2.1 Complete
-Phase 2.1 (Real sqlite-lembed Integration) is complete with:
+## Current Status: Phase 3 Complete
+Phase 3 (Automatic Tag Extraction) is complete with:
+- OpenRouter API integration for LLM-powered tag extraction
+- Settings UI for API key configuration and auto-tagging toggle
+- Automatic tag extraction during the embedding pipeline
+- New tags created with proper hierarchy (under category tags like "Locations", "People", "Topics", etc.)
+- Tag tree auto-refresh when new tags are created
+- Atoms list auto-refresh when tags are extracted
+
+Phase 2.1 (Real sqlite-lembed Integration) features:
 - Real 384-dimensional embeddings using sqlite-lembed and all-MiniLM-L6-v2 model
 - sqlite-lembed extension loaded at runtime for each database connection
 - Model registered in temp.lembed_models for embedding generation
@@ -35,6 +43,8 @@ Phase 1 (Foundation + Data Layer) features:
 - **State Management**: Zustand 5
 - **Database**: SQLite with sqlite-vec and sqlite-lembed extensions (via rusqlite)
 - **Embeddings**: Real 384-dimensional vectors via sqlite-lembed + all-MiniLM-L6-v2 GGUF model
+- **LLM Provider**: OpenRouter API (anthropic/claude-haiku-4.5)
+- **HTTP Client**: reqwest (Rust)
 - **Markdown Editor**: CodeMirror 6 (`@uiw/react-codemirror`)
 - **Markdown Rendering**: react-markdown with remark-gfm
 
@@ -48,7 +58,9 @@ Phase 1 (Foundation + Data Layer) features:
     commands.rs       # All Tauri command implementations
     models.rs         # Rust structs for data
     chunking.rs       # Content chunking algorithm
-    embedding.rs      # Embedding generation using sqlite-lembed
+    embedding.rs      # Embedding generation + tag extraction pipeline
+    extraction.rs     # OpenRouter API integration, tag extraction logic
+    settings.rs       # Settings CRUD operations
   /resources
     all-MiniLM-L6-v2.q8_0.gguf  # Bundled embedding model (~24MB, Q8_0 quantization)
     lembed0.so                   # sqlite-lembed extension (Linux x86_64)
@@ -63,8 +75,9 @@ Phase 1 (Foundation + Data Layer) features:
     /atoms            # AtomCard, AtomEditor, AtomViewer, AtomGrid, AtomList, RelatedAtoms
     /tags             # TagTree, TagNode, TagChip, TagSelector
     /search           # SemanticSearch
+    /settings         # SettingsModal, SettingsButton
     /ui               # Button, Input, Modal, FAB, ContextMenu
-  /stores             # Zustand stores (atoms.ts, tags.ts, ui.ts)
+  /stores             # Zustand stores (atoms.ts, tags.ts, ui.ts, settings.ts)
   /hooks              # Custom hooks (useClickOutside, useKeyboard, useEmbeddingEvents)
   /lib                # Utilities (tauri.ts, markdown.ts, date.ts)
   App.tsx
@@ -158,17 +171,27 @@ CREATE VIRTUAL TABLE vec_chunks USING vec0(
   embedding float[384]
 );
 
+-- App settings (key-value store)
+CREATE TABLE settings (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+
 -- Temporary table for sqlite-lembed model registration (per-connection)
 -- temp.lembed_models(name TEXT, model BLOB)
 ```
+
+### Settings Keys
+- `openrouter_api_key`: User's OpenRouter API key for LLM access
+- `auto_tagging_enabled`: "true" or "false" (default: "true")
 
 ## Tauri Commands (API)
 
 ### Atom Operations
 - `get_all_atoms()` → `Vec<AtomWithTags>`
 - `get_atom(id)` → `AtomWithTags`
-- `create_atom(content, source_url?, tag_ids)` → `AtomWithTags` (triggers async embedding)
-- `update_atom(id, content, source_url?, tag_ids)` → `AtomWithTags` (triggers async embedding)
+- `create_atom(content, source_url?, tag_ids)` → `AtomWithTags` (triggers async embedding + tag extraction)
+- `update_atom(id, content, source_url?, tag_ids)` → `AtomWithTags` (triggers async embedding + tag extraction)
 - `delete_atom(id)` → `()`
 - `get_atoms_by_tag(tag_id)` → `Vec<AtomWithTags>`
 
@@ -185,6 +208,11 @@ CREATE VIRTUAL TABLE vec_chunks USING vec0(
 - `process_pending_embeddings()` → `i32` (processes all pending atoms, returns count)
 - `get_embedding_status(atom_id)` → `String`
 
+### Settings Operations
+- `get_settings()` → `HashMap<String, String>` (all settings)
+- `set_setting(key, value)` → `()` (upsert a setting)
+- `test_openrouter_connection(apiKey)` → `Result<bool, String>` (validates API key)
+
 ### Utility
 - `check_sqlite_vec()` → `String` (version check)
 
@@ -199,8 +227,35 @@ Payload:
   atom_id: string;
   status: 'complete' | 'failed';
   error?: string;
+  tags_extracted: string[];      // IDs of all tags applied
+  new_tags_created: string[];    // IDs of newly created tags
 }
 ```
+
+## Automatic Tag Extraction
+
+### How It Works
+1. When an atom is created/updated, the embedding pipeline runs
+2. If auto-tagging is enabled and API key is set, tag extraction runs in parallel with embedding
+3. Each content chunk is sent to OpenRouter (Claude Haiku 4.5) with the existing tag hierarchy
+4. The LLM identifies existing tags that apply and suggests new tags if needed
+5. Results from all chunks are merged and deduplicated
+6. Existing tags are linked to the atom; new tags are created with proper hierarchy
+7. The `embedding-complete` event includes tag information for UI updates
+
+### Tag Categories
+New tags are automatically placed under category tags:
+- **Locations**: Geographic places
+- **People**: Named individuals
+- **Organizations**: Companies, institutions, groups
+- **Topics**: Subject matter, concepts
+- **Events**: Historical or current events
+- **Other**: Miscellaneous
+
+### Error Handling
+- API errors are retried up to 3 times with exponential backoff
+- Extraction failures don't break the embedding pipeline
+- Missing API key or disabled auto-tagging gracefully skips extraction
 
 ## Chunking Algorithm
 
@@ -224,6 +279,7 @@ Content is chunked for optimal embedding generation:
 - `chrono` = { version = "0.4", features = ["serde"] }
 - `zerocopy` = { version = "0.8", features = ["derive"] }
 - `tokio` = { version = "1", features = ["full"] }
+- `reqwest` = { version = "0.12", features = ["json"] }
 
 ### Frontend (package.json)
 - `@tauri-apps/api` = "^2.0.0"
@@ -245,7 +301,7 @@ Content is chunked for optimal embedding generation:
 - Text: `#dcddde` (primary), `#888888` (secondary/muted), `#666666` (tertiary)
 - Borders: `#3d3d3d`
 - Accent: `#7c3aed` (purple), `#a78bfa` (light purple for tags)
-- Status: `amber-500` (pending/processing), `red-500` (failed)
+- Status: `amber-500` (pending/processing), `red-500` (failed), `green-500` (success)
 
 ### Layout
 - Left Panel: 250px fixed width
@@ -282,6 +338,12 @@ Content is chunked for optimal embedding generation:
 - `searchQuery: string` - Text search filter
 - Actions: `setSelectedTag`, `openDrawer`, `closeDrawer`, `setViewMode`, `setSearchQuery`
 
+### settings.ts
+- `settings: Record<string, string>` - All settings as key-value pairs
+- `isLoading: boolean`
+- `error: string | null`
+- Actions: `fetchSettings`, `setSetting`, `testOpenRouterConnection`
+
 ## sqlite-lembed Integration
 
 ### How It Works
@@ -312,7 +374,7 @@ The `get_lembed_extension_filename()` function in `db.rs` automatically selects 
 
 ## Future Phases
 
-### Phase 3: Wiki Integration
+### Phase 4: Wiki Integration
 - Wikipedia article fetching and display
 - Wiki viewer in right drawer
 - Link atoms to Wikipedia articles
