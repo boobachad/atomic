@@ -1,0 +1,154 @@
+import { useState, useEffect } from 'react';
+import CodeMirror from '@uiw/react-codemirror';
+import { markdown } from '@codemirror/lang-markdown';
+import { oneDark } from '@codemirror/theme-one-dark';
+import { EditorView } from '@codemirror/view';
+import { Button } from '../ui/Button';
+import { Input } from '../ui/Input';
+import { TagSelector } from '../tags/TagSelector';
+import { useAtomsStore, AtomWithTags, Tag } from '../../stores/atoms';
+import { useTagsStore } from '../../stores/tags';
+import { isValidUrl } from '../../lib/markdown';
+
+interface AtomEditorProps {
+  atomId: string | null; // null for new atom
+  onClose: () => void;
+  onSaved?: (atom: AtomWithTags) => void;
+}
+
+export function AtomEditor({ atomId, onClose, onSaved }: AtomEditorProps) {
+  const { atoms, createAtom, updateAtom } = useAtomsStore();
+  const { fetchTags } = useTagsStore();
+
+  const [content, setContent] = useState('');
+  const [sourceUrl, setSourceUrl] = useState('');
+  const [selectedTags, setSelectedTags] = useState<Tag[]>([]);
+  const [isSaving, setIsSaving] = useState(false);
+  const [urlError, setUrlError] = useState<string | null>(null);
+
+  const isEditing = atomId !== null;
+  const existingAtom = isEditing ? atoms.find((a) => a.id === atomId) : null;
+
+  useEffect(() => {
+    if (existingAtom) {
+      setContent(existingAtom.content);
+      setSourceUrl(existingAtom.source_url || '');
+      setSelectedTags(existingAtom.tags);
+    }
+  }, [existingAtom]);
+
+  const handleSourceUrlChange = (value: string) => {
+    setSourceUrl(value);
+    if (value && !isValidUrl(value)) {
+      setUrlError('Please enter a valid URL');
+    } else {
+      setUrlError(null);
+    }
+  };
+
+  const handleSave = async () => {
+    if (!content.trim() || isSaving) return;
+    if (sourceUrl && !isValidUrl(sourceUrl)) return;
+
+    setIsSaving(true);
+    try {
+      const tagIds = selectedTags.map((t) => t.id);
+      const savedAtom = isEditing
+        ? await updateAtom(atomId!, content, sourceUrl || undefined, tagIds)
+        : await createAtom(content, sourceUrl || undefined, tagIds);
+      
+      // Refresh tags to update counts
+      await fetchTags();
+      
+      onSaved?.(savedAtom);
+      onClose();
+    } catch (error) {
+      console.error('Failed to save atom:', error);
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const canSave = content.trim().length > 0 && !urlError;
+
+  // Custom theme extension for CodeMirror
+  const customTheme = EditorView.theme({
+    '&': {
+      backgroundColor: '#2d2d2d',
+      height: '100%',
+    },
+    '.cm-gutters': {
+      backgroundColor: '#2d2d2d',
+      borderRight: '1px solid #3d3d3d',
+    },
+    '.cm-activeLineGutter': {
+      backgroundColor: '#3d3d3d',
+    },
+    '.cm-activeLine': {
+      backgroundColor: '#3d3d3d40',
+    },
+    '.cm-scroller': {
+      fontFamily: 'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace',
+    },
+  });
+
+  return (
+    <div className="flex flex-col h-full">
+      {/* Header */}
+      <div className="flex items-center justify-between px-6 py-4 border-b border-[#3d3d3d]">
+        <h2 className="text-lg font-semibold text-[#dcddde]">
+          {isEditing ? 'Edit Atom' : 'New Atom'}
+        </h2>
+        <button
+          onClick={onClose}
+          className="text-[#888888] hover:text-[#dcddde] transition-colors"
+        >
+          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+          </svg>
+        </button>
+      </div>
+
+      {/* Editor */}
+      <div className="flex-1 overflow-hidden">
+        <CodeMirror
+          value={content}
+          onChange={setContent}
+          extensions={[markdown(), customTheme]}
+          theme={oneDark}
+          placeholder="Write your note in Markdown..."
+          className="h-full"
+          basicSetup={{
+            lineNumbers: true,
+            highlightActiveLineGutter: true,
+            highlightActiveLine: true,
+            foldGutter: true,
+          }}
+        />
+      </div>
+
+      {/* Form fields */}
+      <div className="px-6 py-4 space-y-4 border-t border-[#3d3d3d]">
+        <Input
+          label="Source URL (optional)"
+          value={sourceUrl}
+          onChange={(e) => handleSourceUrlChange(e.target.value)}
+          placeholder="https://example.com/article"
+          error={urlError || undefined}
+        />
+        <TagSelector selectedTags={selectedTags} onTagsChange={setSelectedTags} />
+      </div>
+
+      {/* Footer */}
+      <div className="flex justify-end gap-3 px-6 py-4 border-t border-[#3d3d3d]">
+        <Button variant="secondary" onClick={onClose}>
+          Cancel
+        </Button>
+        <Button onClick={handleSave} disabled={!canSave || isSaving}>
+          {isSaving ? 'Saving...' : 'Save'}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
