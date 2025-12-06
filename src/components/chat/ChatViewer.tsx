@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { useChatStore } from '../../stores/chat';
 import { useUIStore } from '../../stores/ui';
 import { ConversationsList } from './ConversationsList';
@@ -10,24 +10,34 @@ interface ChatViewerProps {
 }
 
 export function ChatViewer({ initialTagId, initialConversationId }: ChatViewerProps) {
-  const { view, showList, openConversation, reset } = useChatStore();
+  const { view, showList, openConversation, openOrCreateForTag, reset } = useChatStore();
   const { closeDrawer } = useUIStore();
+  const initializedRef = useRef(false);
 
-  // Initialize the chat view based on props
+  // Initialize the chat view based on props - only run once
   useEffect(() => {
+    // Prevent double initialization in React Strict Mode
+    if (initializedRef.current) return;
+    initializedRef.current = true;
+
     if (initialConversationId) {
       // Open specific conversation
       openConversation(initialConversationId);
+    } else if (initialTagId) {
+      // Find existing conversation with exactly this tag, or create new one
+      openOrCreateForTag(initialTagId);
     } else {
-      // Show list, optionally filtered by tag
-      showList(initialTagId ?? undefined);
+      // Show list with no filter
+      showList();
     }
+  }, [initialTagId, initialConversationId, showList, openConversation, openOrCreateForTag]);
 
-    // Cleanup on unmount
+  // Separate cleanup effect that only runs on unmount
+  useEffect(() => {
     return () => {
       reset();
     };
-  }, [initialTagId, initialConversationId, showList, openConversation, reset]);
+  }, [reset]);
 
   return (
     <div className="h-full flex flex-col bg-[#252525]">

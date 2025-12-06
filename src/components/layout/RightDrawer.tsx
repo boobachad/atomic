@@ -103,7 +103,8 @@ export function RightDrawer() {
         }
         return <WikiViewer tagId={tagId} tagName={tagName} />;
       case 'chat':
-        return <ChatViewer initialTagId={tagId} initialConversationId={conversationId} />;
+        // Only render when open to ensure proper initialization on each open
+        return isOpen ? <ChatViewer initialTagId={tagId} initialConversationId={conversationId} /> : null;
       default:
         return null;
     }

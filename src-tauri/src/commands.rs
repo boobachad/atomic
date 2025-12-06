@@ -1,3 +1,4 @@
+use crate::compaction;
 use crate::db::{Database, SharedDatabase};
 use crate::embedding::{compute_semantic_edges_for_atom, distance_to_similarity, spawn_embedding_task_single};
 use crate::models::{Atom, AtomPosition, AtomWithEmbedding, AtomWithTags, CreateAtomRequest, NeighborhoodAtom, NeighborhoodEdge, NeighborhoodGraph, SemanticEdge, SemanticSearchResult, SimilarAtomResult, Tag, TagWithCount};
@@ -2010,5 +2011,200 @@ pub fn verify_provider_configured(db: State<Database>) -> Result<bool, String> {
             Ok(!config.ollama_host.is_empty())
         }
     }
+}
+
+// ==================== Tag Compaction Commands ====================
+
+/// Compact tags using LLM assistance
+/// Phase 1: Categorize top-level tags under appropriate parents
+/// Phase 2: Merge duplicate/similar tags
+///
+/// This command orchestrates sync DB operations with async LLM calls,
+/// carefully managing DB locks to avoid holding them across await points.
+#[tauri::command]
+pub async fn compact_tags(
+    app_handle: AppHandle,
+    db: State<'_, Database>,
+) -> Result<compaction::CompactionResult, String> {
+    // Emit start event
+    let _ = app_handle.emit(
+        "tags-compaction-start",
+        serde_json::json!({}),
+    );
+
+    let mut result = compaction::CompactionResult {
+        tags_moved: 0,
+        tags_merged: 0,
+        atoms_retagged: 0,
+    };
+
+    // Step 1: Get provider config and model (sync, brief lock)
+    let (provider_config, model) = {
+        let conn = db.conn.lock().map_err(|e| e.to_string())?;
+        let settings_map = settings::get_all_settings(&conn)?;
+        let provider_config = ProviderConfig::from_settings(&settings_map);
+
+        // Validate provider configuration
+        match provider_config.provider_type {
+            ProviderType::OpenRouter => {
+                if provider_config.openrouter_api_key.is_none() {
+                    let _ = app_handle.emit(
+                        "tags-compaction-complete",
+                        serde_json::json!({"success": false, "error": "OpenRouter API key not configured"}),
+                    );
+                    return Err("OpenRouter API key not configured. Please set it in Settings.".to_string());
+                }
+            }
+            ProviderType::Ollama => {
+                if provider_config.ollama_host.is_empty() {
+                    let _ = app_handle.emit(
+                        "tags-compaction-complete",
+                        serde_json::json!({"success": false, "error": "Ollama host not configured"}),
+                    );
+                    return Err("Ollama host not configured. Please set it in Settings.".to_string());
+                }
+            }
+        }
+
+        // Use tagging_model for compaction
+        let model = match provider_config.provider_type {
+            ProviderType::Ollama => provider_config.llm_model().to_string(),
+            ProviderType::OpenRouter => settings_map
+                .get("tagging_model")
+                .cloned()
+                .unwrap_or_else(|| "openai/gpt-4o-mini".to_string()),
+        };
+
+        (provider_config, model)
+    }; // Lock released
+
+    // ========================================================================
+    // Load model capabilities for OpenRouter (to filter unsupported params)
+    // ========================================================================
+    let supported_params: Option<Vec<String>> = if provider_config.provider_type == ProviderType::OpenRouter {
+        let client = reqwest::Client::new();
+
+        let (cached, is_stale) = {
+            let conn = db.conn.lock().map_err(|e| e.to_string())?;
+            match get_cached_capabilities_sync(&conn) {
+                Ok(Some(cache)) => {
+                    let stale = cache.is_stale();
+                    (Some(cache), stale)
+                }
+                Ok(None) => (None, true),
+                Err(_) => (None, true),
+            }
+        };
+
+        let capabilities = if is_stale {
+            match fetch_and_return_capabilities(&client).await {
+                Ok(fresh_cache) => {
+                    if let Ok(conn) = db.new_connection() {
+                        let _ = save_capabilities_cache(&conn, &fresh_cache);
+                    }
+                    fresh_cache
+                }
+                Err(_) => cached.unwrap_or_default(),
+            }
+        } else {
+            cached.unwrap_or_default()
+        };
+
+        capabilities.get_supported_params(&model).cloned()
+    } else {
+        None
+    };
+
+    // ========================================================================
+    // Phase 1: Tag Categorization
+    // ========================================================================
+    eprintln!("=== Phase 1: Tag Categorization ===");
+
+    // Step 2: Read top-level tags (sync, brief lock)
+    let top_level_tags = {
+        let conn = db.conn.lock().map_err(|e| e.to_string())?;
+        compaction::read_top_level_tags(&conn)?
+    }; // Lock released
+
+    if top_level_tags != "(no top-level tags)" {
+        // Step 3: Get LLM suggestions (async, no lock needed)
+        match compaction::fetch_categorization_suggestions(&provider_config, &top_level_tags, &model, supported_params.clone()).await {
+            Ok(cat_result) => {
+                eprintln!("Received {} categorization suggestions", cat_result.moves.len());
+
+                // Step 4: Apply moves (sync, brief lock)
+                let (moved, errors) = {
+                    let conn = db.conn.lock().map_err(|e| e.to_string())?;
+                    compaction::apply_moves(&conn, &cat_result.moves)
+                }; // Lock released
+
+                result.tags_moved = moved;
+                for err in errors {
+                    eprintln!("{}", err);
+                }
+            }
+            Err(e) => {
+                eprintln!("Categorization phase failed: {}", e);
+                // Continue to merge phase even if categorization fails
+            }
+        }
+    } else {
+        eprintln!("No top-level tags to categorize");
+    }
+
+    // ========================================================================
+    // Phase 2: Tag Merging
+    // ========================================================================
+    eprintln!("=== Phase 2: Tag Merging ===");
+
+    // Step 5: Read updated tag tree (sync, brief lock)
+    let tag_tree = {
+        let conn = db.conn.lock().map_err(|e| e.to_string())?;
+        compaction::read_tag_tree(&conn)?
+    }; // Lock released
+
+    if tag_tree != "(no existing tags)" {
+        // Step 6: Get LLM suggestions (async, no lock needed)
+        match compaction::fetch_merge_suggestions(&provider_config, &tag_tree, &model, supported_params).await {
+            Ok(merge_suggestions) => {
+                eprintln!("Received {} merge suggestions", merge_suggestions.merges.len());
+
+                // Step 7: Apply merges (sync, brief lock)
+                let (merged, retagged, errors) = {
+                    let conn = db.conn.lock().map_err(|e| e.to_string())?;
+                    compaction::apply_merge_operations(&conn, &merge_suggestions.merges)
+                }; // Lock released
+
+                result.tags_merged = merged;
+                result.atoms_retagged = retagged;
+                for err in errors {
+                    eprintln!("{}", err);
+                }
+            }
+            Err(e) => {
+                eprintln!("Merge phase failed: {}", e);
+            }
+        }
+    } else {
+        eprintln!("No tags to merge");
+    }
+
+    eprintln!(
+        "=== Compaction Complete: {} moved, {} merged, {} atoms retagged ===",
+        result.tags_moved, result.tags_merged, result.atoms_retagged
+    );
+
+    // Emit completion event
+    let _ = app_handle.emit(
+        "tags-compaction-complete",
+        serde_json::json!({
+            "success": true,
+            "tags_moved": result.tags_moved,
+            "tags_merged": result.tags_merged,
+            "atoms_retagged": result.atoms_retagged
+        }),
+    );
+
+    Ok(result)
 }
 

@@ -151,7 +151,7 @@ export function AtomEditor({ atomId, onClose, onSaved }: AtomEditorProps) {
         <CodeMirror
           value={content}
           onChange={setContent}
-          extensions={[markdown(), customTheme]}
+          extensions={[markdown(), customTheme, EditorView.lineWrapping]}
           theme={oneDark}
           placeholder="Write your note in Markdown..."
           className="h-full"

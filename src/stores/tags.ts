@@ -13,20 +13,29 @@ export interface TagWithCount extends Tag {
   children: TagWithCount[];
 }
 
+export interface CompactionResult {
+  tags_moved: number;
+  tags_merged: number;
+  atoms_retagged: number;
+}
+
 interface TagsStore {
   tags: TagWithCount[];
   isLoading: boolean;
+  isCompacting: boolean;
   error: string | null;
   fetchTags: () => Promise<void>;
   createTag: (name: string, parentId?: string) => Promise<Tag>;
   updateTag: (id: string, name: string, parentId?: string) => Promise<Tag>;
   deleteTag: (id: string) => Promise<void>;
+  compactTags: () => Promise<CompactionResult>;
   clearError: () => void;
 }
 
 export const useTagsStore = create<TagsStore>((set) => ({
   tags: [],
   isLoading: false,
+  isCompacting: false,
   error: null,
 
   fetchTags: async () => {
@@ -83,6 +92,20 @@ export const useTagsStore = create<TagsStore>((set) => ({
       set({ tags });
     } catch (error) {
       set({ error: String(error) });
+      throw error;
+    }
+  },
+
+  compactTags: async () => {
+    set({ isCompacting: true, error: null });
+    try {
+      const result = await invoke<CompactionResult>('compact_tags');
+      // Refetch tags to get updated tree structure
+      const tags = await invoke<TagWithCount[]>('get_all_tags');
+      set({ tags, isCompacting: false });
+      return result;
+    } catch (error) {
+      set({ error: String(error), isCompacting: false });
       throw error;
     }
   },

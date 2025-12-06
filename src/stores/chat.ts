@@ -101,6 +101,7 @@ interface ChatStore {
   // Actions - Navigation
   showList: (filterTagId?: string) => void;
   openConversation: (id: string) => Promise<void>;
+  openOrCreateForTag: (tagId: string) => Promise<void>;
   goBack: () => void;
 
   // Actions - CRUD
@@ -176,6 +177,33 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         });
       } else {
         set({ error: 'Conversation not found', isLoading: false });
+      }
+    } catch (e) {
+      set({ error: String(e), isLoading: false });
+    }
+  },
+
+  openOrCreateForTag: async (tagId: string) => {
+    set({ isLoading: true, error: null, listFilterTagId: tagId });
+    try {
+      // Fetch conversations that contain this tag
+      const conversations = await invoke<ConversationWithTags[]>('get_conversations', {
+        filterTagId: tagId,
+        limit: 50,
+        offset: 0,
+      });
+
+      // Find a conversation with exactly this one tag
+      const exactMatch = conversations.find(
+        (c) => c.tags.length === 1 && c.tags[0].id === tagId
+      );
+
+      if (exactMatch) {
+        // Open the existing conversation
+        await get().openConversation(exactMatch.id);
+      } else {
+        // Create a new conversation with this tag
+        await get().createConversation([tagId]);
       }
     } catch (e) {
       set({ error: String(e), isLoading: false });

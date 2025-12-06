@@ -3,6 +3,7 @@ mod chat;
 mod chunking;
 mod clustering;
 mod commands;
+mod compaction;
 mod db;
 mod embedding;
 mod extraction;
@@ -121,6 +122,8 @@ pub fn run() {
             chat::remove_tag_from_scope,
             // Agent/messaging
             agent::send_chat_message,
+            // Tag compaction
+            commands::compact_tags,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
