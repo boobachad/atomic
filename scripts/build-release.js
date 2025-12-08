@@ -8,7 +8,6 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(__dirname, '..');
 const TAURI_DIR = path.join(PROJECT_ROOT, 'src-tauri');
 
-// Simple logging
 function log(msg) {
   console.log(msg);
 }
@@ -18,7 +17,6 @@ function error(msg) {
   process.exit(1);
 }
 
-// Parse semver
 function parseVersion(versionStr) {
   const match = versionStr.match(/^(\d+)\.(\d+)\.(\d+)$/);
   if (!match) return null;
@@ -51,14 +49,12 @@ function bumpVersion(versionStr, type) {
   return formatVersion(v);
 }
 
-// Read current version from tauri.conf.json
 function getCurrentVersion() {
   const configPath = path.join(TAURI_DIR, 'tauri.conf.json');
   const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
   return config.version;
 }
 
-// Update version in all files
 function updateVersion(newVersion) {
   log(`Updating version to ${newVersion}...`);
 
@@ -80,215 +76,66 @@ function updateVersion(newVersion) {
   packageJson.version = newVersion;
   fs.writeFileSync(packageJsonPath, JSON.stringify(packageJson, null, 2) + '\n');
 
-  log(`✓ Updated version in all files`);
+  log(`Updated version in all files`);
 }
 
-// Clean build artifacts
-function clean() {
-  log('Cleaning build artifacts...');
-
-  const dirsToClean = [
-    path.join(PROJECT_ROOT, 'dist'),
-    path.join(TAURI_DIR, 'target/universal-apple-darwin'),
-    path.join(TAURI_DIR, 'target/aarch64-apple-darwin/release'),
-    path.join(TAURI_DIR, 'target/x86_64-apple-darwin/release'),
-  ];
-
-  for (const dir of dirsToClean) {
-    if (fs.existsSync(dir)) {
-      fs.rmSync(dir, { recursive: true, force: true });
-      log(`  Removed ${path.relative(PROJECT_ROOT, dir)}`);
-    }
-  }
-
-  log('✓ Cleaned build artifacts');
+function exec(cmd) {
+  execSync(cmd, { cwd: PROJECT_ROOT, stdio: 'inherit' });
 }
 
-// Build the app
-function build() {
-  log('Building universal binary...');
-
-  try {
-    // Tauri build handles frontend build via beforeBuildCommand
-    execSync('npx tauri build --target universal-apple-darwin', {
-      cwd: PROJECT_ROOT,
-      stdio: 'inherit'
-    });
-
-    log('✓ Build completed');
-  } catch (err) {
-    error('Build failed');
-  }
-}
-
-// Verify the output
-function verify(version) {
-  log('Verifying build artifacts...');
-
-  const dmgPath = path.join(
-    TAURI_DIR,
-    'target/universal-apple-darwin/release/bundle/dmg',
-    `Atomic_${version}_universal.dmg`
-  );
-
-  if (!fs.existsSync(dmgPath)) {
-    error(`DMG not found at ${dmgPath}`);
-  }
-
-  const dmgSize = (fs.statSync(dmgPath).size / 1024 / 1024).toFixed(1);
-  log(`✓ DMG created: ${dmgSize} MB`);
-  log(`\nOutput: ${dmgPath}`);
-}
-
-// Git operations
-function gitCommit(version) {
-  log('Creating git commit...');
-
-  try {
-    execSync('git add package.json src-tauri/tauri.conf.json src-tauri/Cargo.toml', {
-      cwd: PROJECT_ROOT,
-      stdio: 'inherit'
-    });
-
-    execSync(`git commit -m "Bump version to v${version}"`, {
-      cwd: PROJECT_ROOT,
-      stdio: 'inherit'
-    });
-
-    log('✓ Git commit created');
-  } catch (err) {
-    error('Git commit failed');
-  }
-}
-
-function gitTag(version) {
-  log('Creating git tag...');
-
-  try {
-    const tagName = `v${version}`;
-
-    // Check if tag exists
-    try {
-      execSync(`git rev-parse ${tagName}`, { cwd: PROJECT_ROOT, stdio: 'pipe' });
-      log(`⚠ Tag ${tagName} already exists, skipping`);
-      return;
-    } catch {
-      // Tag doesn't exist, create it
-    }
-
-    execSync(`git tag -a ${tagName} -m "Release ${tagName}"`, {
-      cwd: PROJECT_ROOT,
-      stdio: 'inherit'
-    });
-
-    log(`✓ Git tag ${tagName} created`);
-  } catch (err) {
-    error('Git tag failed');
-  }
-}
-
-// Show help
 function showHelp() {
   console.log(`
-Usage: node scripts/build-release.js [options]
+Usage: node scripts/build-release.js <bump-type>
 
-Build macOS universal binary for Atomic
+Bump version, commit, tag, and push to trigger GitHub Actions release build.
 
-Version Management:
-  --bump-patch              Bump patch version (0.2.0 → 0.2.1)
-  --bump-minor              Bump minor version (0.2.0 → 0.3.0)
-  --bump-major              Bump major version (0.2.0 → 1.0.0)
-
-Build Options:
-  --clean                   Clean build artifacts before building
-  --no-build                Version bump only (skip build)
-
-Git Integration:
-  --commit                  Create git commit after version bump
-  --tag                     Create git tag (implies --commit)
-
-Utility:
-  --help                    Show this help message
+Arguments:
+  patch    Bump patch version (0.2.0 -> 0.2.1)
+  minor    Bump minor version (0.2.0 -> 0.3.0)
+  major    Bump major version (0.2.0 -> 1.0.0)
 
 Examples:
-  node scripts/build-release.js
-  node scripts/build-release.js --bump-patch --clean
-  node scripts/build-release.js --bump-patch --tag
+  npm run release:patch
+  npm run release:minor
+  npm run release:major
   `);
 }
 
-// Main
-async function main() {
-  const args = process.argv.slice(2);
+function main() {
+  const bumpType = process.argv[2];
 
-  // Parse arguments
-  const options = {
-    bumpType: null,
-    clean: false,
-    build: true,
-    commit: false,
-    tag: false,
-    help: false
-  };
-
-  for (const arg of args) {
-    if (arg === '--bump-patch') options.bumpType = 'patch';
-    else if (arg === '--bump-minor') options.bumpType = 'minor';
-    else if (arg === '--bump-major') options.bumpType = 'major';
-    else if (arg === '--clean') options.clean = true;
-    else if (arg === '--no-build') options.build = false;
-    else if (arg === '--commit') options.commit = true;
-    else if (arg === '--tag') {
-      options.tag = true;
-      options.commit = true; // Tag implies commit
-    }
-    else if (arg === '--help') options.help = true;
-    else {
-      error(`Unknown argument: ${arg}`);
-    }
-  }
-
-  if (options.help) {
+  if (!bumpType || bumpType === '--help' || bumpType === '-h') {
     showHelp();
-    return;
+    process.exit(bumpType ? 0 : 1);
   }
 
-  log('Building Atomic release for macOS\n');
-
-  // Get current version
-  let version = getCurrentVersion();
-  log(`Current version: ${version}`);
-
-  // Handle version bumping
-  if (options.bumpType) {
-    version = bumpVersion(version, options.bumpType);
-    updateVersion(version);
+  if (!['patch', 'minor', 'major'].includes(bumpType)) {
+    error(`Invalid bump type: ${bumpType}. Use patch, minor, or major.`);
   }
 
-  // Git commit (if version was bumped and commit requested)
-  if (options.bumpType && options.commit) {
-    gitCommit(version);
-  }
+  // Get current version and bump it
+  const currentVersion = getCurrentVersion();
+  const newVersion = bumpVersion(currentVersion, bumpType);
+  const tagName = `v${newVersion}`;
 
-  // Git tag (if requested)
-  if (options.bumpType && options.tag) {
-    gitTag(version);
-  }
+  log(`\nReleasing ${tagName} (${currentVersion} -> ${newVersion})\n`);
 
-  // Build
-  if (options.build) {
-    if (options.clean) {
-      clean();
-    }
+  // Update version in all files
+  updateVersion(newVersion);
 
-    build();
-    verify(version);
-  }
+  // Commit, tag, and push
+  log('\nCommitting version bump...');
+  exec('git add package.json src-tauri/tauri.conf.json src-tauri/Cargo.toml');
+  exec(`git commit -m "Bump version to ${tagName}"`);
 
-  log('\n✓ Done!');
+  log(`\nCreating tag ${tagName}...`);
+  exec(`git tag -a ${tagName} -m "Release ${tagName}"`);
+
+  log('\nPushing to origin...');
+  exec('git push && git push --tags');
+
+  log(`\nDone! GitHub Actions will now build and release ${tagName}`);
+  log('Watch progress at: https://github.com/kenforthewin/atomic/actions');
 }
 
-main().catch(err => {
-  console.error('ERROR:', err.message);
-  process.exit(1);
-});
+main();
