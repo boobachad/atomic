@@ -52,17 +52,20 @@ Examples:
 
 Be conservative - only consolidate when truly warranted."#;
 
-const SYSTEM_PROMPT: &str = r#"You are a knowledge management assistant that categorizes text into a tag hierarchy.
+const SYSTEM_PROMPT: &str = r#"You are a knowledge management assistant that categorizes text with tags.
+
+PURPOSE OF TAGS:
+Tags help users navigate and filter their content. Users can browse by tag and generate wiki articles that synthesize all content under a tag. Only add a tag if you believe strongly that the user would want this content categorized and filterable by that tag.
 
 IMPORTANT:
-- Return ALL tags that apply to this text
-- Each tag MUST have a parent_name set to one of the existing top-level categories shown in the hierarchy
-- DO NOT create new top-level categories - only use the ones shown in the hierarchy
+- Each tag MUST have a parent_name set to one of the existing top-level categories shown below
+- DO NOT create new top-level categories - only use the ones provided
 - Tag names are case-insensitive and globally unique
-- Use existing tags from the hierarchy when applicable
+
+The tags listed below are a sample of commonly-used tags included as a point of reference for the kinds of tags in this system.
 
 HIERARCHY STRUCTURE:
-- Level 1: Categories (shown in hierarchy below) - use ONLY these existing categories as parent_name
+- Level 1: Categories (shown below) - use ONLY these existing categories as parent_name
 - Level 2: Specific tags (e.g., "AI", "John Smith", "San Francisco")
 - Maximum 2 levels - no deeper nesting
 
@@ -72,10 +75,8 @@ EXAMPLES:
 - {"name": "San Francisco", "parent_name": "Locations"}
 
 Guidelines:
-- Use existing tags from the provided hierarchy when possible
 - Create new Level 2 tags under existing categories when needed
 - Prefer broad tags like "John Smith" rather than overly specific tags such as "Early Life of John Smith"
-- Only include tags you're confident are relevant
 - Every tag must have a valid parent_name from the top-level categories"#;
 
 /// Extract tags from a single chunk using LLM provider

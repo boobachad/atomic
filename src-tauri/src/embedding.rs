@@ -308,7 +308,10 @@ pub async fn process_tagging_only(
 
     // Load model capabilities for OpenRouter
     let supported_params: Option<Vec<String>> = if provider_config.provider_type == ProviderType::OpenRouter {
-        let client = Client::new();
+        let client = Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .unwrap_or_else(|_| Client::new());
 
         let (cached, is_stale) = {
             let conn = db.conn.lock().map_err(|e| e.to_string())?;
