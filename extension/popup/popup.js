@@ -80,20 +80,34 @@ async function getQueue() {
   return result[QUEUE_KEY] || [];
 }
 
+// Extract content by injecting the content script directly
+async function extractFromTab(tabId, mode) {
+  // Try messaging the existing content script first
+  try {
+    const result = await chrome.tabs.sendMessage(tabId, { action: 'extract', mode });
+    if (result && result.content) return result;
+  } catch (_) {
+    // Content script not loaded — fall back to programmatic injection
+  }
+
+  // Inject the libraries and content script, then run extraction
+  await chrome.scripting.executeScript({
+    target: { tabId },
+    files: ['lib/readability.min.js', 'lib/turndown.min.js', 'content/content-script.js']
+  });
+
+  return chrome.tabs.sendMessage(tabId, { action: 'extract', mode });
+}
+
 // Capture from current tab
 async function captureCurrentTab(mode) {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   const { serverUrl, apiToken } = await getConfig();
 
-  // Send message to content script
   try {
-    const result = await chrome.tabs.sendMessage(tab.id, {
-      action: 'extract',
-      mode: mode
-    });
+    const result = await extractFromTab(tab.id, mode);
 
     if (result && result.content) {
-      // Try to send directly to server
       const response = await fetch(`${serverUrl}/api/atoms`, {
         method: 'POST',
         headers: authHeaders(apiToken),
@@ -107,7 +121,6 @@ async function captureCurrentTab(mode) {
       if (response.ok) {
         window.close();
       } else {
-        // Queue it
         await addToQueue(result);
         window.close();
       }
