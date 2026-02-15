@@ -13,7 +13,7 @@ use crate::providers::{get_llm_provider, ProviderConfig};
 use crate::search::{search_chunks, SearchMode, SearchOptions};
 use chrono::Utc;
 use regex::Regex;
-use rusqlite::{params_from_iter, Connection};
+use rusqlite::Connection;
 use serde::Deserialize;
 use uuid::Uuid;
 
@@ -112,28 +112,27 @@ pub async fn prepare_wiki_generation(
     })
 }
 
-/// Get all tag IDs in hierarchy (tag + all descendants)
+/// Get all tag IDs in hierarchy (tag + all descendants) using recursive CTE
 fn get_tag_hierarchy(conn: &Connection, tag_id: &str) -> Result<Vec<String>, String> {
-    let mut all_tag_ids = vec![tag_id.to_string()];
-    let mut to_process = vec![tag_id.to_string()];
+    let mut stmt = conn
+        .prepare(
+            "WITH RECURSIVE descendant_tags(id) AS (
+                SELECT ?1
+                UNION ALL
+                SELECT t.id FROM tags t
+                INNER JOIN descendant_tags dt ON t.parent_id = dt.id
+            )
+            SELECT id FROM descendant_tags",
+        )
+        .map_err(|e| format!("Failed to prepare hierarchy query: {}", e))?;
 
-    while let Some(current_id) = to_process.pop() {
-        let mut child_stmt = conn
-            .prepare("SELECT id FROM tags WHERE parent_id = ?1")
-            .map_err(|e| format!("Failed to prepare child query: {}", e))?;
+    let tag_ids: Vec<String> = stmt
+        .query_map([tag_id], |row| row.get(0))
+        .map_err(|e| format!("Failed to query hierarchy: {}", e))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("Failed to collect hierarchy: {}", e))?;
 
-        let children: Vec<String> = child_stmt
-            .query_map([&current_id], |row| row.get(0))
-            .map_err(|e| format!("Failed to query children: {}", e))?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| format!("Failed to collect children: {}", e))?;
-
-        for child_id in children {
-            all_tag_ids.push(child_id.clone());
-            to_process.push(child_id);
-        }
-    }
-    Ok(all_tag_ids)
+    Ok(tag_ids)
 }
 
 /// Count atoms with any of the given tags
@@ -573,41 +572,20 @@ pub fn load_wiki_article(
 
 /// Get the status of a wiki article for a tag
 pub fn get_article_status(conn: &Connection, tag_id: &str) -> Result<WikiArticleStatus, String> {
-    // Get current atom count for this tag (including child tags)
-    // Get all descendant tag IDs (including the tag itself)
-    let mut all_tag_ids = vec![tag_id.to_string()];
-    let mut to_process = vec![tag_id.to_string()];
-
-    while let Some(current_id) = to_process.pop() {
-        let children: Vec<String> = conn
-            .prepare("SELECT id FROM tags WHERE parent_id = ?1")
-            .and_then(|mut stmt| {
-                stmt.query_map([&current_id], |row| row.get(0))?
-                    .collect::<Result<Vec<String>, _>>()
-            })
-            .map_err(|e| format!("Failed to get child tags: {}", e))?;
-
-        for child_id in children {
-            all_tag_ids.push(child_id.clone());
-            to_process.push(child_id);
-        }
-    }
-
-    // Count distinct atoms across this tag and all descendants
-    let tag_placeholders = all_tag_ids
-        .iter()
-        .map(|_| "?")
-        .collect::<Vec<_>>()
-        .join(",");
-    let count_query = format!(
-        "SELECT COUNT(DISTINCT atom_id) FROM atom_tags WHERE tag_id IN ({})",
-        tag_placeholders
-    );
-
+    // Count distinct atoms across this tag and all descendants using recursive CTE
     let current_atom_count: i32 = conn
-        .query_row(&count_query, params_from_iter(all_tag_ids.iter()), |row| {
-            row.get(0)
-        })
+        .query_row(
+            "WITH RECURSIVE descendant_tags(id) AS (
+                SELECT ?1
+                UNION ALL
+                SELECT t.id FROM tags t
+                INNER JOIN descendant_tags dt ON t.parent_id = dt.id
+            )
+            SELECT COUNT(DISTINCT atom_id) FROM atom_tags
+            WHERE tag_id IN (SELECT id FROM descendant_tags)",
+            [tag_id],
+            |row| row.get(0),
+        )
         .map_err(|e| format!("Failed to count atoms: {}", e))?;
 
     // Get article info if exists

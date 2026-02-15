@@ -173,6 +173,101 @@ pub fn get_messages_with_context(
     Ok(messages_with_context)
 }
 
+/// Batch fetch tags for multiple conversations in a single query
+fn batch_fetch_conversation_tags(
+    conn: &Connection,
+    conv_ids: &[String],
+) -> Result<std::collections::HashMap<String, Vec<Tag>>, AtomicCoreError> {
+    if conv_ids.is_empty() {
+        return Ok(std::collections::HashMap::new());
+    }
+    let placeholders = conv_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+    let query = format!(
+        "SELECT ct.conversation_id, t.id, t.name, t.parent_id, t.created_at
+         FROM conversation_tags ct
+         JOIN tags t ON ct.tag_id = t.id
+         WHERE ct.conversation_id IN ({})
+         ORDER BY t.name",
+        placeholders
+    );
+    let mut stmt = conn.prepare(&query)?;
+    let mut map: std::collections::HashMap<String, Vec<Tag>> = std::collections::HashMap::new();
+    let rows = stmt.query_map(rusqlite::params_from_iter(conv_ids.iter()), |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            Tag {
+                id: row.get(1)?,
+                name: row.get(2)?,
+                parent_id: row.get(3)?,
+                created_at: row.get(4)?,
+            },
+        ))
+    })?;
+    for row in rows {
+        let (conv_id, tag) = row?;
+        map.entry(conv_id).or_default().push(tag);
+    }
+    Ok(map)
+}
+
+/// Batch fetch message counts and last message previews for multiple conversations
+fn batch_fetch_conversation_summaries(
+    conn: &Connection,
+    conv_ids: &[String],
+) -> Result<std::collections::HashMap<String, (i32, Option<String>)>, AtomicCoreError> {
+    if conv_ids.is_empty() {
+        return Ok(std::collections::HashMap::new());
+    }
+    let placeholders = conv_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+
+    // Get counts
+    let count_query = format!(
+        "SELECT conversation_id, COUNT(*) FROM chat_messages WHERE conversation_id IN ({}) GROUP BY conversation_id",
+        placeholders
+    );
+    let mut count_stmt = conn.prepare(&count_query)?;
+    let mut map: std::collections::HashMap<String, (i32, Option<String>)> =
+        std::collections::HashMap::new();
+    let count_rows = count_stmt.query_map(rusqlite::params_from_iter(conv_ids.iter()), |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, i32>(1)?))
+    })?;
+    for row in count_rows {
+        let (conv_id, count) = row?;
+        map.insert(conv_id, (count, None));
+    }
+
+    // Get last message previews using window function
+    let preview_query = format!(
+        "SELECT conversation_id, content FROM (
+            SELECT conversation_id, content,
+                   ROW_NUMBER() OVER (PARTITION BY conversation_id ORDER BY message_index DESC) as rn
+            FROM chat_messages
+            WHERE conversation_id IN ({})
+        ) WHERE rn = 1",
+        placeholders
+    );
+    let mut preview_stmt = conn.prepare(&preview_query)?;
+    let preview_rows = preview_stmt.query_map(rusqlite::params_from_iter(conv_ids.iter()), |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+    for row in preview_rows {
+        let (conv_id, content) = row?;
+        let preview = if content.len() > 100 {
+            format!("{}...", &content[..100])
+        } else {
+            content
+        };
+        map.entry(conv_id).or_insert((0, None)).1 = Some(preview);
+    }
+
+    // Ensure all conv_ids have entries (even those with 0 messages)
+    for id in conv_ids {
+        map.entry(id.clone()).or_insert((0, None));
+    }
+
+    Ok(map)
+}
+
 // ==================== CRUD Operations ====================
 
 /// Create a new conversation
@@ -265,19 +360,34 @@ pub fn get_conversations(
         results
     };
 
-    let mut result = Vec::new();
-    for conversation in conversations {
-        let tags = get_conversation_tags(conn, &conversation.id)?;
-        let (message_count, last_message_preview) =
-            get_conversation_summary(conn, &conversation.id)?;
-
-        result.push(ConversationWithTags {
-            conversation,
-            tags,
-            message_count,
-            last_message_preview,
-        });
+    if conversations.is_empty() {
+        return Ok(Vec::new());
     }
+
+    let conv_ids: Vec<String> = conversations.iter().map(|c| c.id.clone()).collect();
+
+    // Batch fetch tags for all conversations
+    let tag_map = batch_fetch_conversation_tags(conn, &conv_ids)?;
+
+    // Batch fetch summaries (message count + last preview) for all conversations
+    let summary_map = batch_fetch_conversation_summaries(conn, &conv_ids)?;
+
+    let result = conversations
+        .into_iter()
+        .map(|conversation| {
+            let tags = tag_map.get(&conversation.id).cloned().unwrap_or_default();
+            let (message_count, last_message_preview) = summary_map
+                .get(&conversation.id)
+                .cloned()
+                .unwrap_or((0, None));
+            ConversationWithTags {
+                conversation,
+                tags,
+                message_count,
+                last_message_preview,
+            }
+        })
+        .collect();
 
     Ok(result)
 }

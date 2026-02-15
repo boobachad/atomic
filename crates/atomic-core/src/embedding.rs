@@ -990,37 +990,50 @@ pub fn compute_semantic_edges_for_atom(
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| format!("Failed to collect similar chunks: {}", e))?;
 
-        // For each similar chunk, check threshold and track best match per atom
-        for (chunk_id, distance) in similar_chunks {
+        // Filter by threshold, then batch-fetch chunk info
+        let filtered: Vec<(String, f32)> = similar_chunks
+            .into_iter()
+            .filter(|(_, distance)| distance_to_similarity(*distance) >= threshold)
+            .collect();
+
+        if filtered.is_empty() {
+            continue;
+        }
+
+        let chunk_ids: Vec<String> = filtered.iter().map(|(id, _)| id.clone()).collect();
+        let placeholders = chunk_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let info_query = format!(
+            "SELECT id, atom_id, chunk_index FROM atom_chunks WHERE id IN ({})",
+            placeholders
+        );
+        let mut info_stmt = conn.prepare(&info_query)
+            .map_err(|e| format!("Failed to prepare chunk info query: {}", e))?;
+        let chunk_info_map: HashMap<String, (String, i32)> = info_stmt
+            .query_map(rusqlite::params_from_iter(chunk_ids.iter()), |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, i32>(2)?))
+            })
+            .map_err(|e| format!("Failed to query chunk info: {}", e))?
+            .filter_map(|r| r.ok())
+            .map(|(id, atom_id, idx)| (id, (atom_id, idx)))
+            .collect();
+
+        for (chunk_id, distance) in filtered {
             let similarity = distance_to_similarity(distance);
 
-            if similarity < threshold {
-                continue;
-            }
-
-            // Get the parent atom_id and chunk index for this chunk
-            let chunk_info: Result<(String, i32), _> = conn.query_row(
-                "SELECT atom_id, chunk_index FROM atom_chunks WHERE id = ?1",
-                [&chunk_id],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            );
-
-            if let Ok((target_atom_id, target_chunk_index)) = chunk_info {
-                // Exclude the source atom itself
+            if let Some((target_atom_id, target_chunk_index)) = chunk_info_map.get(&chunk_id) {
                 if target_atom_id == atom_id {
                     continue;
                 }
 
-                // Keep highest similarity per target atom
                 let entry = atom_similarities.entry(target_atom_id.clone());
                 match entry {
                     std::collections::hash_map::Entry::Occupied(mut e) => {
                         if similarity > e.get().0 {
-                            e.insert((similarity, *source_chunk_index, target_chunk_index));
+                            e.insert((similarity, *source_chunk_index, *target_chunk_index));
                         }
                     }
                     std::collections::hash_map::Entry::Vacant(e) => {
-                        e.insert((similarity, *source_chunk_index, target_chunk_index));
+                        e.insert((similarity, *source_chunk_index, *target_chunk_index));
                     }
                 }
             }

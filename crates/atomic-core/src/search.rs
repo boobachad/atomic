@@ -156,69 +156,121 @@ pub async fn search_atoms(
     deduped.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
     deduped.truncate(options.limit as usize);
 
-    // Fetch full atom data
+    // Batch fetch all atom data in one query
     let conn = db.conn.lock().map_err(|e| e.to_string())?;
+
+    let atom_ids: Vec<String> = deduped.iter().map(|c| c.atom_id.clone()).collect();
+    let atom_map = batch_fetch_atoms(&conn, &atom_ids)?;
+    let tag_map = batch_fetch_tags(&conn, &atom_ids)?;
+
     let mut results = Vec::with_capacity(deduped.len());
-
     for chunk in deduped {
-        let atom: Atom = conn
-            .query_row(
-                "SELECT id, content, source_url, created_at, updated_at,
-                 COALESCE(embedding_status, 'pending'), COALESCE(tagging_status, 'pending')
-                 FROM atoms WHERE id = ?1",
-                [&chunk.atom_id],
-                |row| {
-                    Ok(Atom {
-                        id: row.get(0)?,
-                        content: row.get(1)?,
-                        source_url: row.get(2)?,
-                        created_at: row.get(3)?,
-                        updated_at: row.get(4)?,
-                        embedding_status: row.get(5)?,
-                        tagging_status: row.get(6)?,
-                    })
-                },
-            )
-            .map_err(|e| format!("Failed to get atom: {}", e))?;
-
-        let tags = get_tags_for_atom(&conn, &chunk.atom_id)?;
-
-        results.push(SemanticSearchResult {
-            atom: AtomWithTags { atom, tags },
-            similarity_score: chunk.score,
-            matching_chunk_content: chunk.content,
-            matching_chunk_index: chunk.chunk_index,
-        });
+        if let Some(atom) = atom_map.get(&chunk.atom_id) {
+            let tags = tag_map.get(&chunk.atom_id).cloned().unwrap_or_default();
+            results.push(SemanticSearchResult {
+                atom: AtomWithTags { atom: atom.clone(), tags },
+                similarity_score: chunk.score,
+                matching_chunk_content: chunk.content,
+                matching_chunk_index: chunk.chunk_index,
+            });
+        }
     }
 
     Ok(results)
 }
 
-/// Get tags for an atom
-fn get_tags_for_atom(conn: &rusqlite::Connection, atom_id: &str) -> Result<Vec<Tag>, String> {
-    let mut stmt = conn
-        .prepare(
-            "SELECT t.id, t.name, t.parent_id, t.created_at
-             FROM tags t
-             INNER JOIN atom_tags at ON t.id = at.tag_id
-             WHERE at.atom_id = ?1",
-        )
-        .map_err(|e| e.to_string())?;
-
-    let tags = stmt
-        .query_map([atom_id], |row| {
-            Ok(Tag {
+/// Batch fetch atoms by IDs in a single query
+fn batch_fetch_atoms(conn: &rusqlite::Connection, atom_ids: &[String]) -> Result<HashMap<String, Atom>, String> {
+    if atom_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let placeholders = atom_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+    let query = format!(
+        "SELECT id, content, source_url, created_at, updated_at,
+         COALESCE(embedding_status, 'pending'), COALESCE(tagging_status, 'pending')
+         FROM atoms WHERE id IN ({})",
+        placeholders
+    );
+    let mut stmt = conn.prepare(&query).map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(rusqlite::params_from_iter(atom_ids.iter()), |row| {
+            Ok(Atom {
                 id: row.get(0)?,
-                name: row.get(1)?,
-                parent_id: row.get(2)?,
+                content: row.get(1)?,
+                source_url: row.get(2)?,
                 created_at: row.get(3)?,
+                updated_at: row.get(4)?,
+                embedding_status: row.get(5)?,
+                tagging_status: row.get(6)?,
             })
         })
         .map_err(|e| e.to_string())?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| e.to_string())?;
 
-    Ok(tags)
+    Ok(rows.into_iter().map(|a| (a.id.clone(), a)).collect())
+}
+
+/// Batch fetch tags for multiple atoms in a single query
+fn batch_fetch_tags(conn: &rusqlite::Connection, atom_ids: &[String]) -> Result<HashMap<String, Vec<Tag>>, String> {
+    if atom_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let placeholders = atom_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+    let query = format!(
+        "SELECT at.atom_id, t.id, t.name, t.parent_id, t.created_at
+         FROM atom_tags at
+         INNER JOIN tags t ON at.tag_id = t.id
+         WHERE at.atom_id IN ({})",
+        placeholders
+    );
+    let mut stmt = conn.prepare(&query).map_err(|e| e.to_string())?;
+    let mut map: HashMap<String, Vec<Tag>> = HashMap::new();
+    let rows = stmt
+        .query_map(rusqlite::params_from_iter(atom_ids.iter()), |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                Tag {
+                    id: row.get(1)?,
+                    name: row.get(2)?,
+                    parent_id: row.get(3)?,
+                    created_at: row.get(4)?,
+                },
+            ))
+        })
+        .map_err(|e| e.to_string())?;
+    for row in rows {
+        let (atom_id, tag) = row.map_err(|e| e.to_string())?;
+        map.entry(atom_id).or_default().push(tag);
+    }
+    Ok(map)
+}
+
+/// Batch fetch chunk info by IDs in a single query
+fn batch_fetch_chunk_info(conn: &rusqlite::Connection, chunk_ids: &[String]) -> Result<HashMap<String, (String, String, i32)>, String> {
+    if chunk_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let placeholders = chunk_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+    let query = format!(
+        "SELECT id, atom_id, content, chunk_index FROM atom_chunks WHERE id IN ({})",
+        placeholders
+    );
+    let mut stmt = conn.prepare(&query).map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(rusqlite::params_from_iter(chunk_ids.iter()), |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, i32>(3)?,
+            ))
+        })
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+
+    Ok(rows.into_iter().map(|(id, atom_id, content, idx)| (id, (atom_id, content, idx))).collect())
 }
 
 /// Keyword search using FTS5/BM25
@@ -316,34 +368,29 @@ async fn search_semantic_chunks(
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| format!("Failed to collect similar chunks: {}", e))?;
 
-    // Get chunk details and filter
+    // Filter by threshold first, then batch-load chunk details
+    let filtered: Vec<(String, f32)> = similar_chunks
+        .into_iter()
+        .filter(|(_, distance)| distance_to_similarity(*distance) >= options.threshold)
+        .collect();
+
+    let chunk_ids: Vec<String> = filtered.iter().map(|(id, _)| id.clone()).collect();
+    let chunk_map = batch_fetch_chunk_info(&conn, &chunk_ids)?;
+
     let mut results = Vec::new();
-    for (chunk_id, distance) in similar_chunks {
+    for (chunk_id, distance) in filtered {
         let similarity = distance_to_similarity(distance);
-
-        if similarity < options.threshold {
-            continue;
-        }
-
-        let chunk_info: Result<(String, String, i32), _> = conn.query_row(
-            "SELECT atom_id, content, chunk_index FROM atom_chunks WHERE id = ?1",
-            [&chunk_id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-        );
-
-        if let Ok((atom_id, content, chunk_index)) = chunk_info {
-            // Check tag scope if specified
+        if let Some((atom_id, content, chunk_index)) = chunk_map.get(&chunk_id) {
             if !options.scope_tag_ids.is_empty()
-                && !atom_has_scope_tag(&conn, &atom_id, &options.scope_tag_ids)?
+                && !atom_has_scope_tag(&conn, atom_id, &options.scope_tag_ids)?
             {
                 continue;
             }
-
             results.push(ChunkResult {
                 chunk_id,
-                atom_id,
-                content,
-                chunk_index,
+                atom_id: atom_id.clone(),
+                content: content.clone(),
+                chunk_index: *chunk_index,
                 score: similarity,
             });
         }
@@ -440,28 +487,24 @@ async fn search_hybrid_chunks(
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| format!("Failed to collect similar chunks: {}", e))?;
 
+        let filtered: Vec<(String, f32)> = similar_chunks
+            .into_iter()
+            .filter(|(_, distance)| distance_to_similarity(*distance) >= options.threshold)
+            .collect();
+
+        let chunk_ids: Vec<String> = filtered.iter().map(|(id, _)| id.clone()).collect();
+        let chunk_map = batch_fetch_chunk_info(&conn, &chunk_ids)?;
+
         let mut results = Vec::new();
-        for (chunk_id, distance) in similar_chunks {
+        for (chunk_id, distance) in filtered {
             let similarity = distance_to_similarity(distance);
-
-            if similarity < options.threshold {
-                continue;
-            }
-
-            let chunk_info: Result<(String, String, i32), _> = conn.query_row(
-                "SELECT atom_id, content, chunk_index FROM atom_chunks WHERE id = ?1",
-                [&chunk_id],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-            );
-
-            if let Ok((atom_id, content, chunk_index)) = chunk_info {
+            if let Some((atom_id, content, chunk_index)) = chunk_map.get(&chunk_id) {
                 if !options.scope_tag_ids.is_empty()
-                    && !atom_has_scope_tag(&conn, &atom_id, &options.scope_tag_ids)?
+                    && !atom_has_scope_tag(&conn, atom_id, &options.scope_tag_ids)?
                 {
                     continue;
                 }
-
-                results.push((chunk_id, atom_id, content, chunk_index, similarity));
+                results.push((chunk_id, atom_id.clone(), content.clone(), *chunk_index, similarity));
             }
         }
         results
@@ -610,36 +653,34 @@ pub fn find_similar_atoms(
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| format!("Failed to collect similar chunks: {}", e))?;
 
-        // 3. For each similar chunk, get its parent atom and check threshold
-        for (chunk_id, distance) in similar_chunks {
+        // 3. Filter by threshold, then batch-fetch chunk info
+        let filtered: Vec<(String, f32)> = similar_chunks
+            .into_iter()
+            .filter(|(_, distance)| distance_to_similarity(*distance) >= threshold)
+            .collect();
+
+        let chunk_ids: Vec<String> = filtered.iter().map(|(id, _)| id.clone()).collect();
+        let chunk_map = batch_fetch_chunk_info(conn, &chunk_ids)
+            .map_err(|e| format!("Failed to batch fetch chunks: {}", e))?;
+
+        for (chunk_id, distance) in filtered {
             let similarity = distance_to_similarity(distance);
 
-            if similarity < threshold {
-                continue;
-            }
-
-            // Get the parent atom_id and chunk info for this chunk
-            let chunk_info: Result<(String, String, i32), _> = conn.query_row(
-                "SELECT atom_id, content, chunk_index FROM atom_chunks WHERE id = ?1",
-                [&chunk_id],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-            );
-
-            if let Ok((parent_atom_id, chunk_content, chunk_index)) = chunk_info {
+            if let Some((parent_atom_id, chunk_content, chunk_index)) = chunk_map.get(&chunk_id) {
                 // 5. Exclude the source atom itself
                 if parent_atom_id == atom_id {
                     continue;
                 }
 
                 // 4. Keep highest similarity per atom
-                match atom_similarities.entry(parent_atom_id) {
+                match atom_similarities.entry(parent_atom_id.clone()) {
                     Entry::Occupied(mut e) => {
                         if similarity > e.get().0 {
-                            e.insert((similarity, chunk_content, chunk_index));
+                            e.insert((similarity, chunk_content.clone(), *chunk_index));
                         }
                     }
                     Entry::Vacant(e) => {
-                        e.insert((similarity, chunk_content, chunk_index));
+                        e.insert((similarity, chunk_content.clone(), *chunk_index));
                     }
                 }
             }
@@ -655,35 +696,21 @@ pub fn find_similar_atoms(
     results.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
     results.truncate(limit as usize);
 
-    // Fetch atom data for results
+    // Batch fetch atom data for results
+    let result_atom_ids: Vec<String> = results.iter().map(|(id, _, _, _)| id.clone()).collect();
+    let atom_map = batch_fetch_atoms(conn, &result_atom_ids)
+        .map_err(|e| format!("Failed to batch fetch atoms: {}", e))?;
+
     let mut final_results = Vec::new();
     for (result_atom_id, similarity, chunk_content, chunk_index) in results {
-        let atom: Atom = conn
-            .query_row(
-                "SELECT id, SUBSTR(content, 1, 150) as content, source_url, created_at, updated_at,
-                 COALESCE(embedding_status, 'pending'), COALESCE(tagging_status, 'pending')
-                 FROM atoms WHERE id = ?1",
-                [&result_atom_id],
-                |row| {
-                    Ok(Atom {
-                        id: row.get(0)?,
-                        content: row.get(1)?,
-                        source_url: row.get(2)?,
-                        created_at: row.get(3)?,
-                        updated_at: row.get(4)?,
-                        embedding_status: row.get(5)?,
-                        tagging_status: row.get(6)?,
-                    })
-                },
-            )
-            .map_err(|e| format!("Failed to get atom: {}", e))?;
-
-        final_results.push(SimilarAtomResult {
-            atom: AtomWithTags { atom, tags: vec![] },
-            similarity_score: similarity,
-            matching_chunk_content: chunk_content,
-            matching_chunk_index: chunk_index,
-        });
+        if let Some(atom) = atom_map.get(&result_atom_id) {
+            final_results.push(SimilarAtomResult {
+                atom: AtomWithTags { atom: atom.clone(), tags: vec![] },
+                similarity_score: similarity,
+                matching_chunk_content: chunk_content,
+                matching_chunk_index: chunk_index,
+            });
+        }
     }
 
     Ok(final_results)

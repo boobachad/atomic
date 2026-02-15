@@ -418,25 +418,26 @@ impl AtomicCore {
     pub fn get_atoms_by_tag(&self, tag_id: &str) -> Result<Vec<AtomWithTags>, AtomicCoreError> {
         let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
 
-        // Get all descendant tag IDs (including the tag itself)
-        let all_tag_ids = get_descendant_tag_ids(&conn, tag_id)?;
-
-        // Query atoms with any of these tags (deduplicated)
-        let placeholders = all_tag_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-        let query = format!(
-            "SELECT DISTINCT a.id, a.content, a.source_url, a.created_at, a.updated_at,
-             COALESCE(a.embedding_status, 'pending'), COALESCE(a.tagging_status, 'pending')
-             FROM atoms a
-             INNER JOIN atom_tags at ON a.id = at.atom_id
-             WHERE at.tag_id IN ({})
-             ORDER BY a.updated_at DESC",
-            placeholders
-        );
-
-        let mut stmt = conn.prepare(&query)?;
+        let mut stmt = conn.prepare(
+            "WITH RECURSIVE descendant_tags(id) AS (
+                SELECT ?1
+                UNION ALL
+                SELECT t.id FROM tags t
+                INNER JOIN descendant_tags dt ON t.parent_id = dt.id
+            )
+            SELECT a.id, a.content, a.source_url, a.created_at, a.updated_at,
+                COALESCE(a.embedding_status, 'pending'), COALESCE(a.tagging_status, 'pending')
+            FROM atoms a
+            WHERE EXISTS (
+                SELECT 1 FROM atom_tags at
+                WHERE at.atom_id = a.id
+                AND at.tag_id IN (SELECT id FROM descendant_tags)
+            )
+            ORDER BY a.updated_at DESC",
+        )?;
 
         let atoms: Vec<Atom> = stmt
-            .query_map(rusqlite::params_from_iter(all_tag_ids.iter()), |row| {
+            .query_map(rusqlite::params![tag_id], |row| {
                 Ok(Atom {
                     id: row.get(0)?,
                     content: row.get(1)?,
@@ -446,10 +447,8 @@ impl AtomicCore {
                     embedding_status: row.get(5)?,
                     tagging_status: row.get(6)?,
                 })
-            })
-            ?
-            .collect::<Result<Vec<_>, _>>()
-            ?;
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
 
         // Batch load tags for the fetched atoms
         let atom_ids: Vec<String> = atoms.iter().map(|a| a.id.clone()).collect();
@@ -476,25 +475,22 @@ impl AtomicCore {
     ) -> Result<PaginatedAtoms, AtomicCoreError> {
         let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
 
-        // If filtering by tag, get all descendant tag IDs
-        let all_tag_ids = if let Some(tid) = tag_id {
-            Some(get_descendant_tag_ids(&conn, tid)?)
-        } else {
-            None
-        };
-
         // Count total
-        let total_count: i32 = if let Some(ref tag_ids) = all_tag_ids {
-            let placeholders = tag_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-            let count_query = format!(
-                "SELECT COUNT(DISTINCT a.id) FROM atoms a
-                 INNER JOIN atom_tags at ON a.id = at.atom_id
-                 WHERE at.tag_id IN ({})",
-                placeholders
-            );
+        let total_count: i32 = if let Some(tid) = tag_id {
             conn.query_row(
-                &count_query,
-                rusqlite::params_from_iter(tag_ids.iter()),
+                "WITH RECURSIVE descendant_tags(id) AS (
+                    SELECT ?1
+                    UNION ALL
+                    SELECT t.id FROM tags t
+                    INNER JOIN descendant_tags dt ON t.parent_id = dt.id
+                )
+                SELECT COUNT(*) FROM atoms a
+                WHERE EXISTS (
+                    SELECT 1 FROM atom_tags at
+                    WHERE at.atom_id = a.id
+                    AND at.tag_id IN (SELECT id FROM descendant_tags)
+                )",
+                rusqlite::params![tid],
                 |row| row.get(0),
             )?
         } else {
@@ -503,31 +499,27 @@ impl AtomicCore {
 
         // Fetch page with SUBSTR to avoid full content transfer
         let atoms: Vec<(String, String, Option<String>, String, String, String, String)> =
-            if let Some(ref tag_ids) = all_tag_ids {
-                let placeholders = tag_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-                let query = format!(
-                    "SELECT DISTINCT a.id, SUBSTR(a.content, 1, 250), a.source_url,
-                     a.created_at, a.updated_at,
-                     COALESCE(a.embedding_status, 'pending'), COALESCE(a.tagging_status, 'pending')
-                     FROM atoms a
-                     INNER JOIN atom_tags at ON a.id = at.atom_id
-                     WHERE at.tag_id IN ({})
-                     ORDER BY a.updated_at DESC
-                     LIMIT ?{} OFFSET ?{}",
-                    placeholders,
-                    tag_ids.len() + 1,
-                    tag_ids.len() + 2,
-                );
-                let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = tag_ids
-                    .iter()
-                    .map(|s| Box::new(s.clone()) as Box<dyn rusqlite::types::ToSql>)
-                    .collect();
-                params.push(Box::new(limit));
-                params.push(Box::new(offset));
-                let params_ref: Vec<&dyn rusqlite::types::ToSql> =
-                    params.iter().map(|p| p.as_ref()).collect();
-                let mut stmt = conn.prepare(&query)?;
-                let rows = stmt.query_map(params_ref.as_slice(), |row| {
+            if let Some(tid) = tag_id {
+                let mut stmt = conn.prepare(
+                    "WITH RECURSIVE descendant_tags(id) AS (
+                        SELECT ?1
+                        UNION ALL
+                        SELECT t.id FROM tags t
+                        INNER JOIN descendant_tags dt ON t.parent_id = dt.id
+                    )
+                    SELECT a.id, SUBSTR(a.content, 1, 250), a.source_url,
+                        a.created_at, a.updated_at,
+                        COALESCE(a.embedding_status, 'pending'), COALESCE(a.tagging_status, 'pending')
+                    FROM atoms a
+                    WHERE EXISTS (
+                        SELECT 1 FROM atom_tags at
+                        WHERE at.atom_id = a.id
+                        AND at.tag_id IN (SELECT id FROM descendant_tags)
+                    )
+                    ORDER BY a.updated_at DESC
+                    LIMIT ?2 OFFSET ?3",
+                )?;
+                let rows = stmt.query_map(rusqlite::params![tid, limit, offset], |row| {
                     Ok((
                         row.get(0)?,
                         row.get(1)?,
@@ -1066,7 +1058,7 @@ impl AtomicCore {
 
     // ==================== Semantic Graph Operations ====================
 
-    /// Get all semantic edges above a minimum similarity threshold
+    /// Get semantic edges above a minimum similarity threshold (capped at 10k for safety)
     pub fn get_semantic_edges(&self, min_similarity: f32) -> Result<Vec<SemanticEdge>, AtomicCoreError> {
         let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
 
@@ -1075,7 +1067,8 @@ impl AtomicCore {
                     source_chunk_index, target_chunk_index, created_at
              FROM semantic_edges
              WHERE similarity_score >= ?1
-             ORDER BY similarity_score DESC",
+             ORDER BY similarity_score DESC
+             LIMIT 10000",
         )?;
 
         let edges = stmt
@@ -1537,61 +1530,101 @@ fn build_neighborhood_graph(
     let atom_ids: Vec<String> = sorted_atoms.iter().map(|(id, _)| id.clone()).collect();
     let atom_depths: HashMap<String, i32> = sorted_atoms.into_iter().collect();
 
-    // Fetch atom data
+    // Batch fetch atom data
+    let atom_placeholders = atom_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+    let atom_query = format!(
+        "SELECT id, content, source_url, created_at, updated_at,
+                COALESCE(embedding_status, 'pending'), COALESCE(tagging_status, 'pending')
+         FROM atoms WHERE id IN ({})",
+        atom_placeholders
+    );
+    let mut atom_stmt = conn.prepare(&atom_query)?;
+    let atom_rows: Vec<Atom> = atom_stmt
+        .query_map(rusqlite::params_from_iter(atom_ids.iter()), |row| {
+            Ok(Atom {
+                id: row.get(0)?,
+                content: row.get(1)?,
+                source_url: row.get(2)?,
+                created_at: row.get(3)?,
+                updated_at: row.get(4)?,
+                embedding_status: row.get(5)?,
+                tagging_status: row.get(6)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    let atom_lookup: HashMap<String, Atom> = atom_rows.into_iter().map(|a| (a.id.clone(), a)).collect();
+
+    // Batch fetch tags for all atoms
+    let tag_map = get_atom_tags_map_for_ids(conn, &atom_ids)?;
+
     let mut atoms = Vec::new();
     for aid in &atom_ids {
-        let atom = conn.query_row(
-            "SELECT id, content, source_url, created_at, updated_at,
-                    COALESCE(embedding_status, 'pending'), COALESCE(tagging_status, 'pending')
-             FROM atoms WHERE id = ?1",
-            [aid],
-            |row| {
-                Ok(Atom {
-                    id: row.get(0)?,
-                    content: row.get(1)?,
-                    source_url: row.get(2)?,
-                    created_at: row.get(3)?,
-                    updated_at: row.get(4)?,
-                    embedding_status: row.get(5)?,
-                    tagging_status: row.get(6)?,
-                })
-            },
-        )?;
-
-        let tags = get_tags_for_atom(conn, aid)?;
-        let depth = *atom_depths.get(aid).unwrap_or(&0);
-
-        atoms.push(NeighborhoodAtom {
-            atom: AtomWithTags { atom, tags },
-            depth,
-        });
+        if let Some(atom) = atom_lookup.get(aid) {
+            let tags = tag_map.get(aid).cloned().unwrap_or_default();
+            let depth = *atom_depths.get(aid).unwrap_or(&0);
+            atoms.push(NeighborhoodAtom {
+                atom: AtomWithTags { atom: atom.clone(), tags },
+                depth,
+            });
+        }
     }
 
-    // Build edges
+    // Batch fetch all semantic edges between these atoms (single query)
+    let edge_query = format!(
+        "SELECT source_atom_id, target_atom_id, similarity_score
+         FROM semantic_edges
+         WHERE source_atom_id IN ({0}) AND target_atom_id IN ({0})",
+        atom_placeholders
+    );
+    // Need to pass atom_ids twice (once for source, once for target)
+    let mut edge_params: Vec<String> = atom_ids.clone();
+    edge_params.extend(atom_ids.clone());
+    let mut edge_stmt = conn.prepare(&edge_query)?;
+    let semantic_edges: HashMap<(String, String), f32> = edge_stmt
+        .query_map(rusqlite::params_from_iter(edge_params.iter()), |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, f32>(2)?))
+        })?
+        .filter_map(|r| r.ok())
+        .map(|(src, tgt, score)| ((src, tgt), score))
+        .collect();
+
+    // Batch fetch shared tag counts between all atom pairs (single query)
+    let shared_tag_query = format!(
+        "SELECT a1.atom_id, a2.atom_id, COUNT(*) as shared
+         FROM atom_tags a1
+         INNER JOIN atom_tags a2 ON a1.tag_id = a2.tag_id
+         WHERE a1.atom_id IN ({0}) AND a2.atom_id IN ({0})
+           AND a1.atom_id < a2.atom_id
+         GROUP BY a1.atom_id, a2.atom_id",
+        atom_placeholders
+    );
+    let mut shared_stmt = conn.prepare(&shared_tag_query)?;
+    let shared_tags_map: HashMap<(String, String), i32> = shared_stmt
+        .query_map(rusqlite::params_from_iter(edge_params.iter()), |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, i32>(2)?))
+        })?
+        .filter_map(|r| r.ok())
+        .map(|(a, b, count)| ((a, b), count))
+        .collect();
+
+    // Build edges from pre-fetched data
     let mut edges = Vec::new();
     for i in 0..atom_ids.len() {
         for j in (i + 1)..atom_ids.len() {
             let id_a = &atom_ids[i];
             let id_b = &atom_ids[j];
 
-            let semantic_score: Option<f32> = conn
-                .query_row(
-                    "SELECT similarity_score FROM semantic_edges
-                     WHERE (source_atom_id = ?1 AND target_atom_id = ?2)
-                        OR (source_atom_id = ?2 AND target_atom_id = ?1)",
-                    [id_a, id_b],
-                    |row| row.get(0),
-                )
-                .ok();
+            // Look up semantic score (edges stored with consistent ordering)
+            let semantic_score = semantic_edges
+                .get(&(id_a.clone(), id_b.clone()))
+                .or_else(|| semantic_edges.get(&(id_b.clone(), id_a.clone())))
+                .copied();
 
-            let shared_tags: i32 = conn
-                .query_row(
-                    "SELECT COUNT(*) FROM atom_tags a1
-                     INNER JOIN atom_tags a2 ON a1.tag_id = a2.tag_id
-                     WHERE a1.atom_id = ?1 AND a2.atom_id = ?2",
-                    [id_a, id_b],
-                    |row| row.get(0),
-                )
+            // Look up shared tags (stored with a < b ordering)
+            let (key_a, key_b) = if id_a < id_b { (id_a, id_b) } else { (id_b, id_a) };
+            let shared_tags = shared_tags_map
+                .get(&(key_a.clone(), key_b.clone()))
+                .copied()
                 .unwrap_or(0);
 
             if semantic_score.is_some() || shared_tags > 0 {
@@ -1827,31 +1860,6 @@ fn get_atom_tags_map_for_ids(conn: &Connection, atom_ids: &[String]) -> Result<s
     }
 
     Ok(map)
-}
-
-/// Get all descendant tag IDs (including the tag itself)
-fn get_descendant_tag_ids(conn: &Connection, tag_id: &str) -> Result<Vec<String>, AtomicCoreError> {
-    let mut all_tag_ids = vec![tag_id.to_string()];
-    let mut to_process = vec![tag_id.to_string()];
-
-    while let Some(current_id) = to_process.pop() {
-        let mut child_stmt = conn
-            .prepare("SELECT id FROM tags WHERE parent_id = ?1")
-            ?;
-
-        let children: Vec<String> = child_stmt
-            .query_map([&current_id], |row| row.get(0))
-            ?
-            .collect::<Result<Vec<_>, _>>()
-            ?;
-
-        for child_id in children {
-            all_tag_ids.push(child_id.clone());
-            to_process.push(child_id);
-        }
-    }
-
-    Ok(all_tag_ids)
 }
 
 /// Helper function to get all descendant tag IDs recursively
