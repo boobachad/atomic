@@ -75,6 +75,8 @@ export const COMMAND_MAP: Record<string, CommandSpec> = {
     path: (a) => {
       const params = new URLSearchParams();
       if (a.minCount != null) params.set('min_count', String(a.minCount));
+      if (a.limit != null) params.set('limit', String(a.limit));
+      if (a.offset != null) params.set('offset', String(a.offset));
       const qs = params.toString();
       return `/api/tags/${encodeURIComponent(a.parentId as string)}/children${qs ? `?${qs}` : ''}`;
     },

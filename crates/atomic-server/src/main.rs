@@ -256,6 +256,7 @@ async fn run_server(
                     .configure(routes::configure_routes),
             )
     })
+    .workers(4)
     .bind((bind_owned.as_str(), port))?
     .run()
     .await

@@ -108,6 +108,13 @@ pub struct GetTagsQuery {
     pub min_count: Option<i32>,
 }
 
+#[derive(Deserialize)]
+pub struct GetTagChildrenQuery {
+    pub min_count: Option<i32>,
+    pub limit: Option<i32>,
+    pub offset: Option<i32>,
+}
+
 pub async fn get_tags(
     state: web::Data<AppState>,
     query: web::Query<GetTagsQuery>,
@@ -119,11 +126,13 @@ pub async fn get_tags(
 pub async fn get_tag_children(
     state: web::Data<AppState>,
     path: web::Path<String>,
-    query: web::Query<GetTagsQuery>,
+    query: web::Query<GetTagChildrenQuery>,
 ) -> HttpResponse {
     let parent_id = path.into_inner();
     let min_count = query.min_count.unwrap_or(0);
-    ok_or_error(state.core.get_tag_children(&parent_id, min_count))
+    let limit = query.limit.unwrap_or(100);
+    let offset = query.offset.unwrap_or(0);
+    ok_or_error(state.core.get_tag_children(&parent_id, min_count, limit, offset))
 }
 
 #[derive(Deserialize)]

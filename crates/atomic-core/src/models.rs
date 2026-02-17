@@ -41,6 +41,13 @@ pub struct TagWithCount {
     pub children: Vec<TagWithCount>,
 }
 
+/// Paginated response for tag children
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PaginatedTagChildren {
+    pub children: Vec<TagWithCount>,
+    pub total: i32,
+}
+
 /// Lightweight atom summary for paginated list views (no full content)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AtomSummary {

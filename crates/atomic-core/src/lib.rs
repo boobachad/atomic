@@ -419,7 +419,7 @@ impl AtomicCore {
 
     /// Get atoms by tag (includes atoms with descendant tags)
     pub fn get_atoms_by_tag(&self, tag_id: &str) -> Result<Vec<AtomWithTags>, AtomicCoreError> {
-        let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+        let conn = self.db.read_conn()?;
 
         let mut stmt = conn.prepare(
             "WITH RECURSIVE descendant_tags(id) AS (
@@ -430,12 +430,10 @@ impl AtomicCore {
             )
             SELECT a.id, a.content, a.source_url, a.created_at, a.updated_at,
                 COALESCE(a.embedding_status, 'pending'), COALESCE(a.tagging_status, 'pending')
-            FROM atoms a
-            WHERE EXISTS (
-                SELECT 1 FROM atom_tags at
-                WHERE at.atom_id = a.id
-                AND at.tag_id IN (SELECT id FROM descendant_tags)
-            )
+            FROM atom_tags at
+            INNER JOIN atoms a ON a.id = at.atom_id
+            WHERE at.tag_id IN (SELECT id FROM descendant_tags)
+            GROUP BY a.id
             ORDER BY a.updated_at DESC",
         )?;
 
@@ -476,7 +474,7 @@ impl AtomicCore {
         limit: i32,
         offset: i32,
     ) -> Result<PaginatedAtoms, AtomicCoreError> {
-        let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+        let conn = self.db.read_conn()?;
 
         // Count total
         let total_count: i32 = if let Some(tid) = tag_id {
@@ -487,12 +485,9 @@ impl AtomicCore {
                     SELECT t.id FROM tags t
                     INNER JOIN descendant_tags dt ON t.parent_id = dt.id
                 )
-                SELECT COUNT(*) FROM atoms a
-                WHERE EXISTS (
-                    SELECT 1 FROM atom_tags at
-                    WHERE at.atom_id = a.id
-                    AND at.tag_id IN (SELECT id FROM descendant_tags)
-                )",
+                SELECT COUNT(DISTINCT at.atom_id)
+                FROM atom_tags at
+                WHERE at.tag_id IN (SELECT id FROM descendant_tags)",
                 rusqlite::params![tid],
                 |row| row.get(0),
             )?
@@ -597,105 +592,88 @@ impl AtomicCore {
     /// Get tags with counts, pruning leaf nodes below `min_count`.
     /// Sorted by atom_count descending at every level.
     pub fn get_all_tags_filtered(&self, min_count: i32) -> Result<Vec<TagWithCount>, AtomicCoreError> {
-        let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+        let conn = self.db.read_conn()?;
         let (all_tags, direct_counts) = Self::load_tags_and_counts(&conn)?;
         Ok(build_tag_tree_with_counts(&all_tags, None, &direct_counts, min_count))
     }
 
-    /// Get direct children of a specific tag, optionally filtered by min_count.
-    /// Uses targeted queries instead of building the full tree.
-    pub fn get_tag_children(&self, parent_id: &str, min_count: i32) -> Result<Vec<TagWithCount>, AtomicCoreError> {
-        let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+    /// Get direct children of a specific tag with pagination.
+    /// Returns direct children only (with recursive atom counts); grandchildren
+    /// are loaded lazily via subsequent calls.
+    pub fn get_tag_children(
+        &self,
+        parent_id: &str,
+        min_count: i32,
+        limit: i32,
+        offset: i32,
+    ) -> Result<PaginatedTagChildren, AtomicCoreError> {
+        let conn = self.db.read_conn()?;
 
-        // Only fetch descendants of this parent (not all tags)
-        let mut stmt = conn.prepare(
-            "WITH RECURSIVE descendants AS (
-                SELECT id, name, parent_id, created_at FROM tags WHERE parent_id = ?1
-                UNION ALL
-                SELECT t.id, t.name, t.parent_id, t.created_at
-                FROM tags t JOIN descendants d ON t.parent_id = d.id
-            )
-            SELECT id, name, parent_id, created_at FROM descendants"
+        // Fast total count using the parent_id index
+        let total: i32 = conn.query_row(
+            "SELECT COUNT(*) FROM tags WHERE parent_id = ?1",
+            [parent_id],
+            |row| row.get(0),
         )?;
-        let subtree_tags: Vec<Tag> = stmt
-            .query_map([parent_id], |row| {
-                Ok(Tag {
-                    id: row.get(0)?,
-                    name: row.get(1)?,
-                    parent_id: row.get(2)?,
-                    created_at: row.get(3)?,
+
+        if total == 0 {
+            return Ok(PaginatedTagChildren { children: Vec::new(), total: 0 });
+        }
+
+        // Get direct children with recursive atom counts and children_total.
+        // The CTE walks each direct child's subtree, tracking which root child it belongs to,
+        // so we can sum atom counts per root child without loading the full subtree into Rust.
+        let mut stmt = conn.prepare(
+            "WITH RECURSIVE child_descendants(id, root_child_id) AS (
+                SELECT id, id FROM tags WHERE parent_id = ?1
+                UNION ALL
+                SELECT t.id, cd.root_child_id
+                FROM tags t
+                JOIN child_descendants cd ON t.parent_id = cd.id
+            )
+            SELECT
+                t.id, t.name, t.parent_id, t.created_at,
+                COALESCE(counts.atom_count, 0) AS atom_count,
+                COALESCE(cc.children_count, 0) AS children_total
+            FROM tags t
+            LEFT JOIN (
+                SELECT cd.root_child_id, COUNT(DISTINCT at.atom_id) AS atom_count
+                FROM child_descendants cd
+                JOIN atom_tags at ON at.tag_id = cd.id
+                GROUP BY cd.root_child_id
+            ) counts ON counts.root_child_id = t.id
+            LEFT JOIN (
+                SELECT parent_id, COUNT(*) AS children_count
+                FROM tags
+                WHERE parent_id IN (SELECT id FROM tags WHERE parent_id = ?1)
+                GROUP BY parent_id
+            ) cc ON cc.parent_id = t.id
+            WHERE t.parent_id = ?1
+            ORDER BY atom_count DESC
+            LIMIT ?2 OFFSET ?3"
+        )?;
+
+        let mut children: Vec<TagWithCount> = stmt
+            .query_map(rusqlite::params![parent_id, limit, offset], |row| {
+                Ok(TagWithCount {
+                    tag: Tag {
+                        id: row.get(0)?,
+                        name: row.get(1)?,
+                        parent_id: row.get(2)?,
+                        created_at: row.get(3)?,
+                    },
+                    atom_count: row.get(4)?,
+                    children_total: row.get(5)?,
+                    children: Vec::new(),
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
 
-        if subtree_tags.is_empty() {
-            return Ok(Vec::new());
+        if min_count > 0 {
+            children.retain(|t| t.atom_count >= min_count || t.children_total > 0);
         }
 
-        // Collect IDs for targeted count query
-        let ids: Vec<&str> = subtree_tags.iter().map(|t| t.id.as_str()).collect();
-        let placeholders: String = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-        let sql = format!(
-            "SELECT tag_id, COUNT(*) FROM atom_tags WHERE tag_id IN ({}) GROUP BY tag_id",
-            placeholders
-        );
-        let mut count_stmt = conn.prepare(&sql)?;
-        let mut direct_counts: HashMap<String, i32> = HashMap::new();
-        let count_rows = count_stmt.query_map(
-            rusqlite::params_from_iter(ids.iter()),
-            |row| Ok((row.get::<_, String>(0)?, row.get::<_, i32>(1)?)),
-        )?;
-        for row in count_rows {
-            let (tag_id, count) = row?;
-            direct_counts.insert(tag_id, count);
-        }
-
-        // Build subtree rooted at parent_id, but shift root to parent_id
-        // so build_tag_tree returns the direct children
-        let mut children_by_parent: HashMap<Option<&str>, Vec<&Tag>> = HashMap::new();
-        for tag in &subtree_tags {
-            children_by_parent
-                .entry(tag.parent_id.as_deref())
-                .or_default()
-                .push(tag);
-        }
-
-        fn build_subtree_from(
-            parent_id: Option<&str>,
-            children_by_parent: &HashMap<Option<&str>, Vec<&Tag>>,
-            direct_counts: &HashMap<String, i32>,
-            min_count: i32,
-        ) -> Vec<TagWithCount> {
-            let Some(children) = children_by_parent.get(&parent_id) else {
-                return Vec::new();
-            };
-            let mut result: Vec<TagWithCount> = children
-                .iter()
-                .map(|tag| {
-                    let child_nodes = build_subtree_from(
-                        Some(&tag.id), children_by_parent, direct_counts, min_count,
-                    );
-                    let own_count = direct_counts.get(&tag.id).copied().unwrap_or(0);
-                    let children_count: i32 = child_nodes.iter().map(|c| c.atom_count).sum();
-                    TagWithCount {
-                        tag: (*tag).clone(),
-                        atom_count: own_count + children_count,
-                        children_total: children_by_parent
-                            .get(&Some(tag.id.as_str()))
-                            .map(|c| c.len() as i32)
-                            .unwrap_or(0),
-                        children: child_nodes,
-                    }
-                })
-                .filter(|t| {
-                    min_count <= 0 || t.atom_count >= min_count || !t.children.is_empty()
-                })
-                .collect();
-            result.sort_by(|a, b| b.atom_count.cmp(&a.atom_count));
-            result
-        }
-
-        Ok(build_subtree_from(Some(parent_id), &children_by_parent, &direct_counts, min_count))
+        Ok(PaginatedTagChildren { children, total })
     }
 
     /// Load all tags and their direct counts from the database.

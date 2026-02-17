@@ -12,6 +12,9 @@ import { useAtomsStore } from '../../stores/atoms';
 interface FlattenedTag {
   tag: TagWithCount;
   level: number;
+  /** If set, this row is a "load more" sentinel for the given parent tag id */
+  loadMoreParentId?: string;
+  loadMoreRemaining?: number;
 }
 
 function flattenVisibleTags(
@@ -27,6 +30,15 @@ function flattenVisibleTags(
       for (let i = 0; i < children.length; i++) {
         result.push(children[i]);
       }
+      // Add "load more" sentinel if there are more children on the server
+      if (tag.children.length < tag.children_total) {
+        result.push({
+          tag,
+          level: level + 1,
+          loadMoreParentId: tag.id,
+          loadMoreRemaining: tag.children_total - tag.children.length,
+        });
+      }
     }
   }
   return result;
@@ -37,6 +49,7 @@ export function TagTree() {
   const createTag = useTagsStore(s => s.createTag);
   const updateTag = useTagsStore(s => s.updateTag);
   const deleteTag = useTagsStore(s => s.deleteTag);
+  const fetchMoreTagChildren = useTagsStore(s => s.fetchMoreTagChildren);
   const selectedTagId = useUIStore(s => s.selectedTagId);
   const setSelectedTag = useUIStore(s => s.setSelectedTag);
   const openCommandPalette = useUIStore(s => s.openCommandPalette);
@@ -237,10 +250,11 @@ export function TagTree() {
             style={{ height: `${virtualizer.getTotalSize()}px`, position: 'relative' }}
           >
             {virtualizer.getVirtualItems().map((virtualItem) => {
-              const { tag, level } = flatTags[virtualItem.index];
+              const item = flatTags[virtualItem.index];
+              const { tag, level, loadMoreParentId, loadMoreRemaining } = item;
               return (
                 <div
-                  key={tag.id}
+                  key={loadMoreParentId ? `load-more-${loadMoreParentId}` : tag.id}
                   style={{
                     position: 'absolute',
                     top: 0,
@@ -250,13 +264,24 @@ export function TagTree() {
                     transform: `translateY(${virtualItem.start}px)`,
                   }}
                 >
-                  <TagNode
-                    tag={tag}
-                    level={level}
-                    selectedTagId={selectedTagId}
-                    onSelect={handleSelectTag}
-                    onContextMenu={handleContextMenu}
-                  />
+                  {loadMoreParentId ? (
+                    <div
+                      className="flex items-center gap-1 px-2 py-1.5 cursor-pointer text-[var(--color-text-tertiary)] hover:text-[var(--color-accent-light)] transition-colors text-xs"
+                      style={{ paddingLeft: `${8 + level * 16}px` }}
+                      onClick={() => fetchMoreTagChildren(loadMoreParentId)}
+                    >
+                      <span className="w-4" />
+                      <span>{loadMoreRemaining?.toLocaleString()} more tags...</span>
+                    </div>
+                  ) : (
+                    <TagNode
+                      tag={tag}
+                      level={level}
+                      selectedTagId={selectedTagId}
+                      onSelect={handleSelectTag}
+                      onContextMenu={handleContextMenu}
+                    />
+                  )}
                 </div>
               );
             })}

@@ -7,9 +7,30 @@ use sqlite_vec::sqlite3_vec_init;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+const READ_POOL_SIZE: usize = 4;
+
+/// A read-only connection handle — either borrowed from the pool or a temporary connection.
+pub enum ReadConn<'a> {
+    Pooled(std::sync::MutexGuard<'a, Connection>),
+    Temp(Connection),
+}
+
+impl std::ops::Deref for ReadConn<'_> {
+    type Target = Connection;
+    fn deref(&self) -> &Connection {
+        match self {
+            ReadConn::Pooled(guard) => guard,
+            ReadConn::Temp(conn) => conn,
+        }
+    }
+}
+
 /// Database handle with connection management
 pub struct Database {
     pub conn: Mutex<Connection>,
+    /// Pool of read-only connections for query-heavy paths.
+    /// Avoids contention with the main write connection.
+    read_pool: Vec<Mutex<Connection>>,
     pub db_path: PathBuf,
 }
 
@@ -48,10 +69,35 @@ impl Database {
             Self::run_migrations(&conn)?;
         }
 
+        let db_path = path.to_path_buf();
+
+        // Pre-open read connections for the pool
+        let mut read_pool = Vec::with_capacity(READ_POOL_SIZE);
+        for _ in 0..READ_POOL_SIZE {
+            let rc = Connection::open(&db_path)?;
+            rc.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA busy_timeout=5000; PRAGMA query_only=ON;")?;
+            read_pool.push(Mutex::new(rc));
+        }
+
         Ok(Database {
             conn: Mutex::new(conn),
-            db_path: path.to_path_buf(),
+            read_pool,
+            db_path,
         })
+    }
+
+    /// Acquire a read-only connection from the pool.
+    /// Tries each pooled connection via try_lock; if all are busy, creates a fresh one.
+    pub fn read_conn(&self) -> Result<ReadConn<'_>, AtomicCoreError> {
+        for slot in &self.read_pool {
+            if let Ok(guard) = slot.try_lock() {
+                return Ok(ReadConn::Pooled(guard));
+            }
+        }
+        // All pool slots busy — create a temporary connection
+        let conn = Connection::open(&self.db_path)?;
+        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA busy_timeout=5000; PRAGMA query_only=ON;")?;
+        Ok(ReadConn::Temp(conn))
     }
 
     /// Create a new connection to the same database.

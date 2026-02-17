@@ -14,11 +14,18 @@ export interface TagWithCount extends Tag {
   children: TagWithCount[];
 }
 
+interface PaginatedTagChildren {
+  children: TagWithCount[];
+  total: number;
+}
+
 export interface CompactionResult {
   tags_moved: number;
   tags_merged: number;
   atoms_retagged: number;
 }
+
+const TAG_CHILDREN_PAGE_SIZE = 100;
 
 interface TagsStore {
   tags: TagWithCount[];
@@ -27,6 +34,7 @@ interface TagsStore {
   error: string | null;
   fetchTags: () => Promise<void>;
   fetchTagChildren: (parentId: string) => Promise<void>;
+  fetchMoreTagChildren: (parentId: string) => Promise<void>;
   createTag: (name: string, parentId?: string) => Promise<Tag>;
   updateTag: (id: string, name: string, parentId?: string) => Promise<Tag>;
   deleteTag: (id: string) => Promise<void>;
@@ -38,19 +46,47 @@ function replaceChildrenInTree(
   nodes: TagWithCount[],
   parentId: string,
   newChildren: TagWithCount[],
+  total: number,
 ): TagWithCount[] {
   return nodes.map((node) => {
     if (node.id === parentId) {
-      return { ...node, children: newChildren, children_total: newChildren.length };
+      return { ...node, children: newChildren, children_total: total };
     }
     if (node.children.length > 0) {
-      return { ...node, children: replaceChildrenInTree(node.children, parentId, newChildren) };
+      return { ...node, children: replaceChildrenInTree(node.children, parentId, newChildren, total) };
     }
     return node;
   });
 }
 
-export const useTagsStore = create<TagsStore>((set) => ({
+function appendChildrenInTree(
+  nodes: TagWithCount[],
+  parentId: string,
+  moreChildren: TagWithCount[],
+): TagWithCount[] {
+  return nodes.map((node) => {
+    if (node.id === parentId) {
+      return { ...node, children: [...node.children, ...moreChildren] };
+    }
+    if (node.children.length > 0) {
+      return { ...node, children: appendChildrenInTree(node.children, parentId, moreChildren) };
+    }
+    return node;
+  });
+}
+
+function findTagInTree(nodes: TagWithCount[], tagId: string): TagWithCount | null {
+  for (const node of nodes) {
+    if (node.id === tagId) return node;
+    if (node.children.length > 0) {
+      const found = findTagInTree(node.children, tagId);
+      if (found) return found;
+    }
+  }
+  return null;
+}
+
+export const useTagsStore = create<TagsStore>((set, get) => ({
   tags: [],
   isLoading: false,
   isCompacting: false,
@@ -68,12 +104,35 @@ export const useTagsStore = create<TagsStore>((set) => ({
 
   fetchTagChildren: async (parentId: string) => {
     try {
-      const children = await getTransport().invoke<TagWithCount[]>('get_tag_children', {
+      const result = await getTransport().invoke<PaginatedTagChildren>('get_tag_children', {
         parentId,
         minCount: 0,
+        limit: TAG_CHILDREN_PAGE_SIZE,
+        offset: 0,
       });
       set((state) => ({
-        tags: replaceChildrenInTree(state.tags, parentId, children),
+        tags: replaceChildrenInTree(state.tags, parentId, result.children, result.total),
+      }));
+    } catch (error) {
+      set({ error: String(error) });
+    }
+  },
+
+  fetchMoreTagChildren: async (parentId: string) => {
+    try {
+      const parent = findTagInTree(get().tags, parentId);
+      if (!parent) return;
+      const offset = parent.children.length;
+      if (offset >= parent.children_total) return;
+
+      const result = await getTransport().invoke<PaginatedTagChildren>('get_tag_children', {
+        parentId,
+        minCount: 0,
+        limit: TAG_CHILDREN_PAGE_SIZE,
+        offset,
+      });
+      set((state) => ({
+        tags: appendChildrenInTree(state.tags, parentId, result.children),
       }));
     } catch (error) {
       set({ error: String(error) });
@@ -144,4 +203,3 @@ export const useTagsStore = create<TagsStore>((set) => ({
 
   clearError: () => set({ error: null }),
 }));
-
