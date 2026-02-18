@@ -168,7 +168,12 @@ pub async fn update_tag(
     ok_or_error(state.core.update_tag(&id, &req.name, req.parent_id.as_deref()))
 }
 
-pub async fn delete_tag(state: web::Data<AppState>, path: web::Path<String>) -> HttpResponse {
+pub async fn delete_tag(
+    state: web::Data<AppState>,
+    path: web::Path<String>,
+    query: web::Query<std::collections::HashMap<String, String>>,
+) -> HttpResponse {
     let id = path.into_inner();
-    ok_or_error(state.core.delete_tag(&id))
+    let recursive = query.get("recursive").map(|v| v == "true").unwrap_or(false);
+    ok_or_error(state.core.delete_tag(&id, recursive))
 }

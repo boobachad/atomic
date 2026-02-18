@@ -24,7 +24,7 @@ static BPE: LazyLock<CoreBPE> = LazyLock::new(|| {
 });
 
 /// Count tokens using tiktoken's cl100k_base encoding (used by OpenAI embedding models)
-fn count_tokens(text: &str) -> usize {
+pub fn count_tokens(text: &str) -> usize {
     BPE.encode_with_special_tokens(text).len()
 }
 

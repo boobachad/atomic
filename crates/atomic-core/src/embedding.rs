@@ -344,6 +344,14 @@ async fn process_embedding_only_inner(
             }
         }
 
+        // Recompute tag centroid embeddings for this atom's tags
+        let tag_ids = get_tag_ids_for_atom(&conn, atom_id);
+        if !tag_ids.is_empty() {
+            if let Err(e) = compute_tag_embeddings_batch(&conn, &tag_ids) {
+                eprintln!("Warning: Failed to recompute tag embeddings for atom {}: {}", atom_id, e);
+            }
+        }
+
         // Set embedding status to complete
         conn.execute(
             "UPDATE atoms SET embedding_status = 'complete' WHERE id = ?1",
@@ -914,6 +922,26 @@ pub async fn process_embedding_batch<F>(
         );
     }
 
+    // === Phase 4c: Recompute tag centroid embeddings for affected tags ===
+    if !completed_atom_ids.is_empty() {
+        let conn = db.conn.lock().expect("DB lock failed");
+
+        // Collect all unique tag IDs affected by the embedded atoms
+        let mut affected_tag_ids: Vec<String> = Vec::new();
+        for atom_id in &completed_atom_ids {
+            affected_tag_ids.extend(get_tag_ids_for_atom(&conn, atom_id));
+        }
+        affected_tag_ids.sort();
+        affected_tag_ids.dedup();
+
+        if !affected_tag_ids.is_empty() {
+            eprintln!("Recomputing centroid embeddings for {} tags...", affected_tag_ids.len());
+            if let Err(e) = compute_tag_embeddings_batch(&conn, &affected_tag_ids) {
+                eprintln!("Warning: Failed to recompute tag embeddings: {}", e);
+            }
+        }
+    }
+
     // === Phase 5: Wait for tagging to complete ===
     for task in tagging_tasks {
         let _ = task.await;
@@ -1135,6 +1163,279 @@ where
     }
 
     Ok(count)
+}
+
+/// Running accumulator for computing a centroid without holding all blobs in memory.
+struct CentroidAccumulator {
+    sum: Vec<f64>,
+    count: usize,
+}
+
+impl CentroidAccumulator {
+    fn new(dim: usize) -> Self {
+        Self { sum: vec![0.0f64; dim], count: 0 }
+    }
+
+    /// Add an embedding blob to the running sum. Silently skips malformed blobs.
+    fn add_blob(&mut self, blob: &[u8]) {
+        let dim = self.sum.len();
+        if blob.len() != dim * 4 {
+            return;
+        }
+        for i in 0..dim {
+            let bytes: [u8; 4] = [
+                blob[i * 4],
+                blob[i * 4 + 1],
+                blob[i * 4 + 2],
+                blob[i * 4 + 3],
+            ];
+            self.sum[i] += f32::from_le_bytes(bytes) as f64;
+        }
+        self.count += 1;
+    }
+
+    /// Finalize into a normalized unit-length f32 blob. Returns None if empty.
+    fn finalize(&self) -> Option<Vec<u8>> {
+        if self.count == 0 {
+            return None;
+        }
+        let count = self.count as f64;
+        let mut centroid: Vec<f64> = self.sum.iter().map(|v| v / count).collect();
+
+        // Normalize to unit length
+        let magnitude: f64 = centroid.iter().map(|v| v * v).sum::<f64>().sqrt();
+        if magnitude > 0.0 {
+            for val in &mut centroid {
+                *val /= magnitude;
+            }
+        }
+
+        let f32_vec: Vec<f32> = centroid.iter().map(|v| *v as f32).collect();
+        Some(f32_vec_to_blob_public(&f32_vec))
+    }
+}
+
+/// Write a computed centroid to tag_embeddings + vec_tags.
+fn upsert_tag_centroid(
+    conn: &rusqlite::Connection,
+    tag_id: &str,
+    embedding_blob: &[u8],
+    chunk_count: i32,
+) -> Result<(), String> {
+    let now = chrono::Utc::now().to_rfc3339();
+    conn.execute(
+        "INSERT OR REPLACE INTO tag_embeddings (tag_id, embedding, atom_count, updated_at)
+         VALUES (?1, ?2, ?3, ?4)",
+        rusqlite::params![tag_id, embedding_blob, chunk_count, &now],
+    )
+    .map_err(|e| format!("Failed to upsert tag_embeddings: {}", e))?;
+
+    // vec0 doesn't support REPLACE, so delete + insert
+    conn.execute("DELETE FROM vec_tags WHERE tag_id = ?1", [tag_id]).ok();
+    conn.execute(
+        "INSERT INTO vec_tags (tag_id, embedding) VALUES (?1, ?2)",
+        rusqlite::params![tag_id, embedding_blob],
+    )
+    .map_err(|e| format!("Failed to upsert vec_tags: {}", e))?;
+
+    Ok(())
+}
+
+/// Compute the centroid embedding for a single tag (streaming, constant memory).
+///
+/// Averages all chunk embeddings from atoms under this tag (including descendant tags),
+/// normalizes to unit length, and upserts into `tag_embeddings` + `vec_tags`.
+pub fn compute_tag_embedding(conn: &rusqlite::Connection, tag_id: &str) -> Result<(), String> {
+    let mut stmt = conn
+        .prepare(
+            "WITH RECURSIVE descendant_tags(id) AS (
+                SELECT ?1
+                UNION ALL
+                SELECT t.id FROM tags t
+                INNER JOIN descendant_tags dt ON t.parent_id = dt.id
+            )
+            SELECT ac.embedding
+            FROM atom_chunks ac
+            INNER JOIN atom_tags at ON ac.atom_id = at.atom_id
+            WHERE at.tag_id IN (SELECT id FROM descendant_tags)
+              AND ac.embedding IS NOT NULL",
+        )
+        .map_err(|e| format!("Failed to prepare tag embedding query: {}", e))?;
+
+    // Determine dimension from vec_chunks schema
+    let dim: usize = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='vec_chunks'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .ok()
+        .and_then(|sql| {
+            let start = sql.find("float[")?;
+            let after = &sql[start + 6..];
+            let end = after.find(']')?;
+            after[..end].parse::<usize>().ok()
+        })
+        .unwrap_or(1536);
+
+    let mut acc = CentroidAccumulator::new(dim);
+
+    let mut rows = stmt.query([tag_id])
+        .map_err(|e| format!("Failed to query tag embeddings: {}", e))?;
+
+    while let Some(row) = rows.next().map_err(|e| format!("Failed to read row: {}", e))? {
+        let blob: Vec<u8> = row.get(0).map_err(|e| format!("Failed to get blob: {}", e))?;
+        acc.add_blob(&blob);
+    }
+
+    match acc.finalize() {
+        Some(blob) => upsert_tag_centroid(conn, tag_id, &blob, acc.count as i32),
+        None => {
+            conn.execute("DELETE FROM vec_tags WHERE tag_id = ?1", [tag_id]).ok();
+            conn.execute("DELETE FROM tag_embeddings WHERE tag_id = ?1", [tag_id]).ok();
+            Ok(())
+        }
+    }
+}
+
+/// Compute centroid embeddings for multiple tags in a single pass.
+///
+/// Builds an inverted ancestry map so each chunk embedding is read from SQLite exactly
+/// once and accumulated into every tag centroid that includes it (the tag itself + all
+/// its ancestors in the affected set).
+pub fn compute_tag_embeddings_batch(
+    conn: &rusqlite::Connection,
+    tag_ids: &[String],
+) -> Result<(), String> {
+    if tag_ids.is_empty() {
+        return Ok(());
+    }
+
+    // Build the set of tags we're computing centroids for
+    let target_set: std::collections::HashSet<&str> =
+        tag_ids.iter().map(|s| s.as_str()).collect();
+
+    // For each target tag, get its full descendant hierarchy. Build an inverted map:
+    // descendant_tag_id → set of target tag_ids whose centroid it contributes to.
+    let mut descendant_to_targets: std::collections::HashMap<String, Vec<&str>> =
+        std::collections::HashMap::new();
+
+    for tag_id in tag_ids {
+        let mut stmt = conn
+            .prepare(
+                "WITH RECURSIVE descendant_tags(id) AS (
+                    SELECT ?1
+                    UNION ALL
+                    SELECT t.id FROM tags t
+                    INNER JOIN descendant_tags dt ON t.parent_id = dt.id
+                )
+                SELECT id FROM descendant_tags",
+            )
+            .map_err(|e| format!("Failed to prepare hierarchy query: {}", e))?;
+
+        let descendants: Vec<String> = stmt
+            .query_map([tag_id.as_str()], |row| row.get(0))
+            .map_err(|e| format!("Failed to query hierarchy: {}", e))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("Failed to collect hierarchy: {}", e))?;
+
+        for desc_id in descendants {
+            descendant_to_targets
+                .entry(desc_id)
+                .or_default()
+                .push(tag_id.as_str());
+        }
+    }
+
+    // Determine embedding dimension from vec_chunks schema
+    let dim: usize = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='vec_chunks'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .ok()
+        .and_then(|sql| {
+            let start = sql.find("float[")?;
+            let after = &sql[start + 6..];
+            let end = after.find(']')?;
+            after[..end].parse::<usize>().ok()
+        })
+        .unwrap_or(1536);
+
+    // Initialize accumulators for each target tag
+    let mut accumulators: std::collections::HashMap<&str, CentroidAccumulator> = tag_ids
+        .iter()
+        .map(|id| (id.as_str(), CentroidAccumulator::new(dim)))
+        .collect();
+
+    // Collect all descendant tag IDs that map to at least one target
+    let all_descendant_ids: Vec<&str> = descendant_to_targets.keys().map(|s| s.as_str()).collect();
+
+    // Stream chunk embeddings for all atoms tagged under any descendant, in batches
+    // to avoid SQLite parameter limits (max ~999)
+    for batch in all_descendant_ids.chunks(500) {
+        let placeholders = batch.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let query = format!(
+            "SELECT at.tag_id, ac.embedding
+             FROM atom_chunks ac
+             INNER JOIN atom_tags at ON ac.atom_id = at.atom_id
+             WHERE at.tag_id IN ({})
+               AND ac.embedding IS NOT NULL",
+            placeholders
+        );
+
+        let mut stmt = conn.prepare(&query)
+            .map_err(|e| format!("Failed to prepare batch embedding query: {}", e))?;
+
+        let mut rows = stmt.query(rusqlite::params_from_iter(batch.iter()))
+            .map_err(|e| format!("Failed to query batch embeddings: {}", e))?;
+
+        while let Some(row) = rows.next().map_err(|e| format!("Failed to read row: {}", e))? {
+            let tag_id: String = row.get(0).map_err(|e| format!("Failed to get tag_id: {}", e))?;
+            let blob: Vec<u8> = row.get(1).map_err(|e| format!("Failed to get blob: {}", e))?;
+
+            // Look up which target centroids this row contributes to
+            if let Some(targets) = descendant_to_targets.get(&tag_id) {
+                for &target_id in targets {
+                    if let Some(acc) = accumulators.get_mut(target_id) {
+                        acc.add_blob(&blob);
+                    }
+                }
+            }
+        }
+    }
+
+    // Finalize and write all centroids
+    for tag_id in tag_ids {
+        if let Some(acc) = accumulators.get(tag_id.as_str()) {
+            match acc.finalize() {
+                Some(blob) => {
+                    if let Err(e) = upsert_tag_centroid(conn, tag_id, &blob, acc.count as i32) {
+                        eprintln!("Warning: Failed to write centroid for tag {}: {}", tag_id, e);
+                    }
+                }
+                None => {
+                    conn.execute("DELETE FROM vec_tags WHERE tag_id = ?1", [tag_id.as_str()]).ok();
+                    conn.execute("DELETE FROM tag_embeddings WHERE tag_id = ?1", [tag_id.as_str()]).ok();
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Get tag IDs for an atom from atom_tags table.
+fn get_tag_ids_for_atom(conn: &rusqlite::Connection, atom_id: &str) -> Vec<String> {
+    let mut stmt = match conn.prepare("SELECT tag_id FROM atom_tags WHERE atom_id = ?1") {
+        Ok(s) => s,
+        Err(_) => return Vec::new(),
+    };
+    stmt.query_map([atom_id], |row| row.get(0))
+        .ok()
+        .map(|rows| rows.filter_map(|r| r.ok()).collect())
+        .unwrap_or_default()
 }
 
 #[cfg(test)]

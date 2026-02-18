@@ -24,7 +24,7 @@ pub struct OpenRouterProvider {
 impl OpenRouterProvider {
     pub fn new(api_key: String) -> Self {
         let client = Client::builder()
-            .timeout(Duration::from_secs(60))
+            .timeout(Duration::from_secs(300))
             .build()
             .unwrap_or_else(|_| Client::new());
 

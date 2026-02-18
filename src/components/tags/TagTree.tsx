@@ -105,7 +105,8 @@ export function TagTree() {
   const [deleteModal, setDeleteModal] = useState<{
     isOpen: boolean;
     tag: TagWithCount | null;
-  }>({ isOpen: false, tag: null });
+    recursive: boolean;
+  }>({ isOpen: false, tag: null, recursive: false });
 
   const [newTagModal, setNewTagModal] = useState<{
     isOpen: boolean;
@@ -138,11 +139,11 @@ export function TagTree() {
 
   const handleDelete = async () => {
     if (deleteModal.tag) {
-      await deleteTag(deleteModal.tag.id);
+      await deleteTag(deleteModal.tag.id, deleteModal.recursive);
       if (selectedTagId === deleteModal.tag.id) {
         handleSelectTag(null);
       }
-      setDeleteModal({ isOpen: false, tag: null });
+      setDeleteModal({ isOpen: false, tag: null, recursive: false });
     }
   };
 
@@ -191,6 +192,7 @@ export function TagTree() {
             setDeleteModal({
               isOpen: true,
               tag: contextMenu.tag,
+              recursive: false,
             });
           },
           danger: true,
@@ -336,7 +338,7 @@ export function TagTree() {
       {/* Delete Confirmation Modal */}
       <Modal
         isOpen={deleteModal.isOpen}
-        onClose={() => setDeleteModal({ isOpen: false, tag: null })}
+        onClose={() => setDeleteModal({ isOpen: false, tag: null, recursive: false })}
         title="Delete Tag"
         confirmLabel="Delete"
         confirmVariant="danger"
@@ -344,12 +346,35 @@ export function TagTree() {
       >
         <p>
           Are you sure you want to delete the tag "{deleteModal.tag?.name}"?
-          {deleteModal.tag && deleteModal.tag.children.length > 0 && (
-            <span className="block mt-2 text-[var(--color-text-secondary)]">
-              This will also affect {deleteModal.tag.children.length} child tag(s).
-            </span>
-          )}
         </p>
+        {deleteModal.tag && deleteModal.tag.children.length > 0 && (
+          <div className="mt-3 space-y-2">
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="radio"
+                name="deleteMode"
+                checked={!deleteModal.recursive}
+                onChange={() => setDeleteModal(s => ({ ...s, recursive: false }))}
+                className="accent-[var(--color-accent)]"
+              />
+              <span className="text-sm text-[var(--color-text-primary)]">
+                Delete only this tag (children move to root)
+              </span>
+            </label>
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="radio"
+                name="deleteMode"
+                checked={deleteModal.recursive}
+                onChange={() => setDeleteModal(s => ({ ...s, recursive: true }))}
+                className="accent-[var(--color-accent)]"
+              />
+              <span className="text-sm text-[var(--color-text-primary)]">
+                Delete this tag and all {deleteModal.tag.children_total} descendant{deleteModal.tag.children_total !== 1 ? 's' : ''}
+              </span>
+            </label>
+          </div>
+        )}
       </Modal>
 
       {/* New Tag Modal */}
