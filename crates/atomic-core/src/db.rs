@@ -312,7 +312,6 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_semantic_edges_target ON semantic_edges(target_atom_id);
             CREATE INDEX IF NOT EXISTS idx_semantic_edges_similarity ON semantic_edges(similarity_score DESC);
             CREATE INDEX IF NOT EXISTS idx_tags_parent_id ON tags(parent_id);
-            CREATE INDEX IF NOT EXISTS idx_tags_parent_count ON tags(parent_id, atom_count DESC);
             CREATE INDEX IF NOT EXISTS idx_wiki_citations_article ON wiki_citations(wiki_article_id);
 
             -- Indexes for chat tables
@@ -396,6 +395,11 @@ impl Database {
                  );",
             )?;
         }
+
+        // Index on atom_count — must be after the ALTER TABLE migration above
+        conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_tags_parent_count ON tags(parent_id, atom_count DESC);",
+        )?;
 
         // Triggers to keep tags.atom_count in sync with atom_tags mutations.
         // DROP IF EXISTS + recreate ensures triggers stay current across upgrades.
