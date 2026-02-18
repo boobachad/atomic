@@ -377,13 +377,19 @@ async fn search_semantic_chunks(
     let chunk_ids: Vec<String> = filtered.iter().map(|(id, _)| id.clone()).collect();
     let chunk_map = batch_fetch_chunk_info(&conn, &chunk_ids)?;
 
+    // Pre-compute scope filter for all candidate atom_ids in one batch query
+    let scope_atom_ids: std::collections::HashSet<String> = if !options.scope_tag_ids.is_empty() {
+        let candidate_atom_ids: Vec<&str> = chunk_map.values().map(|(aid, _, _)| aid.as_str()).collect();
+        batch_atoms_with_scope_tags(&conn, &candidate_atom_ids, &options.scope_tag_ids)?
+    } else {
+        std::collections::HashSet::new()
+    };
+
     let mut results = Vec::new();
     for (chunk_id, distance) in filtered {
         let similarity = distance_to_similarity(distance);
         if let Some((atom_id, content, chunk_index)) = chunk_map.get(&chunk_id) {
-            if !options.scope_tag_ids.is_empty()
-                && !atom_has_scope_tag(&conn, atom_id, &options.scope_tag_ids)?
-            {
+            if !options.scope_tag_ids.is_empty() && !scope_atom_ids.contains(atom_id) {
                 continue;
             }
             results.push(ChunkResult {
@@ -447,31 +453,6 @@ async fn search_hybrid_chunks(
     Ok(combined)
 }
 
-/// Check if an atom has any of the specified scope tags
-fn atom_has_scope_tag(
-    conn: &rusqlite::Connection,
-    atom_id: &str,
-    scope_tag_ids: &[String],
-) -> Result<bool, String> {
-    if scope_tag_ids.is_empty() {
-        return Ok(true);
-    }
-
-    let placeholders: Vec<&str> = scope_tag_ids.iter().map(|_| "?").collect();
-    let query = format!(
-        "SELECT EXISTS(SELECT 1 FROM atom_tags WHERE atom_id = ?1 AND tag_id IN ({}))",
-        placeholders.join(",")
-    );
-
-    let mut params: Vec<&dyn rusqlite::ToSql> = vec![&atom_id];
-    for tag_id in scope_tag_ids {
-        params.push(tag_id);
-    }
-
-    conn.query_row(&query, rusqlite::params_from_iter(params), |row| row.get(0))
-        .map_err(|e| format!("Failed to check tag scope: {}", e))
-}
-
 /// Filter results by tag scope (for keyword search batch filtering)
 fn filter_by_scope<T>(
     conn: &rusqlite::Connection,
@@ -482,13 +463,54 @@ fn filter_by_scope<T>(
         return Ok(results);
     }
 
-    let mut filtered = Vec::new();
-    for result in results {
-        if atom_has_scope_tag(conn, &result.1, scope_tag_ids)? {
-            filtered.push(result);
-        }
-    }
+    // Batch check: get all atom_ids that have at least one scope tag
+    let atom_ids: Vec<&str> = results.iter().map(|r| r.1.as_str()).collect();
+    let matching_atom_ids = batch_atoms_with_scope_tags(conn, &atom_ids, scope_tag_ids)?;
+
+    let filtered = results
+        .into_iter()
+        .filter(|r| matching_atom_ids.contains(r.1.as_str()))
+        .collect();
     Ok(filtered)
+}
+
+/// Batch check which atom_ids have at least one of the specified scope tags.
+/// Returns the set of matching atom_ids.
+fn batch_atoms_with_scope_tags(
+    conn: &rusqlite::Connection,
+    atom_ids: &[&str],
+    scope_tag_ids: &[String],
+) -> Result<std::collections::HashSet<String>, String> {
+    if atom_ids.is_empty() || scope_tag_ids.is_empty() {
+        return Ok(std::collections::HashSet::new());
+    }
+
+    let atom_placeholders: Vec<&str> = atom_ids.iter().map(|_| "?").collect();
+    let tag_placeholders: Vec<&str> = scope_tag_ids.iter().map(|_| "?").collect();
+    let query = format!(
+        "SELECT DISTINCT atom_id FROM atom_tags WHERE atom_id IN ({}) AND tag_id IN ({})",
+        atom_placeholders.join(","),
+        tag_placeholders.join(","),
+    );
+
+    let mut params: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(atom_ids.len() + scope_tag_ids.len());
+    for id in atom_ids {
+        params.push(id);
+    }
+    for id in scope_tag_ids {
+        params.push(id);
+    }
+
+    let mut stmt = conn.prepare(&query).map_err(|e| format!("Failed to prepare scope query: {}", e))?;
+    let rows = stmt
+        .query_map(rusqlite::params_from_iter(params), |row| row.get::<_, String>(0))
+        .map_err(|e| format!("Failed to execute scope query: {}", e))?;
+
+    let mut matching = std::collections::HashSet::new();
+    for row in rows {
+        matching.insert(row.map_err(|e| format!("Failed to read scope result: {}", e))?);
+    }
+    Ok(matching)
 }
 
 /// Find atoms similar to a given atom based on embedding similarity

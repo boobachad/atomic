@@ -265,6 +265,13 @@ async fn process_embedding_only_inner(
             );
         }
 
+        // Remove old FTS entries before deleting chunks (content-sync table needs original rows)
+        conn.execute(
+            "INSERT INTO atom_chunks_fts(atom_chunks_fts, rowid, id, atom_id, chunk_index, content)
+             SELECT 'delete', rowid, id, atom_id, chunk_index, content FROM atom_chunks WHERE atom_id = ?1",
+            [atom_id],
+        ).ok();
+
         // Delete existing chunks for this atom
         conn.execute(
             "DELETE FROM vec_chunks WHERE chunk_id IN (SELECT id FROM atom_chunks WHERE atom_id = ?1)",
@@ -320,9 +327,12 @@ async fn process_embedding_only_inner(
 
         }
 
-        // Rebuild FTS index to include new chunks
-        conn.execute("INSERT INTO atom_chunks_fts(atom_chunks_fts) VALUES('rebuild')", [])
-            .ok();
+        // Incrementally update FTS index with the new chunks (avoids full rebuild of 34K rows)
+        conn.execute(
+            "INSERT INTO atom_chunks_fts(rowid, id, atom_id, chunk_index, content)
+             SELECT rowid, id, atom_id, chunk_index, content FROM atom_chunks WHERE atom_id = ?1",
+            [atom_id],
+        ).ok();
 
         // Compute semantic edges for this atom (unless deferred for batch)
         if !skip_edges {

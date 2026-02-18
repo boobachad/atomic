@@ -38,6 +38,8 @@ export interface PaginatedAtoms {
   total_count: number;
   limit: number;
   offset: number;
+  next_cursor?: string;
+  next_cursor_id?: string;
 }
 
 export interface SemanticSearchResult {
@@ -83,6 +85,8 @@ interface AtomsStore {
   currentTagFilter: string | null;
   isLoading: boolean;
   error: string | null;
+  nextCursor: string | null;
+  nextCursorId: string | null;
 
   // Search state
   searchMode: SearchMode;
@@ -136,6 +140,8 @@ export const useAtomsStore = create<AtomsStore>((set, get) => ({
   currentTagFilter: null,
   isLoading: false,
   error: null,
+  nextCursor: null,
+  nextCursorId: null,
 
   // Search state
   searchMode: 'hybrid' as SearchMode,
@@ -144,7 +150,7 @@ export const useAtomsStore = create<AtomsStore>((set, get) => ({
   isSearching: false,
 
   fetchAtoms: async () => {
-    set({ isLoading: true, error: null, currentTagFilter: null, currentOffset: 0 });
+    set({ isLoading: true, error: null, currentTagFilter: null, currentOffset: 0, nextCursor: null, nextCursorId: null });
     try {
       const result = await getTransport().invoke<PaginatedAtoms>('list_atoms', {
         limit: PAGE_SIZE,
@@ -156,6 +162,8 @@ export const useAtomsStore = create<AtomsStore>((set, get) => ({
         currentOffset: result.atoms.length,
         hasMore: result.atoms.length < result.total_count,
         isLoading: false,
+        nextCursor: result.next_cursor ?? null,
+        nextCursorId: result.next_cursor_id ?? null,
       });
     } catch (error) {
       set({ error: String(error), isLoading: false });
@@ -163,7 +171,7 @@ export const useAtomsStore = create<AtomsStore>((set, get) => ({
   },
 
   fetchAtomsByTag: async (tagId: string) => {
-    set({ isLoading: true, error: null, currentTagFilter: tagId, currentOffset: 0 });
+    set({ isLoading: true, error: null, currentTagFilter: tagId, currentOffset: 0, nextCursor: null, nextCursorId: null });
     try {
       const result = await getTransport().invoke<PaginatedAtoms>('list_atoms', {
         tagId,
@@ -176,6 +184,8 @@ export const useAtomsStore = create<AtomsStore>((set, get) => ({
         currentOffset: result.atoms.length,
         hasMore: result.atoms.length < result.total_count,
         isLoading: false,
+        nextCursor: result.next_cursor ?? null,
+        nextCursorId: result.next_cursor_id ?? null,
       });
     } catch (error) {
       set({ error: String(error), isLoading: false });
@@ -183,16 +193,20 @@ export const useAtomsStore = create<AtomsStore>((set, get) => ({
   },
 
   fetchNextPage: async () => {
-    const { currentOffset, hasMore, isLoading, currentTagFilter } = get();
+    const { hasMore, isLoading, currentTagFilter, nextCursor, nextCursorId } = get();
     if (!hasMore || isLoading) return;
 
     set({ isLoading: true });
     try {
       const args: Record<string, unknown> = {
         limit: PAGE_SIZE,
-        offset: currentOffset,
+        offset: 0,
       };
       if (currentTagFilter) args.tagId = currentTagFilter;
+      if (nextCursor && nextCursorId) {
+        args.cursor = nextCursor;
+        args.cursorId = nextCursorId;
+      }
 
       const result = await getTransport().invoke<PaginatedAtoms>('list_atoms', args);
       set((state) => {
@@ -203,6 +217,8 @@ export const useAtomsStore = create<AtomsStore>((set, get) => ({
           currentOffset: newAtoms.length,
           hasMore: newAtoms.length < result.total_count,
           isLoading: false,
+          nextCursor: result.next_cursor ?? null,
+          nextCursorId: result.next_cursor_id ?? null,
         };
       });
     } catch (error) {

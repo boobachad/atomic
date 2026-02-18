@@ -159,18 +159,105 @@ pub fn get_messages_with_context(
         })?
         .collect::<Result<Vec<_>, _>>()?;
 
-    let mut messages_with_context = Vec::new();
-    for message in messages {
-        let tool_calls = get_message_tool_calls(conn, &message.id)?;
-        let citations = get_message_citations(conn, &message.id)?;
-        messages_with_context.push(ChatMessageWithContext {
-            message,
-            tool_calls,
-            citations,
-        });
+    if messages.is_empty() {
+        return Ok(Vec::new());
     }
 
+    // Batch fetch tool_calls and citations for all messages (avoids N+1)
+    let msg_ids: Vec<String> = messages.iter().map(|m| m.id.clone()).collect();
+    let tool_calls_map = batch_fetch_tool_calls(conn, &msg_ids)?;
+    let citations_map = batch_fetch_citations(conn, &msg_ids)?;
+
+    let messages_with_context = messages
+        .into_iter()
+        .map(|message| {
+            let tool_calls = tool_calls_map.get(&message.id).cloned().unwrap_or_default();
+            let citations = citations_map.get(&message.id).cloned().unwrap_or_default();
+            ChatMessageWithContext {
+                message,
+                tool_calls,
+                citations,
+            }
+        })
+        .collect();
+
     Ok(messages_with_context)
+}
+
+/// Batch fetch tool calls for multiple messages in a single query
+fn batch_fetch_tool_calls(
+    conn: &Connection,
+    message_ids: &[String],
+) -> Result<std::collections::HashMap<String, Vec<ChatToolCall>>, AtomicCoreError> {
+    if message_ids.is_empty() {
+        return Ok(std::collections::HashMap::new());
+    }
+    let placeholders = message_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+    let query = format!(
+        "SELECT id, message_id, tool_name, tool_input, tool_output, status, created_at, completed_at
+         FROM chat_tool_calls
+         WHERE message_id IN ({})
+         ORDER BY created_at",
+        placeholders
+    );
+    let mut stmt = conn.prepare(&query)?;
+    let mut map: std::collections::HashMap<String, Vec<ChatToolCall>> = std::collections::HashMap::new();
+    let rows = stmt.query_map(rusqlite::params_from_iter(message_ids.iter()), |row| {
+        let tool_input_str: String = row.get(3)?;
+        let tool_output_str: Option<String> = row.get(4)?;
+        Ok(ChatToolCall {
+            id: row.get(0)?,
+            message_id: row.get(1)?,
+            tool_name: row.get(2)?,
+            tool_input: serde_json::from_str(&tool_input_str).unwrap_or(serde_json::Value::Null),
+            tool_output: tool_output_str
+                .map(|s| serde_json::from_str(&s).unwrap_or(serde_json::Value::Null)),
+            status: row.get(5)?,
+            created_at: row.get(6)?,
+            completed_at: row.get(7)?,
+        })
+    })?;
+    for row in rows {
+        let tc = row?;
+        map.entry(tc.message_id.clone()).or_default().push(tc);
+    }
+    Ok(map)
+}
+
+/// Batch fetch citations for multiple messages in a single query
+fn batch_fetch_citations(
+    conn: &Connection,
+    message_ids: &[String],
+) -> Result<std::collections::HashMap<String, Vec<ChatCitation>>, AtomicCoreError> {
+    if message_ids.is_empty() {
+        return Ok(std::collections::HashMap::new());
+    }
+    let placeholders = message_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+    let query = format!(
+        "SELECT id, message_id, citation_index, atom_id, chunk_index, excerpt, relevance_score
+         FROM chat_citations
+         WHERE message_id IN ({})
+         ORDER BY citation_index",
+        placeholders
+    );
+    let mut stmt = conn.prepare(&query)?;
+    let mut map: std::collections::HashMap<String, Vec<ChatCitation>> = std::collections::HashMap::new();
+    let rows = stmt.query_map(rusqlite::params_from_iter(message_ids.iter()), |row| {
+        Ok(ChatCitation {
+            id: row.get(0)?,
+            message_id: row.get(1)?,
+            citation_index: row.get(2)?,
+            atom_id: row.get(3)?,
+            chunk_index: row.get(4)?,
+            excerpt: row.get(5)?,
+            relevance_score: row.get(6)?,
+        })
+    })?;
+    for row in rows {
+        let c = row?;
+        map.entry(c.message_id.clone()).or_default().push(c);
+    }
+    Ok(map)
 }
 
 /// Batch fetch tags for multiple conversations in a single query

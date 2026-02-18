@@ -13,6 +13,8 @@ pub struct GetAtomsQuery {
     pub tag_id: Option<String>,
     pub limit: Option<i32>,
     pub offset: Option<i32>,
+    pub cursor: Option<String>,
+    pub cursor_id: Option<String>,
 }
 
 pub async fn get_atoms(
@@ -25,6 +27,8 @@ pub async fn get_atoms(
         query.tag_id.as_deref(),
         limit,
         offset,
+        query.cursor.as_deref(),
+        query.cursor_id.as_deref(),
     );
     ok_or_error(result)
 }

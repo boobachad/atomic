@@ -68,6 +68,12 @@ pub struct PaginatedAtoms {
     pub total_count: i32,
     pub limit: i32,
     pub offset: i32,
+    /// Cursor for keyset pagination: updated_at of the last item
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
+    /// Cursor tiebreaker: id of the last item
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_cursor_id: Option<String>,
 }
 
 /// Result struct for similar atom search

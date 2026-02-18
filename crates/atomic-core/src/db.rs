@@ -63,7 +63,7 @@ impl Database {
 
         // Enable WAL mode for concurrent reads with single writer
         // busy_timeout prevents SQLITE_BUSY when another connection holds a write lock
-        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA busy_timeout=5000;")?;
+        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA busy_timeout=5000; PRAGMA cache_size=-64000; PRAGMA mmap_size=268435456;")?;
 
         if create {
             Self::run_migrations(&conn)?;
@@ -75,7 +75,7 @@ impl Database {
         let mut read_pool = Vec::with_capacity(READ_POOL_SIZE);
         for _ in 0..READ_POOL_SIZE {
             let rc = Connection::open(&db_path)?;
-            rc.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA busy_timeout=5000; PRAGMA query_only=ON;")?;
+            rc.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA busy_timeout=5000; PRAGMA cache_size=-64000; PRAGMA mmap_size=268435456; PRAGMA query_only=ON;")?;
             read_pool.push(Mutex::new(rc));
         }
 
@@ -96,7 +96,7 @@ impl Database {
         }
         // All pool slots busy — create a temporary connection
         let conn = Connection::open(&self.db_path)?;
-        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA busy_timeout=5000; PRAGMA query_only=ON;")?;
+        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA busy_timeout=5000; PRAGMA cache_size=-64000; PRAGMA mmap_size=268435456; PRAGMA query_only=ON;")?;
         Ok(ReadConn::Temp(conn))
     }
 
@@ -106,7 +106,7 @@ impl Database {
         // sqlite-vec is registered via sqlite3_auto_extension in open_internal,
         // which applies to all connections opened after that call.
         let conn = Connection::open(&self.db_path)?;
-        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA busy_timeout=5000;")?;
+        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA busy_timeout=5000; PRAGMA cache_size=-64000; PRAGMA mmap_size=268435456;")?;
         Ok(conn)
     }
 
@@ -253,11 +253,14 @@ impl Database {
             );
 
             -- Core table indexes
-            CREATE INDEX IF NOT EXISTS idx_atoms_updated_at ON atoms(updated_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_atoms_updated_id ON atoms(updated_at DESC, id DESC);
             CREATE INDEX IF NOT EXISTS idx_atoms_embedding_status ON atoms(embedding_status);
             CREATE INDEX IF NOT EXISTS idx_atoms_tagging_status ON atoms(tagging_status);
             CREATE INDEX IF NOT EXISTS idx_atom_tags_tag_atom ON atom_tags(tag_id, atom_id);
-            CREATE INDEX IF NOT EXISTS idx_atom_tags_atom_id ON atom_tags(atom_id);
+
+            -- Drop legacy indexes superseded by composite or PK indexes
+            DROP INDEX IF EXISTS idx_atoms_updated_at;
+            DROP INDEX IF EXISTS idx_atom_tags_atom_id;
             CREATE INDEX IF NOT EXISTS idx_atom_chunks_atom_id ON atom_chunks(atom_id);
             CREATE INDEX IF NOT EXISTS idx_semantic_edges_source ON semantic_edges(source_atom_id);
             CREATE INDEX IF NOT EXISTS idx_semantic_edges_target ON semantic_edges(target_atom_id);

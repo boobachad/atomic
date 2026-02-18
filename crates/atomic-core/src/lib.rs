@@ -510,13 +510,21 @@ impl AtomicCore {
 
     /// List atoms with pagination and summaries (no full content).
     /// This is the primary frontend-facing method for loading atom lists.
+    ///
+    /// Supports cursor-based (keyset) pagination: when `cursor` and `cursor_id`
+    /// are provided, the query seeks directly to that position using the
+    /// `(updated_at DESC, id DESC)` index, giving O(limit) performance
+    /// regardless of page depth. Falls back to OFFSET when no cursor is given.
     pub fn list_atoms(
         &self,
         tag_id: Option<&str>,
         limit: i32,
         offset: i32,
+        cursor: Option<&str>,
+        cursor_id: Option<&str>,
     ) -> Result<PaginatedAtoms, AtomicCoreError> {
         let conn = self.db.read_conn()?;
+        let use_cursor = cursor.is_some() && cursor_id.is_some();
 
         // Count total
         let total_count: i32 = if let Some(tid) = tag_id {
@@ -537,9 +545,37 @@ impl AtomicCore {
             conn.query_row("SELECT COUNT(*) FROM atoms", [], |row| row.get(0))?
         };
 
-        // Fetch page with SUBSTR to avoid full content transfer
-        let atoms: Vec<(String, String, Option<String>, String, String, String, String)> =
-            if let Some(tid) = tag_id {
+        // Fetch page with SUBSTR to avoid full content transfer.
+        // When a cursor is provided, use keyset pagination for O(limit) performance.
+        type AtomRow = (String, String, Option<String>, String, String, String, String);
+        let atoms: Vec<AtomRow> = if let Some(tid) = tag_id {
+            if use_cursor {
+                let mut stmt = conn.prepare(
+                    "WITH RECURSIVE descendant_tags(id) AS (
+                        SELECT ?1
+                        UNION ALL
+                        SELECT t.id FROM tags t
+                        INNER JOIN descendant_tags dt ON t.parent_id = dt.id
+                    )
+                    SELECT a.id, SUBSTR(a.content, 1, 250), a.source_url,
+                        a.created_at, a.updated_at,
+                        COALESCE(a.embedding_status, 'pending'), COALESCE(a.tagging_status, 'pending')
+                    FROM atoms a
+                    WHERE (a.updated_at, a.id) < (?2, ?3)
+                    AND EXISTS (
+                        SELECT 1 FROM atom_tags at
+                        WHERE at.atom_id = a.id
+                        AND at.tag_id IN (SELECT id FROM descendant_tags)
+                    )
+                    ORDER BY a.updated_at DESC, a.id DESC
+                    LIMIT ?4",
+                )?;
+                let rows = stmt.query_map(
+                    rusqlite::params![tid, cursor.unwrap(), cursor_id.unwrap(), limit],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?)),
+                )?.collect::<Result<Vec<_>, _>>()?;
+                rows
+            } else {
                 let mut stmt = conn.prepare(
                     "WITH RECURSIVE descendant_tags(id) AS (
                         SELECT ?1
@@ -556,47 +592,49 @@ impl AtomicCore {
                         WHERE at.atom_id = a.id
                         AND at.tag_id IN (SELECT id FROM descendant_tags)
                     )
-                    ORDER BY a.updated_at DESC
+                    ORDER BY a.updated_at DESC, a.id DESC
                     LIMIT ?2 OFFSET ?3",
                 )?;
                 let rows = stmt.query_map(rusqlite::params![tid, limit, offset], |row| {
-                    Ok((
-                        row.get(0)?,
-                        row.get(1)?,
-                        row.get(2)?,
-                        row.get(3)?,
-                        row.get(4)?,
-                        row.get(5)?,
-                        row.get(6)?,
-                    ))
-                })?
-                .collect::<Result<Vec<_>, _>>()?;
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?))
+                })?.collect::<Result<Vec<_>, _>>()?;
                 rows
-            } else {
-                let mut stmt = conn.prepare(
-                    "SELECT id, SUBSTR(content, 1, 250), source_url,
-                     created_at, updated_at,
-                     COALESCE(embedding_status, 'pending'), COALESCE(tagging_status, 'pending')
-                     FROM atoms ORDER BY updated_at DESC LIMIT ?1 OFFSET ?2",
-                )?;
-                let rows = stmt.query_map(rusqlite::params![limit, offset], |row| {
-                    Ok((
-                        row.get(0)?,
-                        row.get(1)?,
-                        row.get(2)?,
-                        row.get(3)?,
-                        row.get(4)?,
-                        row.get(5)?,
-                        row.get(6)?,
-                    ))
-                })?
-                .collect::<Result<Vec<_>, _>>()?;
-                rows
-            };
+            }
+        } else if use_cursor {
+            let mut stmt = conn.prepare(
+                "SELECT id, SUBSTR(content, 1, 250), source_url,
+                 created_at, updated_at,
+                 COALESCE(embedding_status, 'pending'), COALESCE(tagging_status, 'pending')
+                 FROM atoms
+                 WHERE (updated_at, id) < (?1, ?2)
+                 ORDER BY updated_at DESC, id DESC
+                 LIMIT ?3",
+            )?;
+            let rows = stmt.query_map(rusqlite::params![cursor.unwrap(), cursor_id.unwrap(), limit], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?))
+            })?.collect::<Result<Vec<_>, _>>()?;
+            rows
+        } else {
+            let mut stmt = conn.prepare(
+                "SELECT id, SUBSTR(content, 1, 250), source_url,
+                 created_at, updated_at,
+                 COALESCE(embedding_status, 'pending'), COALESCE(tagging_status, 'pending')
+                 FROM atoms ORDER BY updated_at DESC, id DESC LIMIT ?1 OFFSET ?2",
+            )?;
+            let rows = stmt.query_map(rusqlite::params![limit, offset], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?))
+            })?.collect::<Result<Vec<_>, _>>()?;
+            rows
+        };
 
         // Batch load tags for the page
         let atom_ids: Vec<String> = atoms.iter().map(|a| a.0.clone()).collect();
         let tag_map = get_atom_tags_map_for_ids(&conn, &atom_ids)?;
+
+        // Extract cursor from the last result for keyset pagination
+        let (next_cursor, next_cursor_id) = atoms.last().map(|last| {
+            (Some(last.4.clone()), Some(last.0.clone()))
+        }).unwrap_or((None, None));
 
         let summaries: Vec<AtomSummary> = atoms
             .into_iter()
@@ -621,6 +659,8 @@ impl AtomicCore {
             total_count,
             limit,
             offset,
+            next_cursor,
+            next_cursor_id,
         })
     }
 
@@ -1185,12 +1225,14 @@ impl AtomicCore {
         let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
         let now = chrono::Utc::now().to_rfc3339();
 
+        let tx = conn.unchecked_transaction()?;
         for pos in positions {
-            conn.execute(
+            tx.execute(
                 "INSERT OR REPLACE INTO atom_positions (atom_id, x, y, updated_at) VALUES (?1, ?2, ?3, ?4)",
                 (&pos.atom_id, &pos.x, &pos.y, &now),
             )?;
         }
+        tx.commit()?;
 
         Ok(())
     }
@@ -1221,15 +1263,20 @@ impl AtomicCore {
 
         let tag_map = get_all_atom_tags_map(&conn)?;
 
-        let mut result = Vec::new();
-        for atom in atoms {
-            let tags = tag_map.get(&atom.id).cloned().unwrap_or_default();
-            let embedding = get_average_embedding(&conn, &atom.id)?;
-            result.push(AtomWithEmbedding {
-                atom: AtomWithTags { atom, tags },
-                embedding,
-            });
-        }
+        // Batch-load all embeddings in a single query (avoids 33K individual queries)
+        let embedding_map = get_all_average_embeddings(&conn)?;
+
+        let result = atoms
+            .into_iter()
+            .map(|atom| {
+                let tags = tag_map.get(&atom.id).cloned().unwrap_or_default();
+                let embedding = embedding_map.get(&atom.id).cloned();
+                AtomWithEmbedding {
+                    atom: AtomWithTags { atom, tags },
+                    embedding,
+                }
+            })
+            .collect();
 
         Ok(result)
     }
@@ -1849,46 +1896,71 @@ fn get_or_create_tag(
 
 // ==================== Helper Functions ====================
 
-/// Calculate average embedding from all chunks of an atom
-fn get_average_embedding(
+/// Batch-load all average embeddings in a single query, returning a map from atom_id -> avg embedding.
+/// This replaces 33K individual get_average_embedding() calls with one streaming query.
+fn get_all_average_embeddings(
     conn: &Connection,
-    atom_id: &str,
-) -> Result<Option<Vec<f32>>, AtomicCoreError> {
-    let mut stmt = conn
-        .prepare("SELECT embedding FROM atom_chunks WHERE atom_id = ?1 AND embedding IS NOT NULL")?;
+) -> Result<std::collections::HashMap<String, Vec<f32>>, AtomicCoreError> {
+    let mut stmt = conn.prepare(
+        "SELECT atom_id, embedding FROM atom_chunks WHERE embedding IS NOT NULL ORDER BY atom_id",
+    )?;
 
-    let embeddings: Vec<Vec<u8>> = stmt
-        .query_map([atom_id], |row| row.get(0))?
-        .collect::<Result<Vec<_>, _>>()?;
+    let mut map: std::collections::HashMap<String, Vec<f32>> = std::collections::HashMap::new();
+    let mut current_atom_id: Option<String> = None;
+    let mut current_sum: Vec<f32> = Vec::new();
+    let mut current_count: f32 = 0.0;
 
-    if embeddings.is_empty() {
-        return Ok(None);
-    }
+    let rows = stmt.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?))
+    })?;
 
-    let dim = embeddings[0].len() / 4;
-    let mut avg = vec![0.0f32; dim];
-    let count = embeddings.len() as f32;
-
-    for blob in &embeddings {
-        if blob.len() != dim * 4 {
+    for row in rows {
+        let (atom_id, blob) = row?;
+        let dim = blob.len() / 4;
+        if dim == 0 {
             continue;
         }
-        for i in 0..dim {
-            let bytes: [u8; 4] = [
-                blob[i * 4],
-                blob[i * 4 + 1],
-                blob[i * 4 + 2],
-                blob[i * 4 + 3],
-            ];
-            avg[i] += f32::from_le_bytes(bytes);
+
+        if current_atom_id.as_deref() != Some(&atom_id) {
+            // Flush previous atom's average
+            if let Some(prev_id) = current_atom_id.take() {
+                if current_count > 0.0 {
+                    for val in &mut current_sum {
+                        *val /= current_count;
+                    }
+                    map.insert(prev_id, current_sum.clone());
+                }
+            }
+            current_atom_id = Some(atom_id.clone());
+            current_sum = vec![0.0f32; dim];
+            current_count = 0.0;
+        }
+
+        if blob.len() == current_sum.len() * 4 {
+            for i in 0..current_sum.len() {
+                let bytes: [u8; 4] = [
+                    blob[i * 4],
+                    blob[i * 4 + 1],
+                    blob[i * 4 + 2],
+                    blob[i * 4 + 3],
+                ];
+                current_sum[i] += f32::from_le_bytes(bytes);
+            }
+            current_count += 1.0;
         }
     }
 
-    for val in &mut avg {
-        *val /= count;
+    // Flush the last atom
+    if let Some(prev_id) = current_atom_id {
+        if current_count > 0.0 {
+            for val in &mut current_sum {
+                *val /= current_count;
+            }
+            map.insert(prev_id, current_sum);
+        }
     }
 
-    Ok(Some(avg))
+    Ok(map)
 }
 
 /// Get dominant tags for a cluster of atoms

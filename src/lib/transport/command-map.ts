@@ -28,6 +28,8 @@ export const COMMAND_MAP: Record<string, CommandSpec> = {
       if (a.tagId) params.set('tag_id', a.tagId as string);
       if (a.limit != null) params.set('limit', String(a.limit));
       if (a.offset != null) params.set('offset', String(a.offset));
+      if (a.cursor) params.set('cursor', a.cursor as string);
+      if (a.cursorId) params.set('cursor_id', a.cursorId as string);
       return `/api/atoms${params.toString() ? `?${params}` : ''}`;
     },
   },
