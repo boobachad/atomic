@@ -64,24 +64,33 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
-      - name: Build MCP server (macOS universal)
+      - name: Build sidecars (macOS universal)
         if: matrix.platform == 'macos-latest'
         run: |
+          npm run build:server -- --target aarch64-apple-darwin
+          npm run build:server -- --target x86_64-apple-darwin
+          lipo -create \
+            src-tauri/binaries/atomic-server-aarch64-apple-darwin \
+            src-tauri/binaries/atomic-server-x86_64-apple-darwin \
+            -output src-tauri/binaries/atomic-server-universal-apple-darwin
           npm run build:mcp-bridge -- --target aarch64-apple-darwin
           npm run build:mcp-bridge -- --target x86_64-apple-darwin
-          # Create universal binary for Tauri's universal-apple-darwin target
           lipo -create \
             src-tauri/binaries/atomic-mcp-aarch64-apple-darwin \
             src-tauri/binaries/atomic-mcp-x86_64-apple-darwin \
             -output src-tauri/binaries/atomic-mcp-universal-apple-darwin
 
-      - name: Build MCP server (Linux)
+      - name: Build sidecars (Linux)
         if: matrix.platform == 'ubuntu-22.04'
-        run: npm run build:mcp-bridge -- --target x86_64-unknown-linux-gnu
+        run: |
+          npm run build:server -- --target x86_64-unknown-linux-gnu
+          npm run build:mcp-bridge -- --target x86_64-unknown-linux-gnu
 
-      - name: Build MCP server (Windows)
+      - name: Build sidecars (Windows)
         if: matrix.platform == 'windows-latest'
-        run: npm run build:mcp-bridge -- --target x86_64-pc-windows-msvc
+        run: |
+          npm run build:server -- --target x86_64-pc-windows-msvc
+          npm run build:mcp-bridge -- --target x86_64-pc-windows-msvc
 
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
