@@ -86,10 +86,9 @@ export function useEmbeddingEvents() {
         needsTagRefresh.current = true;
       }
 
-      // If tags were extracted, we need to refresh atoms to show updated tags
-      if (payload.tags_extracted && payload.tags_extracted.length > 0) {
-        needsAtomRefresh.current = true;
-      }
+      // Always refresh atoms — tagging_status changed on the server
+      // (complete, failed, or skipped), even if zero tags were extracted
+      needsAtomRefresh.current = true;
 
       // Reset debounce timer — wait for events to settle before fetching
       clearTimeout(refetchDebounceTimer.current);
