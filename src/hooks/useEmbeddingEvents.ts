@@ -52,6 +52,14 @@ export function useEmbeddingEvents() {
       useAtomsStore.getState().addAtom(payload);
     });
 
+    // Listen for ingestion-complete events (URL ingest / feed polling)
+    // Fetch the full atom by ID since the event only contains the atom_id
+    const unsubIngestionComplete = transport.subscribe<{ atom_id: string }>('ingestion-complete', (payload) => {
+      transport.invoke('get_atom', { id: payload.atom_id })
+        .then((atom) => useAtomsStore.getState().addAtom(atom as AtomWithTags))
+        .catch((e: unknown) => console.error('Failed to fetch ingested atom:', e));
+    });
+
     // Listen for embedding-complete events (fast, embedding only)
     // Batch these: collect status updates and flush every STATUS_BATCH_MS
     const unsubEmbeddingComplete = transport.subscribe<EmbeddingCompletePayload>('embedding-complete', (payload) => {
@@ -78,10 +86,9 @@ export function useEmbeddingEvents() {
         needsTagRefresh.current = true;
       }
 
-      // If tags were extracted, we need to refresh atoms to show updated tags
-      if (payload.tags_extracted && payload.tags_extracted.length > 0) {
-        needsAtomRefresh.current = true;
-      }
+      // Always refresh atoms — tagging_status changed on the server
+      // (complete, failed, or skipped), even if zero tags were extracted
+      needsAtomRefresh.current = true;
 
       // Reset debounce timer — wait for events to settle before fetching
       clearTimeout(refetchDebounceTimer.current);
@@ -118,6 +125,7 @@ export function useEmbeddingEvents() {
       clearTimeout(statusBatchTimer.current);
       clearTimeout(refetchDebounceTimer.current);
       unsubAtomCreated();
+      unsubIngestionComplete();
       unsubEmbeddingComplete();
       unsubTaggingComplete();
       unsubEmbeddingsReset();
