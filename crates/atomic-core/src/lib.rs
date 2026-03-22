@@ -1734,7 +1734,8 @@ impl AtomicCore {
         parent_id: Option<&str>,
         children_hint: Option<Vec<String>>,
     ) -> Result<CanvasLevel, AtomicCoreError> {
-        let conn = self.db.read_conn()?;
+        // Uses write conn because canvas_level creates temp tables for batch queries
+        let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
         canvas_level::get_canvas_level(&conn, parent_id, children_hint)
     }
 
