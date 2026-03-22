@@ -240,16 +240,16 @@ async fn complete_internal(
         Some(tools.iter().map(convert_tool).collect())
     };
 
-    let response_format = config.params.structured_output.as_ref().map(|schema| {
-        ResponseFormat {
-            format_type: "json_schema".to_string(),
-            json_schema: Some(JsonSchemaWrapper {
-                name: schema.name.clone(),
-                strict: schema.strict,
-                schema: schema.schema.clone(),
-            }),
-        }
-    });
+    // Use basic json_object mode instead of json_schema for broader compatibility.
+    // Many OpenAI-compatible servers don't support json_schema structured output.
+    let response_format = if config.params.structured_output.is_some() {
+        Some(ResponseFormat {
+            format_type: "json_object".to_string(),
+            json_schema: None,
+        })
+    } else {
+        None
+    };
 
     let request = ChatRequest {
         model: config.model.clone(),
