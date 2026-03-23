@@ -59,11 +59,13 @@ pub use utoipa_scalar::{Scalar, Servable};
         routes::settings::get_settings,
         routes::settings::set_setting,
         routes::settings::test_openrouter_connection,
+        routes::settings::test_openai_compat_connection,
         routes::settings::get_available_llm_models,
         // Embeddings
         routes::embedding::process_pending_embeddings,
         routes::embedding::process_pending_tagging,
         routes::embedding::retry_embedding,
+        routes::embedding::retry_tagging,
         routes::embedding::reset_stuck_processing,
         routes::embedding::get_embedding_status,
         // Canvas

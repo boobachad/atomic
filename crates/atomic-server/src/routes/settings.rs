@@ -91,12 +91,15 @@ pub async fn test_openrouter_connection(
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize, ToSchema)]
 pub struct TestOpenAICompatBody {
+    /// Base URL of the OpenAI-compatible API
     pub base_url: String,
+    /// Optional API key for authentication
     pub api_key: Option<String>,
 }
 
+#[utoipa::path(post, path = "/api/settings/test-openai-compat", request_body = TestOpenAICompatBody, responses((status = 200, description = "Connection successful"), (status = 400, description = "API error", body = ApiErrorResponse)), tag = "settings")]
 pub async fn test_openai_compat_connection(
     body: web::Json<TestOpenAICompatBody>,
 ) -> HttpResponse {

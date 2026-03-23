@@ -38,6 +38,7 @@ pub async fn retry_embedding(
     }
 }
 
+#[utoipa::path(post, path = "/api/tagging/retry/{atom_id}", params(("atom_id" = String, Path, description = "Atom ID")), responses((status = 200, description = "Tagging retried"), (status = 404, description = "Atom not found", body = ApiErrorResponse)), tag = "embeddings")]
 pub async fn retry_tagging(
     state: web::Data<AppState>,
     db: Db,
