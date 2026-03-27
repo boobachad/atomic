@@ -47,6 +47,7 @@ pub mod models;
 pub mod providers;
 pub mod registry;
 pub mod search;
+pub mod storage;
 pub mod settings;
 pub mod tokens;
 pub mod wiki;
@@ -63,7 +64,7 @@ pub use tokens::ApiTokenInfo;
 pub use import::{ImportProgress, ImportResult};
 pub use ingest::{IngestionEvent, IngestionRequest, IngestionResult, FeedPollResult};
 pub use manager::DatabaseManager;
-pub use registry::{DatabaseInfo, Registry};
+pub use registry::{DatabaseInfo, OAuthCodeInfo, Registry};
 
 use chrono::Utc;
 use rusqlite::Connection;
@@ -93,7 +94,11 @@ pub struct UpdateAtomRequest {
 /// Main library facade providing high-level operations
 #[derive(Clone)]
 pub struct AtomicCore {
-    db: Arc<Database>,
+    /// Storage abstraction layer supporting SQLite and Postgres at runtime.
+    /// All DB operations flow through this. For SQLite, the underlying
+    /// `Arc<Database>` is accessible via `storage.as_sqlite().db` when
+    /// needed by modules not yet fully migrated (search, agent, wiki).
+    storage: storage::StorageBackend,
     /// When present, settings and token operations delegate to the shared registry.
     /// When absent (standalone use, tests), uses per-db tables as before.
     registry: Option<Arc<registry::Registry>>,
@@ -102,8 +107,9 @@ pub struct AtomicCore {
 impl AtomicCore {
     /// Open an existing database
     pub fn open(db_path: impl AsRef<Path>) -> Result<Self, AtomicCoreError> {
-        let db = Database::open(db_path)?;
-        Ok(Self { db: Arc::new(db), registry: None })
+        let db = Arc::new(Database::open(db_path)?);
+        let storage = storage::StorageBackend::Sqlite(storage::SqliteStorage::new(db));
+        Ok(Self { storage, registry: None })
     }
 
     /// Open an existing database with a larger read pool sized for server workloads.
@@ -121,9 +127,61 @@ impl AtomicCore {
         Self::seed_and_backfill(db, registry)
     }
 
-    /// Run PRAGMA optimize — call on graceful shutdown.
+    /// Run storage optimization — call on graceful shutdown.
+    /// SQLite: PRAGMA optimize. Postgres: no-op.
     pub fn optimize(&self) {
-        self.db.optimize();
+        self.storage.optimize();
+    }
+
+    /// Open a Postgres-backed AtomicCore instance.
+    ///
+    /// Most operations route through the Postgres storage backend. A few operations
+    /// (search, wiki generation, chat agent) still require module-level refactoring
+    /// and will return `Configuration` errors when used with Postgres.
+    #[cfg(feature = "postgres")]
+    pub fn open_postgres(
+        database_url: &str,
+        db_id: &str,
+        registry: Option<Arc<registry::Registry>>,
+    ) -> Result<Self, AtomicCoreError> {
+        use storage::PostgresStorage;
+
+        let pg_storage = PostgresStorage::connect(database_url, db_id)?;
+        pg_storage.initialize_sync()?;
+
+        let storage = storage::StorageBackend::Postgres(pg_storage);
+
+        // Seed default category tags if tags table is empty
+        let all_tags = storage.get_all_tags_impl()?;
+        if all_tags.is_empty() {
+            for category in &["Topics", "People", "Locations", "Organizations", "Events"] {
+                storage.create_tag_impl(category, None)?;
+            }
+            eprintln!("Seeded default category tags in Postgres");
+        }
+
+        // Seed default settings if no registry and settings table is empty.
+        // When a registry exists, settings live there (not in the data DB).
+        if registry.is_none() {
+            let existing = storage.get_all_settings_sync()?;
+            if existing.is_empty() {
+                for (key, value) in settings::DEFAULT_SETTINGS {
+                    storage.set_setting_sync(key, value)?;
+                }
+                eprintln!("Seeded default settings in Postgres");
+            }
+        }
+
+        Ok(Self { storage, registry })
+    }
+
+    /// Create an AtomicCore from an existing PostgresStorage (for multi-db in Postgres mode).
+    #[cfg(feature = "postgres")]
+    pub fn from_postgres_storage(pg: storage::PostgresStorage) -> Self {
+        Self {
+            storage: storage::StorageBackend::Postgres(pg),
+            registry: None,
+        }
     }
 
     /// Open an existing database or create a new one
@@ -234,7 +292,9 @@ impl AtomicCore {
             }
         }
 
-        Ok(Self { db: Arc::new(db), registry })
+        let db = Arc::new(db);
+        let storage = storage::StorageBackend::Sqlite(storage::SqliteStorage::new(db));
+        Ok(Self { storage, registry })
     }
 
     /// Get settings map for passing to background tasks when registry is present.
@@ -243,14 +303,15 @@ impl AtomicCore {
         self.registry.as_ref().and_then(|reg| reg.get_all_settings().ok())
     }
 
-    /// Get the database path (for external code to open its own connection)
+    /// Get the storage path (for display purposes).
     pub fn db_path(&self) -> &Path {
-        &self.db.db_path
+        self.storage.storage_path()
     }
 
-    /// Get a reference to the database
-    pub fn database(&self) -> Arc<Database> {
-        Arc::clone(&self.db)
+    /// Get a reference to the underlying SQLite database (if available).
+    /// Returns None for Postgres backend.
+    pub fn database(&self) -> Option<Arc<Database>> {
+        self.storage.as_sqlite().map(|s| Arc::clone(&s.db))
     }
 
     // ==================== Settings ====================
@@ -262,8 +323,7 @@ impl AtomicCore {
         if let Some(ref reg) = self.registry {
             return reg.get_all_settings();
         }
-        let conn = self.db.read_conn()?;
-        settings::get_all_settings(&conn)
+        self.storage.get_all_settings_sync()
     }
 
     /// Get all settings as a HashMap. Internal helper used by embedding/agent code.
@@ -276,8 +336,7 @@ impl AtomicCore {
         if let Some(ref reg) = self.registry {
             return reg.set_setting(key, value);
         }
-        let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
-        settings::set_setting(&conn, key, value)
+        self.storage.set_setting_sync(key, value)
     }
 
     // ==================== API Token Operations ====================
@@ -290,8 +349,7 @@ impl AtomicCore {
         if let Some(ref reg) = self.registry {
             return reg.create_api_token(name);
         }
-        let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
-        tokens::create_token(&conn, name)
+        self.storage.create_api_token_sync(name)
     }
 
     /// List all API tokens (metadata only, never includes raw token values).
@@ -299,8 +357,7 @@ impl AtomicCore {
         if let Some(ref reg) = self.registry {
             return reg.list_api_tokens();
         }
-        let conn = self.db.read_conn()?;
-        tokens::list_tokens(&conn)
+        self.storage.list_api_tokens_sync()
     }
 
     /// Verify a raw API token. Returns token info if valid and not revoked.
@@ -311,8 +368,7 @@ impl AtomicCore {
         if let Some(ref reg) = self.registry {
             return reg.verify_api_token(raw_token);
         }
-        let conn = self.db.read_conn()?;
-        tokens::verify_token(&conn, raw_token)
+        self.storage.verify_api_token_sync(raw_token)
     }
 
     /// Revoke an API token by ID.
@@ -320,8 +376,7 @@ impl AtomicCore {
         if let Some(ref reg) = self.registry {
             return reg.revoke_api_token(id);
         }
-        let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
-        tokens::revoke_token(&conn, id)
+        self.storage.revoke_api_token_sync(id)
     }
 
     /// Update the last_used_at timestamp for a token.
@@ -329,8 +384,7 @@ impl AtomicCore {
         if let Some(ref reg) = self.registry {
             return reg.update_token_last_used(id);
         }
-        let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
-        tokens::update_last_used(&conn, id)
+        self.storage.update_token_last_used_sync(id)
     }
 
     /// Migrate legacy server_auth_token from settings to api_tokens table.
@@ -338,8 +392,7 @@ impl AtomicCore {
         if let Some(ref reg) = self.registry {
             return reg.migrate_legacy_token();
         }
-        let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
-        tokens::migrate_legacy_token(&conn)
+        self.storage.migrate_legacy_token_sync()
     }
 
     /// Ensure at least one API token exists. Creates a "default" token if none exist.
@@ -349,57 +402,19 @@ impl AtomicCore {
         if let Some(ref reg) = self.registry {
             return reg.ensure_default_token();
         }
-        let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
-        tokens::ensure_default_token(&conn)
+        self.storage.ensure_default_token_sync()
     }
 
     // ==================== Atom Operations ====================
 
     /// Get all atoms with their tags
     pub fn get_all_atoms(&self) -> Result<Vec<AtomWithTags>, AtomicCoreError> {
-        let conn = self.db.read_conn()?;
-
-        let mut stmt = conn
-            .prepare(&format!(
-                "SELECT {} FROM atoms ORDER BY updated_at DESC", ATOM_COLUMNS
-            ))?;
-
-        let atoms: Vec<Atom> = stmt
-            .query_map([], atom_from_row)?
-            .collect::<Result<Vec<_>, _>>()?;
-
-        // Batch load all tags in a single query instead of N+1
-        let tag_map = get_all_atom_tags_map(&conn)?;
-
-        let result: Vec<AtomWithTags> = atoms
-            .into_iter()
-            .map(|atom| {
-                let tags = tag_map.get(&atom.id).cloned().unwrap_or_default();
-                AtomWithTags { atom, tags }
-            })
-            .collect();
-
-        Ok(result)
+        self.storage.get_all_atoms_impl()
     }
 
     /// Get a single atom by ID
     pub fn get_atom(&self, id: &str) -> Result<Option<AtomWithTags>, AtomicCoreError> {
-        let conn = self.db.read_conn()?;
-
-        let atom_result = conn.query_row(
-            &format!("SELECT {} FROM atoms WHERE id = ?1", ATOM_COLUMNS),
-            [id],
-            atom_from_row,
-        );
-
-        match atom_result {
-            Ok(atom) => {
-                let tags = get_tags_for_atom(&conn, id)?;
-                Ok(Some(AtomWithTags { atom, tags }))
-            }
-            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-            Err(e) => Err(AtomicCoreError::Database(e)),
-        }
+        self.storage.get_atom_impl(id)
     }
 
     /// Create a new atom and trigger embedding generation
@@ -416,60 +431,20 @@ impl AtomicCore {
     {
         let id = Uuid::new_v4().to_string();
         let now = Utc::now().to_rfc3339();
-        let embedding_status = "pending";
-        let (title, snippet) = extract_title_and_snippet(&request.content, 300);
-        let source = request.source_url.as_deref().map(parse_source);
+        let content = request.content.clone();
 
-        {
-            let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
-
-            conn.execute(
-                "INSERT INTO atoms (id, content, source_url, source, published_at, created_at, updated_at, embedding_status, title, snippet)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
-                (&id, &request.content, &request.source_url, &source, &request.published_at, &now, &now, &embedding_status, &title, &snippet),
-            )
-            ?;
-
-            // Add tags
-            for tag_id in &request.tag_ids {
-                conn.execute(
-                    "INSERT INTO atom_tags (atom_id, tag_id) VALUES (?1, ?2)",
-                    (&id, tag_id),
-                )
-                ?;
-            }
-        }
-
-        // Get the created atom with tags
-        let atom = Atom {
-            id: id.clone(),
-            content: request.content.clone(),
-            title: title.clone(),
-            snippet: snippet.clone(),
-            source_url: request.source_url,
-            source,
-            published_at: request.published_at,
-            created_at: now.clone(),
-            updated_at: now,
-            embedding_status: embedding_status.to_string(),
-            tagging_status: "pending".to_string(),
-        };
-
-        let tags = {
-            let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
-            get_tags_for_atom(&conn, &id)?
-        };
+        let atom_with_tags = self.storage.insert_atom_impl(&id, &request, &now)?;
 
         // Spawn embedding task (non-blocking)
         embedding::spawn_embedding_task_single_with_settings(
-            Arc::clone(&self.db),
+            self.storage.clone(),
             id,
-            request.content,
+            content,
             on_event,
             self.settings_for_background(),
         );
 
-        Ok(AtomWithTags { atom, tags })
+        Ok(atom_with_tags)
     }
 
     /// Create multiple atoms in a single transaction and trigger batch embedding.
@@ -498,127 +473,49 @@ impl AtomicCore {
         }
 
         let now = Utc::now().to_rfc3339();
-        let mut atoms_with_tags: Vec<AtomWithTags> = Vec::with_capacity(requests.len());
-        let mut embedding_pairs: Vec<(String, String)> = Vec::with_capacity(requests.len());
         let mut skipped: usize = 0;
 
-        {
-            let conn = self
-                .db
-                .conn
-                .lock()
-                .map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+        // Dedup: build set of existing source_urls
+        let source_urls: Vec<String> = requests
+            .iter()
+            .filter_map(|r| r.source_url.clone())
+            .collect();
+        let existing_urls = self.storage.check_existing_source_urls_sync(&source_urls)?;
 
-            // Build set of existing source_urls for deduplication
-            let source_urls: Vec<&str> = requests
-                .iter()
-                .filter_map(|r| r.source_url.as_deref())
-                .collect();
-
-            let mut existing_urls: std::collections::HashSet<String> =
-                std::collections::HashSet::new();
-            if !source_urls.is_empty() {
-                let placeholders: String = source_urls.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-                let query = format!(
-                    "SELECT source_url FROM atoms WHERE source_url IN ({})",
-                    placeholders
-                );
-                let mut stmt = conn.prepare(&query)?;
-                let rows = stmt.query_map(
-                    rusqlite::params_from_iter(source_urls.iter()),
-                    |row| row.get::<_, String>(0),
-                )?;
-                for row in rows {
-                    existing_urls.insert(row?);
+        // Filter requests, skipping duplicates
+        let mut atoms_to_insert: Vec<(String, CreateAtomRequest, String)> = Vec::with_capacity(requests.len());
+        for request in requests {
+            if let Some(ref url) = request.source_url {
+                if existing_urls.contains(url) {
+                    skipped += 1;
+                    continue;
                 }
             }
-
-            conn.execute_batch("BEGIN")?;
-
-            for request in &requests {
-                // Skip if source_url already exists
-                if let Some(ref url) = request.source_url {
-                    if existing_urls.contains(url) {
-                        skipped += 1;
-                        continue;
-                    }
-                }
-
-                let id = Uuid::new_v4().to_string();
-                let (title, snippet) = extract_title_and_snippet(&request.content, 300);
-                let source = request.source_url.as_deref().map(parse_source);
-
-                if let Err(e) = conn.execute(
-                    "INSERT INTO atoms (id, content, source_url, source, published_at, created_at, updated_at, embedding_status, title, snippet)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
-                    (&id, &request.content, &request.source_url, &source, &request.published_at, &now, &now, &"pending", &title, &snippet),
-                ) {
-                    conn.execute_batch("ROLLBACK")?;
-                    return Err(AtomicCoreError::Database(e));
-                }
-
-                for tag_id in &request.tag_ids {
-                    if let Err(e) = conn.execute(
-                        "INSERT INTO atom_tags (atom_id, tag_id) VALUES (?1, ?2)",
-                        (&id, tag_id),
-                    ) {
-                        conn.execute_batch("ROLLBACK")?;
-                        return Err(AtomicCoreError::Database(e));
-                    }
-                }
-
-                let atom = Atom {
-                    id: id.clone(),
-                    content: request.content.clone(),
-                    title: title.clone(),
-                    snippet: snippet.clone(),
-                    source_url: request.source_url.clone(),
-                    source,
-                    published_at: request.published_at.clone(),
-                    created_at: now.clone(),
-                    updated_at: now.clone(),
-                    embedding_status: "pending".to_string(),
-                    tagging_status: "pending".to_string(),
-                };
-
-                embedding_pairs.push((id.clone(), request.content.clone()));
-                // Tags will be resolved after commit
-                atoms_with_tags.push(AtomWithTags {
-                    atom,
-                    tags: vec![],
-                });
-            }
-
-            conn.execute_batch("COMMIT")?;
-
-            // Now resolve tags for each atom
-            for atom_with_tags in &mut atoms_with_tags {
-                atom_with_tags.tags = get_tags_for_atom(&conn, &atom_with_tags.atom.id)?;
-            }
+            let id = Uuid::new_v4().to_string();
+            atoms_to_insert.push((id, request, now.clone()));
         }
+
+        // Bulk insert via storage
+        let atoms_with_tags = self.storage.insert_atoms_bulk_impl(&atoms_to_insert)?;
+
+        // Build embedding pairs from inserted atoms
+        let embedding_pairs: Vec<(String, String)> = atoms_with_tags
+            .iter()
+            .map(|awt| (awt.atom.id.clone(), awt.atom.content.clone()))
+            .collect();
 
         // Spawn batch embedding (same pattern as import_obsidian_vault)
         if !embedding_pairs.is_empty() {
-            {
-                let conn = self
-                    .db
-                    .conn
-                    .lock()
-                    .map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
-                for (atom_id, _) in &embedding_pairs {
-                    let _ = conn.execute(
-                        "UPDATE atoms SET embedding_status = 'processing' WHERE id = ?1",
-                        [atom_id],
-                    );
-                }
+            for (atom_id, _) in &embedding_pairs {
+                self.storage.set_embedding_status_sync(atom_id, "processing").ok();
             }
 
-            let db_clone = Arc::clone(&self.db);
+            let storage_clone = self.storage.clone();
             let bg_settings = self.settings_for_background();
             executor::spawn(async move {
                 match bg_settings {
-                    Some(s) => embedding::process_embedding_batch_with_settings(db_clone, embedding_pairs, false, on_event, s).await,
-                    None => embedding::process_embedding_batch(db_clone, embedding_pairs, false, on_event).await,
+                    Some(s) => embedding::process_embedding_batch_with_settings(storage_clone, embedding_pairs, false, on_event, s).await,
+                    None => embedding::process_embedding_batch(storage_clone, embedding_pairs, false, on_event).await,
                 };
             });
         }
@@ -642,112 +539,30 @@ impl AtomicCore {
         F: Fn(EmbeddingEvent) + Send + Sync + 'static,
     {
         let now = Utc::now().to_rfc3339();
-        let embedding_status = "pending";
-        let (title, snippet) = extract_title_and_snippet(&request.content, 300);
-        let source = request.source_url.as_deref().map(parse_source);
+        let content = request.content.clone();
 
-        {
-            let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
-
-            conn.execute(
-                "UPDATE atoms SET content = ?1, source_url = ?2, source = ?3, published_at = ?4, updated_at = ?5, embedding_status = ?6,
-                 title = ?7, snippet = ?8
-                 WHERE id = ?9",
-                (&request.content, &request.source_url, &source, &request.published_at, &now, &embedding_status, &title, &snippet, id),
-            )
-            ?;
-
-            // Remove existing tags and add new ones (only if tag_ids provided)
-            if let Some(ref tag_ids) = request.tag_ids {
-                conn.execute("DELETE FROM atom_tags WHERE atom_id = ?1", [id])
-                    ?;
-
-                for tag_id in tag_ids {
-                    conn.execute(
-                        "INSERT INTO atom_tags (atom_id, tag_id) VALUES (?1, ?2)",
-                        (id, tag_id),
-                    )
-                    ?;
-                }
-            }
-        }
-
-        // Get the updated atom
-        let atom = {
-            let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
-            conn.query_row(
-                &format!("SELECT {} FROM atoms WHERE id = ?1", ATOM_COLUMNS),
-                [id],
-                atom_from_row,
-            )
-            ?
-        };
-
-        let tags = {
-            let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
-            get_tags_for_atom(&conn, id)?
-        };
+        let atom_with_tags = self.storage.update_atom_impl(id, &request, &now)?;
 
         // Spawn embedding task (non-blocking)
         embedding::spawn_embedding_task_single_with_settings(
-            Arc::clone(&self.db),
+            self.storage.clone(),
             id.to_string(),
-            request.content,
+            content,
             on_event,
             self.settings_for_background(),
         );
 
-        Ok(AtomWithTags { atom, tags })
+        Ok(atom_with_tags)
     }
 
     /// Delete an atom
     pub fn delete_atom(&self, id: &str) -> Result<(), AtomicCoreError> {
-        let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
-
-        // Explicit delete from atom_tags so the trigger decrements tags.atom_count.
-        // (FK CASCADE is off, so this won't happen automatically.)
-        conn.execute("DELETE FROM atom_tags WHERE atom_id = ?1", [id])?;
-        conn.execute("DELETE FROM atoms WHERE id = ?1", [id])?;
-
-        Ok(())
+        self.storage.delete_atom_impl(id)
     }
 
     /// Get atoms by tag (includes atoms with descendant tags)
     pub fn get_atoms_by_tag(&self, tag_id: &str) -> Result<Vec<AtomWithTags>, AtomicCoreError> {
-        let conn = self.db.read_conn()?;
-
-        let mut stmt = conn.prepare(&format!(
-            "WITH RECURSIVE descendant_tags(id) AS (
-                SELECT ?1
-                UNION ALL
-                SELECT t.id FROM tags t
-                INNER JOIN descendant_tags dt ON t.parent_id = dt.id
-            )
-            SELECT {ATOM_COLUMNS_A}
-            FROM atom_tags at
-            INNER JOIN atoms a ON a.id = at.atom_id
-            WHERE at.tag_id IN (SELECT id FROM descendant_tags)
-            GROUP BY a.id
-            ORDER BY a.updated_at DESC",
-        ))?;
-
-        let atoms: Vec<Atom> = stmt
-            .query_map(rusqlite::params![tag_id], atom_from_row)?
-            .collect::<Result<Vec<_>, _>>()?;
-
-        // Batch load tags for the fetched atoms
-        let atom_ids: Vec<String> = atoms.iter().map(|a| a.id.clone()).collect();
-        let tag_map = get_atom_tags_map_for_ids(&conn, &atom_ids)?;
-
-        let result: Vec<AtomWithTags> = atoms
-            .into_iter()
-            .map(|atom| {
-                let tags = tag_map.get(&atom.id).cloned().unwrap_or_default();
-                AtomWithTags { atom, tags }
-            })
-            .collect();
-
-        Ok(result)
+        self.storage.get_atoms_by_tag_impl(tag_id)
     }
 
     /// List atoms with pagination, filtering, sorting, and summaries (no full content).
@@ -760,252 +575,25 @@ impl AtomicCore {
         &self,
         params: &ListAtomsParams,
     ) -> Result<PaginatedAtoms, AtomicCoreError> {
-        let conn = self.db.read_conn()?;
-        let use_cursor = params.cursor.is_some() && params.cursor_id.is_some();
-
-        // Determine if non-tag filters are active (source filters bypass atom_count shortcut)
-        let has_extra_filters = !matches!(params.source_filter, SourceFilter::All)
-            || params.source_value.is_some();
-
-        // --- Build ORDER BY ---
-        let sort_col = match params.sort_by {
-            SortField::Updated => "a.updated_at",
-            SortField::Created => "a.created_at",
-            SortField::Published => "COALESCE(a.published_at, a.created_at)",
-            SortField::Title => "a.title",
-        };
-        let sort_dir = match params.sort_order {
-            SortOrder::Desc => "DESC",
-            SortOrder::Asc => "ASC",
-        };
-        let cursor_cmp = match params.sort_order {
-            SortOrder::Desc => "<",
-            SortOrder::Asc => ">",
-        };
-
-        // --- Build WHERE clauses + bind values ---
-        let mut where_clauses: Vec<String> = Vec::new();
-        let mut bind_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
-        let mut param_idx = 1;
-
-        // Tag filter
-        if let Some(ref tid) = params.tag_id {
-            where_clauses.push(format!(
-                "EXISTS (SELECT 1 FROM atom_tags at WHERE at.atom_id = a.id AND at.tag_id IN (SELECT id FROM tags WHERE id = ?{p} OR parent_id = ?{p}))",
-                p = param_idx
-            ));
-            bind_values.push(Box::new(tid.clone()));
-            param_idx += 1;
-        }
-
-        // Source filter
-        match params.source_filter {
-            SourceFilter::All => {}
-            SourceFilter::Manual => {
-                where_clauses.push("a.source IS NULL".to_string());
-            }
-            SourceFilter::External => {
-                where_clauses.push("a.source IS NOT NULL".to_string());
-            }
-        }
-
-        // Source value filter (specific source like "nytimes.com")
-        if let Some(ref sv) = params.source_value {
-            where_clauses.push(format!("a.source = ?{}", param_idx));
-            bind_values.push(Box::new(sv.clone()));
-            param_idx += 1;
-        }
-
-        // Cursor
-        if use_cursor {
-            where_clauses.push(format!(
-                "({sort_col}, a.id) {cursor_cmp} (?{p1}, ?{p2})",
-                sort_col = sort_col,
-                cursor_cmp = cursor_cmp,
-                p1 = param_idx,
-                p2 = param_idx + 1,
-            ));
-            bind_values.push(Box::new(params.cursor.clone().unwrap()));
-            bind_values.push(Box::new(params.cursor_id.clone().unwrap()));
-            param_idx += 2;
-        }
-
-        let where_sql = if where_clauses.is_empty() {
-            String::new()
-        } else {
-            format!("WHERE {}", where_clauses.join(" AND "))
-        };
-
-        // --- Count query ---
-        let total_count: i32 = if !has_extra_filters && params.tag_id.is_some() {
-            // Fast path: use denormalized atom_count for tag-only filters
-            let tid = params.tag_id.as_ref().unwrap();
-            let has_children: bool = conn.query_row(
-                "SELECT EXISTS(SELECT 1 FROM tags WHERE parent_id = ?1)",
-                rusqlite::params![tid],
-                |row| row.get(0),
-            )?;
-            if has_children {
-                conn.query_row(
-                    "SELECT COUNT(DISTINCT at.atom_id)
-                     FROM atom_tags at
-                     WHERE at.tag_id IN (SELECT id FROM tags WHERE id = ?1 OR parent_id = ?1)",
-                    rusqlite::params![tid],
-                    |row| row.get(0),
-                )?
-            } else {
-                conn.query_row(
-                    "SELECT atom_count FROM tags WHERE id = ?1",
-                    rusqlite::params![tid],
-                    |row| row.get(0),
-                )?
-            }
-        } else if has_extra_filters || params.tag_id.is_some() {
-            // Build count query with filters (no cursor/limit)
-            let mut count_wheres: Vec<String> = Vec::new();
-            let mut count_binds: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
-            let mut ci = 1;
-
-            if let Some(ref tid) = params.tag_id {
-                count_wheres.push(format!(
-                    "EXISTS (SELECT 1 FROM atom_tags at WHERE at.atom_id = a.id AND at.tag_id IN (SELECT id FROM tags WHERE id = ?{p} OR parent_id = ?{p}))",
-                    p = ci
-                ));
-                count_binds.push(Box::new(tid.clone()));
-                ci += 1;
-            }
-            match params.source_filter {
-                SourceFilter::All => {}
-                SourceFilter::Manual => count_wheres.push("a.source IS NULL".to_string()),
-                SourceFilter::External => count_wheres.push("a.source IS NOT NULL".to_string()),
-            }
-            if let Some(ref sv) = params.source_value {
-                count_wheres.push(format!("a.source = ?{}", ci));
-                count_binds.push(Box::new(sv.clone()));
-                // ci += 1;
-            }
-            let count_where = if count_wheres.is_empty() {
-                String::new()
-            } else {
-                format!("WHERE {}", count_wheres.join(" AND "))
-            };
-            let count_sql = format!("SELECT COUNT(*) FROM atoms a {}", count_where);
-            let count_refs: Vec<&dyn rusqlite::types::ToSql> = count_binds.iter().map(|b| b.as_ref()).collect();
-            conn.query_row(&count_sql, count_refs.as_slice(), |row| row.get(0))?
-        } else {
-            // No filters at all — plain count
-            conn.query_row("SELECT COUNT(*) FROM atoms", [], |row| row.get(0))?
-        };
-
-        // --- Data query ---
-        // Bind values for LIMIT/OFFSET after cursor
-        let limit_param = param_idx;
-        bind_values.push(Box::new(params.limit));
-        param_idx += 1;
-
-        let data_sql = if use_cursor {
-            format!(
-                "SELECT a.id, a.title, a.snippet, a.source_url, a.source, a.published_at,
-                        a.created_at, a.updated_at,
-                        COALESCE(a.embedding_status, 'pending'), COALESCE(a.tagging_status, 'pending')
-                 FROM atoms a
-                 {where_sql}
-                 ORDER BY {sort_col} {sort_dir}, a.id {sort_dir}
-                 LIMIT ?{limit_param}",
-            )
-        } else {
-            let offset_param = param_idx;
-            bind_values.push(Box::new(params.offset));
-            // param_idx += 1;
-            format!(
-                "SELECT a.id, a.title, a.snippet, a.source_url, a.source, a.published_at,
-                        a.created_at, a.updated_at,
-                        COALESCE(a.embedding_status, 'pending'), COALESCE(a.tagging_status, 'pending')
-                 FROM atoms a
-                 {where_sql}
-                 ORDER BY {sort_col} {sort_dir}, a.id {sort_dir}
-                 LIMIT ?{limit_param} OFFSET ?{offset_param}",
-            )
-        };
-
-        let bind_refs: Vec<&dyn rusqlite::types::ToSql> = bind_values.iter().map(|b| b.as_ref()).collect();
-        let mut stmt = conn.prepare(&data_sql)?;
-        type AtomRow = (String, String, String, Option<String>, Option<String>, Option<String>, String, String, String, String);
-        let atoms: Vec<AtomRow> = stmt.query_map(bind_refs.as_slice(), |row| {
-            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?, row.get(7)?, row.get(8)?, row.get(9)?))
-        })?.collect::<Result<Vec<_>, _>>()?;
-
-        // Batch load tags for the page
-        let atom_ids: Vec<String> = atoms.iter().map(|a| a.0.clone()).collect();
-        let tag_map = get_atom_tags_map_for_ids(&conn, &atom_ids)?;
-
-        // Extract cursor from the last result for keyset pagination.
-        // Cursor value comes from the sort column (index 7 = updated_at by default,
-        // but we always use updated_at for cursor position).
-        let (next_cursor, next_cursor_id) = atoms.last().map(|last| {
-            (Some(last.7.clone()), Some(last.0.clone()))
-        }).unwrap_or((None, None));
-
-        let summaries: Vec<AtomSummary> = atoms
-            .into_iter()
-            .map(|(id, title, snippet, source_url, source, published_at, created_at, updated_at, embedding_status, tagging_status)| {
-                let tags = tag_map.get(&id).cloned().unwrap_or_default();
-                AtomSummary {
-                    id,
-                    title,
-                    snippet,
-                    source_url,
-                    source,
-                    published_at,
-                    created_at,
-                    updated_at,
-                    embedding_status,
-                    tagging_status,
-                    tags,
-                }
-            })
-            .collect();
-
-        Ok(PaginatedAtoms {
-            atoms: summaries,
-            total_count,
-            limit: params.limit,
-            offset: params.offset,
-            next_cursor,
-            next_cursor_id,
-        })
+        self.storage.list_atoms_impl(params)
     }
 
     /// Get a list of distinct source values with counts (for filter dropdowns).
     pub fn get_source_list(&self) -> Result<Vec<SourceInfo>, AtomicCoreError> {
-        let conn = self.db.read_conn()?;
-        let mut stmt = conn.prepare(
-            "SELECT source, COUNT(*) as cnt FROM atoms WHERE source IS NOT NULL GROUP BY source ORDER BY cnt DESC",
-        )?;
-        let results = stmt
-            .query_map([], |row| {
-                Ok(SourceInfo {
-                    source: row.get(0)?,
-                    atom_count: row.get(1)?,
-                })
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(results)
+        self.storage.get_source_list_impl()
     }
 
     // ==================== Tag Operations ====================
 
     /// Get all tags with counts (hierarchical tree), no filtering
     pub fn get_all_tags(&self) -> Result<Vec<TagWithCount>, AtomicCoreError> {
-        self.get_all_tags_filtered(0)
+        self.storage.get_all_tags_impl()
     }
 
     /// Get tags with counts, pruning leaf nodes below `min_count`.
     /// Sorted by atom_count descending at every level.
     pub fn get_all_tags_filtered(&self, min_count: i32) -> Result<Vec<TagWithCount>, AtomicCoreError> {
-        let conn = self.db.read_conn()?;
-        let (all_tags, direct_counts) = Self::load_tags_and_counts(&conn)?;
-        Ok(build_tag_tree_with_counts(&all_tags, None, &direct_counts, min_count))
+        self.storage.get_all_tags_filtered_impl(min_count)
     }
 
     /// Get direct children of a specific tag with pagination.
@@ -1018,100 +606,18 @@ impl AtomicCore {
         limit: i32,
         offset: i32,
     ) -> Result<PaginatedTagChildren, AtomicCoreError> {
-        let conn = self.db.read_conn()?;
-
-        // Fast total count using the parent_id index
-        let total: i32 = conn.query_row(
-            "SELECT COUNT(*) FROM tags WHERE parent_id = ?1",
-            [parent_id],
-            |row| row.get(0),
-        )?;
-
-        if total == 0 {
-            return Ok(PaginatedTagChildren { children: Vec::new(), total: 0 });
-        }
-
-        // atom_count is denormalized on the tags table (maintained by triggers),
-        // so no JOIN or GROUP BY needed — just read the column directly.
-        let mut stmt = conn.prepare(
-            "SELECT t.id, t.name, t.parent_id, t.created_at, t.atom_count,
-                (SELECT COUNT(*) FROM tags c WHERE c.parent_id = t.id) AS children_total
-            FROM tags t
-            WHERE t.parent_id = ?1
-            ORDER BY t.atom_count DESC
-            LIMIT ?2 OFFSET ?3"
-        )?;
-
-        let mut children: Vec<TagWithCount> = stmt
-            .query_map(rusqlite::params![parent_id, limit, offset], |row| {
-                Ok(TagWithCount {
-                    tag: Tag {
-                        id: row.get(0)?,
-                        name: row.get(1)?,
-                        parent_id: row.get(2)?,
-                        created_at: row.get(3)?,
-                    },
-                    atom_count: row.get(4)?,
-                    children_total: row.get(5)?,
-                    children: Vec::new(),
-                })
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
-
-        if min_count > 0 {
-            children.retain(|t| t.atom_count >= min_count || t.children_total > 0);
-        }
-
-        Ok(PaginatedTagChildren { children, total })
+        self.storage.get_tag_children_impl(parent_id, min_count, limit, offset)
     }
 
     /// Load all tags and their direct counts from the database.
     /// Reads the denormalized atom_count column instead of scanning atom_tags.
-    fn load_tags_and_counts(conn: &Connection) -> Result<(Vec<Tag>, HashMap<String, i32>), AtomicCoreError> {
-        let mut stmt = conn
-            .prepare("SELECT id, name, parent_id, created_at, atom_count FROM tags ORDER BY name")?;
-
-        let mut direct_counts: HashMap<String, i32> = HashMap::new();
-        let all_tags: Vec<Tag> = stmt
-            .query_map([], |row| {
-                let id: String = row.get(0)?;
-                let count: i32 = row.get(4)?;
-                direct_counts.insert(id.clone(), count);
-                Ok(Tag {
-                    id,
-                    name: row.get(1)?,
-                    parent_id: row.get(2)?,
-                    created_at: row.get(3)?,
-                })
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
-
-        Ok((all_tags, direct_counts))
-    }
-
     /// Create a new tag
     pub fn create_tag(
         &self,
         name: &str,
         parent_id: Option<&str>,
     ) -> Result<Tag, AtomicCoreError> {
-        let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
-
-        let id = Uuid::new_v4().to_string();
-        let now = Utc::now().to_rfc3339();
-
-        conn.execute(
-            "INSERT INTO tags (id, name, parent_id, created_at) VALUES (?1, ?2, ?3, ?4)",
-            (&id, name, &parent_id, &now),
-        )
-        ?;
-
-        Ok(Tag {
-            id,
-            name: name.to_string(),
-            parent_id: parent_id.map(String::from),
-            created_at: now,
-        })
+        self.storage.create_tag_impl(name, parent_id)
     }
 
     /// Update a tag
@@ -1121,64 +627,95 @@ impl AtomicCore {
         name: &str,
         parent_id: Option<&str>,
     ) -> Result<Tag, AtomicCoreError> {
-        let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
-
-        conn.execute(
-            "UPDATE tags SET name = ?1, parent_id = ?2 WHERE id = ?3",
-            (name, &parent_id, id),
-        )
-        ?;
-
-        let tag = conn
-            .query_row(
-                "SELECT id, name, parent_id, created_at FROM tags WHERE id = ?1",
-                [id],
-                |row| {
-                    Ok(Tag {
-                        id: row.get(0)?,
-                        name: row.get(1)?,
-                        parent_id: row.get(2)?,
-                        created_at: row.get(3)?,
-                    })
-                },
-            )
-            ?;
-
-        Ok(tag)
+        self.storage.update_tag_impl(id, name, parent_id)
     }
 
     /// Delete a tag
     pub fn delete_tag(&self, id: &str, recursive: bool) -> Result<(), AtomicCoreError> {
-        let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
-
-        if recursive {
-            // Delete tag and all descendants via recursive CTE
-            conn.execute(
-                "WITH RECURSIVE descendants(id) AS (
-                    SELECT id FROM tags WHERE id = ?1
-                    UNION ALL
-                    SELECT t.id FROM tags t JOIN descendants d ON t.parent_id = d.id
-                )
-                DELETE FROM tags WHERE id IN (SELECT id FROM descendants)",
-                [id],
-            )?;
-        } else {
-            conn.execute("DELETE FROM tags WHERE id = ?1", [id])?;
-        }
-
-        Ok(())
+        self.storage.delete_tag_impl(id, recursive)
     }
 
     // ==================== Search Operations ====================
 
-    /// Search atoms using the configured search mode
+    /// Search atoms using the configured search mode.
     pub async fn search(
         &self,
         options: SearchOptions,
     ) -> Result<Vec<SemanticSearchResult>, AtomicCoreError> {
-        search::search_atoms_with_settings(&self.db, options, self.settings_for_background())
+        // SQLite path: use the full search module (handles embedding generation + search)
+        if let Some(sqlite) = self.storage.as_sqlite() {
+            return search::search_atoms_with_settings(
+                &sqlite.db,
+                options,
+                self.settings_for_background(),
+            )
             .await
-            .map_err(|e| AtomicCoreError::Search(e))
+            .map_err(|e| AtomicCoreError::Search(e));
+        }
+
+        // Postgres path: use storage dispatch methods directly
+        let settings = self.get_settings()?;
+        let config = providers::ProviderConfig::from_settings(&settings);
+        let tag_id = options.scope_tag_ids.first().map(|s| s.as_str());
+
+        match options.mode {
+            search::SearchMode::Keyword => {
+                self.storage.keyword_search_sync(&options.query, options.limit, tag_id)
+            }
+            search::SearchMode::Semantic => {
+                // Generate query embedding via provider
+                let provider = providers::get_embedding_provider(&config)
+                    .map_err(|e| AtomicCoreError::Search(e.to_string()))?;
+                let embed_config = providers::EmbeddingConfig::new(config.embedding_model());
+                let embeddings = provider
+                    .embed_batch(&[options.query.clone()], &embed_config)
+                    .await
+                    .map_err(|e| AtomicCoreError::Search(e.to_string()))?;
+                if embeddings.is_empty() || embeddings[0].is_empty() {
+                    return Ok(vec![]);
+                }
+                self.storage.vector_search_sync(
+                    &embeddings[0],
+                    options.limit,
+                    options.threshold,
+                    tag_id,
+                )
+            }
+            search::SearchMode::Hybrid => {
+                // Generate embedding for semantic leg
+                let provider = providers::get_embedding_provider(&config)
+                    .map_err(|e| AtomicCoreError::Search(e.to_string()))?;
+                let embed_config = providers::EmbeddingConfig::new(config.embedding_model());
+                let embeddings = provider
+                    .embed_batch(&[options.query.clone()], &embed_config)
+                    .await
+                    .map_err(|e| AtomicCoreError::Search(e.to_string()))?;
+
+                let keyword_results = self.storage.keyword_search_sync(
+                    &options.query,
+                    options.limit * 2,
+                    tag_id,
+                )?;
+
+                let semantic_results = if !embeddings.is_empty() && !embeddings[0].is_empty() {
+                    self.storage.vector_search_sync(
+                        &embeddings[0],
+                        options.limit * 2,
+                        options.threshold,
+                        tag_id,
+                    )?
+                } else {
+                    vec![]
+                };
+
+                // Reciprocal Rank Fusion to merge results
+                Ok(search::merge_search_results_rrf(
+                    semantic_results,
+                    keyword_results,
+                    options.limit,
+                ))
+            }
+        }
     }
 
     /// Find atoms similar to a given atom
@@ -1188,21 +725,18 @@ impl AtomicCore {
         limit: i32,
         threshold: f32,
     ) -> Result<Vec<SimilarAtomResult>, AtomicCoreError> {
-        let conn = self.db.read_conn()?;
-        search::find_similar_atoms(&conn, atom_id, limit, threshold)
-            .map_err(|e| AtomicCoreError::Search(e))
+        self.storage.find_similar_sync(atom_id, limit, threshold)
     }
 
     // ==================== Wiki Operations ====================
 
-    /// Build a WikiStrategyContext from current settings
+    /// Build a WikiStrategyContext from current settings.
     fn build_wiki_strategy_context(
         &self,
         tag_id: &str,
         tag_name: &str,
     ) -> Result<(wiki::WikiStrategy, wiki::WikiStrategyContext), AtomicCoreError> {
         const MAX_CROSS_LINK_TAGS: usize = 50;
-        let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
         let settings_map = self.get_settings()?;
         let config = ProviderConfig::from_settings(&settings_map);
         let model = match config.provider_type {
@@ -1216,7 +750,7 @@ impl AtomicCore {
         let strategy = wiki::WikiStrategy::from_string(
             settings_map.get("wiki_strategy").map(|s| s.as_str()).unwrap_or("centroid"),
         );
-        let related = wiki::get_related_tags(&conn, tag_id, MAX_CROSS_LINK_TAGS)
+        let related = self.storage.get_related_tags_impl(tag_id, MAX_CROSS_LINK_TAGS)
             .unwrap_or_default();
         let linkable_article_names: Vec<(String, String)> = related
             .into_iter()
@@ -1226,7 +760,7 @@ impl AtomicCore {
         eprintln!("[wiki] Strategy: {:?}, model: {}, cross-link articles: {}", strategy, model, linkable_article_names.len());
 
         let ctx = wiki::WikiStrategyContext {
-            db: std::sync::Arc::clone(&self.db),
+            storage: self.storage.clone(),
             provider_config: config,
             wiki_model: model,
             tag_id: tag_id.to_string(),
@@ -1259,11 +793,7 @@ impl AtomicCore {
         eprintln!("[wiki] Extracted {} wiki links, {} citations", wiki_links.len(), result.citations.len());
 
         // Save to database
-        {
-            let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
-            wiki::save_wiki_article(&conn, &result.article, &result.citations, &wiki_links)
-                .map_err(|e| AtomicCoreError::Wiki(e))?;
-        }
+        self.storage.save_wiki_with_links_sync(&result.article, &result.citations, &wiki_links)?;
 
         eprintln!("[wiki] === Article saved successfully ===");
         Ok(result)
@@ -1300,11 +830,7 @@ impl AtomicCore {
         );
 
         // Save to database
-        {
-            let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
-            wiki::save_wiki_article(&conn, &result.article, &result.citations, &wiki_links)
-                .map_err(|e| AtomicCoreError::Wiki(e))?;
-        }
+        self.storage.save_wiki_with_links_sync(&result.article, &result.citations, &wiki_links)?;
 
         eprintln!("[wiki] === Article updated successfully ===");
         Ok(result)
@@ -1312,44 +838,37 @@ impl AtomicCore {
 
     /// Get an existing wiki article
     pub fn get_wiki(&self, tag_id: &str) -> Result<Option<WikiArticleWithCitations>, AtomicCoreError> {
-        let conn = self.db.read_conn()?;
-        wiki::load_wiki_article(&conn, tag_id).map_err(|e| AtomicCoreError::Wiki(e))
+        self.storage.get_wiki_sync(tag_id)
     }
 
     /// Get wiki article status (for checking if update is needed)
     pub fn get_wiki_status(&self, tag_id: &str) -> Result<WikiArticleStatus, AtomicCoreError> {
-        let conn = self.db.read_conn()?;
-        wiki::get_article_status(&conn, tag_id).map_err(|e| AtomicCoreError::Wiki(e))
+        self.storage.get_wiki_status_sync(tag_id)
     }
 
     /// Delete a wiki article
     pub fn delete_wiki(&self, tag_id: &str) -> Result<(), AtomicCoreError> {
-        let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
-        wiki::delete_article(&conn, tag_id).map_err(|e| AtomicCoreError::Wiki(e))
+        self.storage.delete_wiki_sync(tag_id)
     }
 
     /// Get tags related to a given tag by semantic connectivity
     pub fn get_related_tags(&self, tag_id: &str, limit: usize) -> Result<Vec<RelatedTag>, AtomicCoreError> {
-        let conn = self.db.read_conn()?;
-        wiki::get_related_tags(&conn, tag_id, limit).map_err(|e| AtomicCoreError::Wiki(e))
+        self.storage.get_related_tags_impl(tag_id, limit)
     }
 
     /// Get wiki links (outgoing cross-references) for an article
     pub fn get_wiki_links(&self, tag_id: &str) -> Result<Vec<WikiLink>, AtomicCoreError> {
-        let conn = self.db.read_conn()?;
-        wiki::load_wiki_links(&conn, tag_id).map_err(|e| AtomicCoreError::Wiki(e))
+        self.storage.get_wiki_links_sync(tag_id)
     }
 
     /// List version history for a wiki article
     pub fn list_wiki_versions(&self, tag_id: &str) -> Result<Vec<WikiVersionSummary>, AtomicCoreError> {
-        let conn = self.db.read_conn()?;
-        wiki::list_wiki_versions(&conn, tag_id).map_err(|e| AtomicCoreError::Wiki(e))
+        self.storage.list_wiki_versions_sync(tag_id)
     }
 
     /// Get a specific wiki article version
     pub fn get_wiki_version(&self, version_id: &str) -> Result<Option<WikiArticleVersion>, AtomicCoreError> {
-        let conn = self.db.read_conn()?;
-        wiki::get_wiki_version(&conn, version_id).map_err(|e| AtomicCoreError::Wiki(e))
+        self.storage.get_wiki_version_sync(version_id)
     }
 
     // ==================== Embedding Management ====================
@@ -1360,32 +879,16 @@ impl AtomicCore {
         F: Fn(EmbeddingEvent) + Send + Sync + Clone + 'static,
     {
         match self.settings_for_background() {
-            Some(s) => embedding::process_pending_embeddings_with_settings(Arc::clone(&self.db), on_event, s)
+            Some(s) => embedding::process_pending_embeddings_with_settings(self.storage.clone(), on_event, s)
                 .map_err(|e| AtomicCoreError::Embedding(e)),
-            None => embedding::process_pending_embeddings(Arc::clone(&self.db), on_event)
+            None => embedding::process_pending_embeddings(self.storage.clone(), on_event)
                 .map_err(|e| AtomicCoreError::Embedding(e)),
         }
     }
 
     /// Reset atoms stuck in 'processing' state back to 'pending'
     pub fn reset_stuck_processing(&self) -> Result<i32, AtomicCoreError> {
-        let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
-
-        let embedding_count = conn
-            .execute(
-                "UPDATE atoms SET embedding_status = 'pending' WHERE embedding_status = 'processing'",
-                [],
-            )
-            ?;
-
-        let tagging_count = conn
-            .execute(
-                "UPDATE atoms SET tagging_status = 'pending' WHERE tagging_status = 'processing'",
-                [],
-            )
-            ?;
-
-        Ok((embedding_count + tagging_count) as i32)
+        self.storage.reset_stuck_processing_sync()
     }
 
     /// Retry embedding for a specific atom
@@ -1393,16 +896,11 @@ impl AtomicCore {
     where
         F: Fn(EmbeddingEvent) + Send + Sync + 'static,
     {
-        let content = {
-            let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
-            conn.query_row("SELECT content FROM atoms WHERE id = ?1", [atom_id], |row| {
-                row.get::<_, String>(0)
-            })
-            ?
-        };
+        let content = self.storage.get_atom_content_impl(atom_id)?
+            .ok_or_else(|| AtomicCoreError::NotFound(format!("Atom {} not found", atom_id)))?;
 
         embedding::spawn_embedding_task_single_with_settings(
-            Arc::clone(&self.db),
+            self.storage.clone(),
             atom_id.to_string(),
             content,
             on_event,
@@ -1417,24 +915,18 @@ impl AtomicCore {
     where
         F: Fn(EmbeddingEvent) + Send + Sync + Clone + 'static,
     {
-        {
-            let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
-            // Verify atom exists
-            conn.query_row("SELECT id FROM atoms WHERE id = ?1", [atom_id], |_| Ok(()))
-                .map_err(|_| AtomicCoreError::NotFound(format!("Atom {} not found", atom_id)))?;
-            // Reset tagging status to pending
-            conn.execute(
-                "UPDATE atoms SET tagging_status = 'pending' WHERE id = ?1",
-                [atom_id],
-            )?;
-        }
+        // Verify atom exists
+        self.storage.get_atom_content_impl(atom_id)?
+            .ok_or_else(|| AtomicCoreError::NotFound(format!("Atom {} not found", atom_id)))?;
+        // Reset tagging status to pending
+        self.storage.set_tagging_status_sync(atom_id, "pending")?;
 
-        let db = Arc::clone(&self.db);
+        let storage = self.storage.clone();
         let atom_id = atom_id.to_string();
         let bg_settings = self.settings_for_background();
         executor::spawn(async move {
             let settings = bg_settings.unwrap_or_default();
-            embedding::process_tagging_batch_with_settings(db, vec![atom_id], on_event, settings).await;
+            embedding::process_tagging_batch_with_settings(storage, vec![atom_id], on_event, settings).await;
         });
 
         Ok(())
@@ -1448,16 +940,12 @@ impl AtomicCore {
         min_similarity: f32,
         min_cluster_size: i32,
     ) -> Result<Vec<AtomCluster>, AtomicCoreError> {
-        let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
-        clustering::compute_atom_clusters(&conn, min_similarity, min_cluster_size)
-            .map_err(|e| AtomicCoreError::Clustering(e))
+        self.storage.compute_clusters_sync(min_similarity, min_cluster_size)
     }
 
     /// Save cluster assignments to the database
     pub fn save_clusters(&self, clusters: &[AtomCluster]) -> Result<(), AtomicCoreError> {
-        let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
-        clustering::save_cluster_assignments(&conn, clusters)
-            .map_err(|e| AtomicCoreError::Clustering(e))
+        self.storage.save_clusters_sync(clusters)
     }
 
     /// Get connection counts for hub identification
@@ -1465,17 +953,14 @@ impl AtomicCore {
         &self,
         min_similarity: f32,
     ) -> Result<std::collections::HashMap<String, i32>, AtomicCoreError> {
-        let conn = self.db.read_conn()?;
-        clustering::get_connection_counts(&conn, min_similarity)
-            .map_err(|e| AtomicCoreError::Clustering(e))
+        self.storage.get_connection_counts_sync(min_similarity)
     }
 
     // ==================== Compaction ====================
 
     /// Get all tags formatted for LLM analysis
     pub fn get_tags_for_compaction(&self) -> Result<String, AtomicCoreError> {
-        let conn = self.db.read_conn()?;
-        compaction::read_all_tags(&conn).map_err(|e| AtomicCoreError::Compaction(e))
+        self.storage.get_tags_for_compaction_impl()
     }
 
     /// Apply tag merge operations
@@ -1483,17 +968,7 @@ impl AtomicCore {
         &self,
         merges: &[compaction::TagMerge],
     ) -> Result<compaction::CompactionResult, AtomicCoreError> {
-        let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
-        let (tags_merged, atoms_retagged, errors) = compaction::apply_merge_operations(&conn, merges);
-
-        if !errors.is_empty() {
-            eprintln!("Merge errors: {:?}", errors);
-        }
-
-        Ok(compaction::CompactionResult {
-            tags_merged,
-            atoms_retagged,
-        })
+        self.storage.apply_tag_merges_impl(merges)
     }
 
     // ==================== Chat Operations ====================
@@ -1504,8 +979,7 @@ impl AtomicCore {
         tag_ids: &[String],
         title: Option<&str>,
     ) -> Result<ConversationWithTags, AtomicCoreError> {
-        let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
-        chat::create_conversation(&conn, tag_ids, title)
+        self.storage.create_conversation_sync(tag_ids, title)
     }
 
     /// Get all conversations, optionally filtered by tag
@@ -1515,8 +989,7 @@ impl AtomicCore {
         limit: i32,
         offset: i32,
     ) -> Result<Vec<ConversationWithTags>, AtomicCoreError> {
-        let conn = self.db.read_conn()?;
-        chat::get_conversations(&conn, filter_tag_id, limit, offset)
+        self.storage.get_conversations_sync(filter_tag_id, limit, offset)
     }
 
     /// Get a single conversation with all messages
@@ -1524,8 +997,7 @@ impl AtomicCore {
         &self,
         conversation_id: &str,
     ) -> Result<Option<ConversationWithMessages>, AtomicCoreError> {
-        let conn = self.db.read_conn()?;
-        chat::get_conversation(&conn, conversation_id)
+        self.storage.get_conversation_sync(conversation_id)
     }
 
     /// Update a conversation (title, archive status)
@@ -1535,14 +1007,12 @@ impl AtomicCore {
         title: Option<&str>,
         is_archived: Option<bool>,
     ) -> Result<Conversation, AtomicCoreError> {
-        let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
-        chat::update_conversation(&conn, id, title, is_archived)
+        self.storage.update_conversation_sync(id, title, is_archived)
     }
 
     /// Delete a conversation
     pub fn delete_conversation(&self, id: &str) -> Result<(), AtomicCoreError> {
-        let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
-        chat::delete_conversation(&conn, id)
+        self.storage.delete_conversation_sync(id)
     }
 
     /// Set conversation scope (replace all tags)
@@ -1551,8 +1021,7 @@ impl AtomicCore {
         conversation_id: &str,
         tag_ids: &[String],
     ) -> Result<ConversationWithTags, AtomicCoreError> {
-        let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
-        chat::set_conversation_scope(&conn, conversation_id, tag_ids)
+        self.storage.set_conversation_scope_sync(conversation_id, tag_ids)
     }
 
     /// Add a single tag to conversation scope
@@ -1561,8 +1030,7 @@ impl AtomicCore {
         conversation_id: &str,
         tag_id: &str,
     ) -> Result<ConversationWithTags, AtomicCoreError> {
-        let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
-        chat::add_tag_to_scope(&conn, conversation_id, tag_id)
+        self.storage.add_tag_to_scope_sync(conversation_id, tag_id)
     }
 
     /// Remove a single tag from conversation scope
@@ -1571,8 +1039,7 @@ impl AtomicCore {
         conversation_id: &str,
         tag_id: &str,
     ) -> Result<ConversationWithTags, AtomicCoreError> {
-        let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
-        chat::remove_tag_from_scope(&conn, conversation_id, tag_id)
+        self.storage.remove_tag_from_scope_sync(conversation_id, tag_id)
     }
 
     /// Send a chat message and run the agent loop.
@@ -1589,7 +1056,7 @@ impl AtomicCore {
         F: Fn(ChatEvent) + Send + Sync,
     {
         agent::send_chat_message_with_settings(
-            Arc::clone(&self.db),
+            self.storage.clone(),
             conversation_id,
             content,
             on_event,
@@ -1603,102 +1070,24 @@ impl AtomicCore {
 
     /// Get all stored atom positions
     pub fn get_atom_positions(&self) -> Result<Vec<AtomPosition>, AtomicCoreError> {
-        let conn = self.db.read_conn()?;
-
-        let mut stmt = conn.prepare("SELECT atom_id, x, y FROM atom_positions")?;
-
-        let positions = stmt
-            .query_map([], |row| {
-                Ok(AtomPosition {
-                    atom_id: row.get(0)?,
-                    x: row.get(1)?,
-                    y: row.get(2)?,
-                })
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
-
-        Ok(positions)
+        self.storage.get_atom_positions_impl()
     }
 
     /// Bulk save/update atom positions after simulation completes
     pub fn save_atom_positions(&self, positions: &[AtomPosition]) -> Result<(), AtomicCoreError> {
-        let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
-        let now = chrono::Utc::now().to_rfc3339();
-
-        let tx = conn.unchecked_transaction()?;
-        for pos in positions {
-            tx.execute(
-                "INSERT OR REPLACE INTO atom_positions (atom_id, x, y, updated_at) VALUES (?1, ?2, ?3, ?4)",
-                (&pos.atom_id, &pos.x, &pos.y, &now),
-            )?;
-        }
-        tx.commit()?;
-
-        Ok(())
+        self.storage.save_atom_positions_impl(positions)
     }
 
     /// Get atoms with their average embedding vector for similarity calculations
     pub fn get_atoms_with_embeddings(&self) -> Result<Vec<AtomWithEmbedding>, AtomicCoreError> {
-        let conn = self.db.read_conn()?;
-
-        let mut stmt = conn.prepare(&format!(
-            "SELECT {} FROM atoms ORDER BY updated_at DESC", ATOM_COLUMNS
-        ))?;
-
-        let atoms: Vec<Atom> = stmt
-            .query_map([], atom_from_row)?
-            .collect::<Result<Vec<_>, _>>()?;
-
-        let tag_map = get_all_atom_tags_map(&conn)?;
-
-        // Batch-load all embeddings in a single query (avoids 33K individual queries)
-        let embedding_map = get_all_average_embeddings(&conn)?;
-
-        let result = atoms
-            .into_iter()
-            .map(|atom| {
-                let tags = tag_map.get(&atom.id).cloned().unwrap_or_default();
-                let embedding = embedding_map.get(&atom.id).cloned();
-                AtomWithEmbedding {
-                    atom: AtomWithTags { atom, tags },
-                    embedding,
-                }
-            })
-            .collect();
-
-        Ok(result)
+        self.storage.get_atoms_with_embeddings_impl()
     }
 
     // ==================== Semantic Graph Operations ====================
 
     /// Get semantic edges above a minimum similarity threshold (capped at 10k for safety)
     pub fn get_semantic_edges(&self, min_similarity: f32) -> Result<Vec<SemanticEdge>, AtomicCoreError> {
-        let conn = self.db.read_conn()?;
-
-        let mut stmt = conn.prepare(
-            "SELECT id, source_atom_id, target_atom_id, similarity_score,
-                    source_chunk_index, target_chunk_index, created_at
-             FROM semantic_edges
-             WHERE similarity_score >= ?1
-             ORDER BY similarity_score DESC
-             LIMIT 10000",
-        )?;
-
-        let edges = stmt
-            .query_map([min_similarity], |row| {
-                Ok(SemanticEdge {
-                    id: row.get(0)?,
-                    source_atom_id: row.get(1)?,
-                    target_atom_id: row.get(2)?,
-                    similarity_score: row.get(3)?,
-                    source_chunk_index: row.get(4)?,
-                    target_chunk_index: row.get(5)?,
-                    created_at: row.get(6)?,
-                })
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
-
-        Ok(edges)
+        self.storage.get_semantic_edges_sync(min_similarity)
     }
 
     /// Get neighborhood graph for an atom (for local graph view)
@@ -1708,47 +1097,12 @@ impl AtomicCore {
         depth: i32,
         min_similarity: f32,
     ) -> Result<NeighborhoodGraph, AtomicCoreError> {
-        let conn = self.db.read_conn()?;
-        build_neighborhood_graph(&conn, atom_id, depth, min_similarity)
+        self.storage.get_atom_neighborhood_sync(atom_id, depth, min_similarity)
     }
 
     /// Rebuild semantic edges for all atoms with embeddings
     pub fn rebuild_semantic_edges(&self) -> Result<i32, AtomicCoreError> {
-        let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
-
-        let mut stmt = conn.prepare(
-            "SELECT DISTINCT a.id FROM atoms a
-             INNER JOIN atom_chunks ac ON a.id = ac.atom_id
-             WHERE a.embedding_status = 'complete'",
-        )?;
-
-        let atom_ids: Vec<String> = stmt
-            .query_map([], |row| row.get(0))?
-            .collect::<Result<Vec<_>, _>>()?;
-
-        conn.execute("DELETE FROM semantic_edges", [])?;
-
-        let mut total_edges = 0;
-        for (idx, atom_id) in atom_ids.iter().enumerate() {
-            match embedding::compute_semantic_edges_for_atom(&conn, atom_id, 0.5, 15) {
-                Ok(edge_count) => {
-                    total_edges += edge_count;
-                    if (idx + 1) % 50 == 0 {
-                        eprintln!(
-                            "Processed {}/{} atoms, {} edges so far",
-                            idx + 1,
-                            atom_ids.len(),
-                            total_edges
-                        );
-                    }
-                }
-                Err(e) => {
-                    eprintln!("Warning: Failed to compute edges for atom {}: {}", atom_id, e);
-                }
-            }
-        }
-
-        Ok(total_edges)
+        self.storage.rebuild_semantic_edges_sync()
     }
 
     // ==================== Hierarchical Canvas ====================
@@ -1763,25 +1117,14 @@ impl AtomicCore {
         parent_id: Option<&str>,
         children_hint: Option<Vec<String>>,
     ) -> Result<CanvasLevel, AtomicCoreError> {
-        // Uses a fresh connection because canvas_level creates temp tables for batch queries,
-        // which are blocked by PRAGMA query_only=ON on read-pool connections.
-        let conn = self.db.new_connection()?;
-        canvas_level::get_canvas_level(&conn, parent_id, children_hint)
+        self.storage.get_canvas_level_sync(parent_id, children_hint)
     }
 
     // ==================== Embedding Status ====================
 
     /// Get the embedding status for a specific atom
     pub fn get_embedding_status(&self, atom_id: &str) -> Result<String, AtomicCoreError> {
-        let conn = self.db.read_conn()?;
-
-        let status: String = conn.query_row(
-            "SELECT COALESCE(embedding_status, 'pending') FROM atoms WHERE id = ?1",
-            [atom_id],
-            |row| row.get(0),
-        )?;
-
-        Ok(status)
+        self.storage.get_embedding_status_impl(atom_id)
     }
 
     /// Process pending tag extraction for atoms with complete embeddings
@@ -1789,28 +1132,17 @@ impl AtomicCore {
     where
         F: Fn(EmbeddingEvent) + Send + Sync + Clone + 'static,
     {
-        let pending_atoms: Vec<String> = {
-            let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
-            let mut stmt = conn.prepare(
-                "UPDATE atoms SET tagging_status = 'processing'
-                 WHERE embedding_status = 'complete'
-                 AND tagging_status = 'pending'
-                 RETURNING id",
-            )?;
-            let results = stmt.query_map([], |row| row.get(0))?
-                .collect::<Result<Vec<_>, _>>()?;
-            results
-        };
+        let pending_atoms = self.storage.claim_pending_tagging_sync()?;
 
         let count = pending_atoms.len() as i32;
 
         if count > 0 {
-            let db = Arc::clone(&self.db);
+            let storage = self.storage.clone();
             let bg_settings = self.settings_for_background();
             executor::spawn(async move {
                 match bg_settings {
-                    Some(s) => embedding::process_tagging_batch_with_settings(db, pending_atoms, on_event, s).await,
-                    None => embedding::process_tagging_batch(db, pending_atoms, on_event).await,
+                    Some(s) => embedding::process_tagging_batch_with_settings(storage, pending_atoms, on_event, s).await,
+                    None => embedding::process_tagging_batch(storage, pending_atoms, on_event).await,
                 };
             });
         }
@@ -1822,47 +1154,7 @@ impl AtomicCore {
 
     /// Get cached clusters, computing if missing
     pub fn get_clusters(&self) -> Result<Vec<AtomCluster>, AtomicCoreError> {
-        let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
-
-        let count: i32 = conn
-            .query_row("SELECT COUNT(*) FROM atom_clusters", [], |row| row.get(0))
-            .unwrap_or(0);
-
-        if count == 0 {
-            let clusters = clustering::compute_atom_clusters(&conn, 0.5, 2)
-                .map_err(|e| AtomicCoreError::Clustering(e))?;
-            clustering::save_cluster_assignments(&conn, &clusters)
-                .map_err(|e| AtomicCoreError::Clustering(e))?;
-            return Ok(clusters);
-        }
-
-        // Rebuild from cached assignments
-        let mut stmt = conn.prepare(
-            "SELECT ac.cluster_id, GROUP_CONCAT(ac.atom_id)
-             FROM atom_clusters ac
-             GROUP BY ac.cluster_id
-             ORDER BY COUNT(*) DESC",
-        )?;
-
-        let clusters: Vec<AtomCluster> = stmt
-            .query_map([], |row| {
-                let cluster_id: i32 = row.get(0)?;
-                let atom_ids_str: String = row.get(1)?;
-                let atom_ids: Vec<String> = atom_ids_str.split(',').map(|s| s.to_string()).collect();
-                Ok((cluster_id, atom_ids))
-            })?
-            .filter_map(|r| r.ok())
-            .map(|(cluster_id, atom_ids)| {
-                let dominant_tags = get_dominant_tags_for_cluster(&conn, &atom_ids).unwrap_or_default();
-                AtomCluster {
-                    cluster_id,
-                    atom_ids,
-                    dominant_tags,
-                }
-            })
-            .collect();
-
-        Ok(clusters)
+        self.storage.get_clusters_sync()
     }
 
     // ==================== Settings with Re-embed ====================
@@ -1881,75 +1173,54 @@ impl AtomicCore {
         let dimension_affecting_keys = ["provider", "embedding_model", "ollama_embedding_model", "openai_compat_embedding_model", "openai_compat_embedding_dimension"];
         let mut dimension_changed = false;
 
-        {
-            let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+        if dimension_affecting_keys.contains(&key) {
+            // Use registry settings if available for dimension calculation
+            let current_settings = self.get_settings()?;
+            let current_config = ProviderConfig::from_settings(&current_settings);
+            let current_dim = current_config.embedding_dimension();
 
-            if dimension_affecting_keys.contains(&key) {
-                // Use registry settings if available for dimension calculation
-                let current_settings = self.get_settings()?;
-                let current_config = ProviderConfig::from_settings(&current_settings);
-                let current_dim = current_config.embedding_dimension();
+            let mut new_settings = current_settings;
+            new_settings.insert(key.to_string(), value.to_string());
+            let new_config = ProviderConfig::from_settings(&new_settings);
+            let new_dim = new_config.embedding_dimension();
 
-                let mut new_settings = current_settings;
-                new_settings.insert(key.to_string(), value.to_string());
-                let new_config = ProviderConfig::from_settings(&new_settings);
-                let new_dim = new_config.embedding_dimension();
-
-                if current_dim != new_dim {
-                    eprintln!(
-                        "Embedding dimension changing from {} to {} due to {} change - recreating vec_chunks",
-                        current_dim, new_dim, key
-                    );
-                    db::recreate_vec_chunks_with_dimension(&conn, new_dim)?;
-                    dimension_changed = true;
-                }
+            if current_dim != new_dim {
+                eprintln!(
+                    "Embedding dimension changing from {} to {} due to {} change - recreating vec_chunks",
+                    current_dim, new_dim, key
+                );
+                self.storage.recreate_vector_index_sync(new_dim)?;
+                dimension_changed = true;
             }
+        }
 
-            // Write to registry if present, otherwise to data db
-            if let Some(ref reg) = self.registry {
-                reg.set_setting(key, value)?;
-            } else {
-                settings::set_setting(&conn, key, value)?;
-            }
+        // Write to registry if present, otherwise to storage
+        if let Some(ref reg) = self.registry {
+            reg.set_setting(key, value)?;
+        } else {
+            self.storage.set_setting_sync(key, value)?;
         }
 
         let mut pending_count = 0i32;
         if dimension_changed {
-            let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
-            pending_count = conn
-                .query_row(
-                    "SELECT COUNT(*) FROM atoms WHERE embedding_status = 'pending'",
-                    [],
-                    |row| row.get(0),
-                )
-                .unwrap_or(0);
+            pending_count = self.storage.count_pending_embeddings_sync()?;
 
             if pending_count > 0 {
-                let mut stmt = conn.prepare(
-                    "UPDATE atoms SET embedding_status = 'processing'
-                     WHERE embedding_status IN ('pending', 'processing')
-                     RETURNING id, content",
-                )?;
-                let pending_atoms: Vec<(String, String)> = stmt
-                    .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
-                    .collect::<Result<Vec<_>, _>>()?;
+                let pending_atoms = self.storage.claim_pending_reembedding_sync()?;
 
-                drop(stmt);
-                drop(conn);
-
-                let db = Arc::clone(&self.db);
+                let storage_clone = self.storage.clone();
                 let bg_settings = self.settings_for_background();
                 executor::spawn(async move {
                     match bg_settings {
                         Some(s) => embedding::process_embedding_batch_with_settings(
-                            db,
+                            storage_clone,
                             pending_atoms,
                             true,
                             on_event,
                             s,
                         ).await,
                         None => embedding::process_embedding_batch(
-                            db,
+                            storage_clone,
                             pending_atoms,
                             true, // skip tagging - re-embedding only
                             on_event,
@@ -1966,9 +1237,7 @@ impl AtomicCore {
 
     /// Check sqlite-vec version
     pub fn check_sqlite_vec(&self) -> Result<String, AtomicCoreError> {
-        let conn = self.db.read_conn()?;
-        let version: String = conn.query_row("SELECT vec_version()", [], |row| row.get(0))?;
-        Ok(version)
+        self.storage.check_vector_extension_sync()
     }
 
     /// Verify that the current provider is properly configured
@@ -1987,8 +1256,27 @@ impl AtomicCore {
 
     /// Get all wiki articles (summaries for list view)
     pub fn get_all_wiki_articles(&self) -> Result<Vec<WikiArticleSummary>, AtomicCoreError> {
-        let conn = self.db.read_conn()?;
-        wiki::load_all_wiki_articles(&conn).map_err(|e| AtomicCoreError::Wiki(e))
+        self.storage.get_all_wiki_articles_sync()
+    }
+
+    /// Get cached model capabilities from the settings table.
+    pub fn get_cached_capabilities(&self) -> Result<Option<providers::models::ModelCapabilitiesCache>, AtomicCoreError> {
+        let json = self.storage.get_setting_sync("model_capabilities_cache")?;
+        match json {
+            Some(j) => {
+                let cache: providers::models::ModelCapabilitiesCache = serde_json::from_str(&j)
+                    .map_err(|e| AtomicCoreError::Configuration(format!("Failed to parse capabilities cache: {}", e)))?;
+                Ok(Some(cache))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Save model capabilities cache to the settings table.
+    pub fn save_capabilities_cache(&self, cache: &providers::models::ModelCapabilitiesCache) -> Result<(), AtomicCoreError> {
+        let json = serde_json::to_string(cache)
+            .map_err(|e| AtomicCoreError::Configuration(format!("Failed to serialize capabilities cache: {}", e)))?;
+        self.storage.set_setting_sync("model_capabilities_cache", &json)
     }
 
     // ==================== Import Operations ====================
@@ -2087,22 +1375,8 @@ impl AtomicCore {
                 continue;
             }
 
-            let conn = self
-                .db
-                .conn
-                .lock()
-                .map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
-
             // Check for duplicate by source_url
-            let exists: bool = conn
-                .query_row(
-                    "SELECT 1 FROM atoms WHERE source_url = ?1 LIMIT 1",
-                    [&note.source_url],
-                    |_| Ok(true),
-                )
-                .unwrap_or(false);
-
-            if exists {
+            if self.storage.source_url_exists_sync(&note.source_url)? {
                 stats.skipped += 1;
                 on_progress(ImportProgress {
                     current: index as i32 + 1,
@@ -2110,27 +1384,21 @@ impl AtomicCore {
                     current_file: relative_str,
                     status: "skipped".to_string(),
                 });
-                drop(conn);
                 continue;
             }
 
             let atom_id = Uuid::new_v4().to_string();
-            let (title, snippet) = extract_title_and_snippet(&note.content, 300);
-            let source = parse_source(&note.source_url);
-            match conn.execute(
-                "INSERT INTO atoms (id, content, source_url, source, published_at, created_at, updated_at, embedding_status, tagging_status, title, snippet)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'pending', 'pending', ?8, ?9)",
-                rusqlite::params![
-                    &atom_id,
-                    &note.content,
-                    &note.source_url,
-                    &source,
-                    Option::<String>::None,
-                    &note.created_at,
-                    &note.updated_at,
-                    &title,
-                    &snippet,
-                ],
+
+            // Use insert_atom_impl for the atom insert
+            match self.storage.insert_atom_impl(
+                &atom_id,
+                &CreateAtomRequest {
+                    content: note.content.clone(),
+                    source_url: Some(note.source_url.clone()),
+                    published_at: None,
+                    tag_ids: vec![],
+                },
+                &note.created_at,
             ) {
                 Ok(_) => {
                     imported_atoms.push((atom_id.clone(), note.content.clone()));
@@ -2144,12 +1412,18 @@ impl AtomicCore {
                         current_file: relative_str,
                         status: "error".to_string(),
                     });
-                    drop(conn);
                     continue;
                 }
             }
 
-            // Process hierarchical folder tags
+            // Process hierarchical folder tags using the raw conn helper
+            // (get_or_create_tag uses parent_id, which the trait method doesn't support directly)
+            let sqlite = self.storage.as_sqlite().ok_or_else(|| {
+                AtomicCoreError::Configuration(
+                    "Obsidian import is not yet supported with Postgres backend".to_string(),
+                )
+            })?;
+            let conn = sqlite.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
             let mut folder_tag_ids: Vec<String> = Vec::new();
             for htag in &note.folder_tags {
                 let parent_id = if htag.parent_path.is_empty() {
@@ -2193,6 +1467,7 @@ impl AtomicCore {
                     stats.tags_linked += 1;
                 }
             }
+            drop(conn);
 
             stats.imported += 1;
             on_progress(ImportProgress {
@@ -2201,32 +1476,20 @@ impl AtomicCore {
                 current_file: relative_str,
                 status: "importing".to_string(),
             });
-
-            drop(conn);
         }
 
         // Trigger embedding processing for all imported atoms
         if !imported_atoms.is_empty() {
-            {
-                let conn = self
-                    .db
-                    .conn
-                    .lock()
-                    .map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
-                for (atom_id, _) in &imported_atoms {
-                    let _ = conn.execute(
-                        "UPDATE atoms SET embedding_status = 'processing' WHERE id = ?1",
-                        [atom_id],
-                    );
-                }
+            for (atom_id, _) in &imported_atoms {
+                self.storage.set_embedding_status_sync(atom_id, "processing").ok();
             }
 
-            let db_clone = Arc::clone(&self.db);
+            let storage_clone = self.storage.clone();
             let bg_settings = self.settings_for_background();
             executor::spawn(async move {
                 match bg_settings {
-                    Some(s) => embedding::process_embedding_batch_with_settings(db_clone, imported_atoms, false, on_event, s).await,
-                    None => embedding::process_embedding_batch(db_clone, imported_atoms, false, on_event).await,
+                    Some(s) => embedding::process_embedding_batch_with_settings(storage_clone, imported_atoms, false, on_event, s).await,
+                    None => embedding::process_embedding_batch(storage_clone, imported_atoms, false, on_event).await,
                 };
             });
         }
@@ -2252,21 +1515,11 @@ impl AtomicCore {
         let request_id = Uuid::new_v4().to_string();
 
         // Dedup check
-        {
-            let conn = self.db.read_conn()?;
-            let exists: bool = conn
-                .query_row(
-                    "SELECT EXISTS(SELECT 1 FROM atoms WHERE source_url = ?1)",
-                    [&request.url],
-                    |row| row.get(0),
-                )
-                .unwrap_or(false);
-            if exists {
-                return Err(AtomicCoreError::Validation(format!(
-                    "URL already ingested: {}",
-                    request.url
-                )));
-            }
+        if self.storage.source_url_exists_sync(&request.url)? {
+            return Err(AtomicCoreError::Validation(format!(
+                "URL already ingested: {}",
+                request.url
+            )));
         }
 
         // Resolve: fetch + extract
@@ -2378,64 +1631,17 @@ impl AtomicCore {
         let parsed = ingest::rss::parse_feed(&feed_data)
             .map_err(|e| AtomicCoreError::Ingestion(e))?;
 
-        let id = Uuid::new_v4().to_string();
-        let now = chrono::Utc::now().to_rfc3339();
-
-        {
-            let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
-
-            // Check uniqueness
-            let exists: bool = conn
-                .query_row(
-                    "SELECT EXISTS(SELECT 1 FROM feeds WHERE url = ?1)",
-                    [&request.url],
-                    |row| row.get(0),
-                )
-                .unwrap_or(false);
-            if exists {
-                return Err(AtomicCoreError::Validation(format!(
-                    "Feed already exists: {}",
-                    request.url
-                )));
-            }
-
-            conn.execute(
-                "INSERT INTO feeds (id, url, title, site_url, poll_interval, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                rusqlite::params![
-                    &id,
-                    &request.url,
-                    &parsed.title,
-                    &parsed.site_url,
-                    request.poll_interval,
-                    &now,
-                ],
-            )?;
-
-            for tag_id in &request.tag_ids {
-                conn.execute(
-                    "INSERT INTO feed_tags (feed_id, tag_id) VALUES (?1, ?2)",
-                    rusqlite::params![&id, tag_id],
-                )?;
-            }
-        }
-
-        let feed = Feed {
-            id: id.clone(),
-            url: request.url,
-            title: parsed.title,
-            site_url: parsed.site_url,
-            poll_interval: request.poll_interval,
-            last_polled_at: None,
-            last_error: None,
-            created_at: now,
-            is_paused: false,
-            tag_ids: request.tag_ids,
-        };
+        let feed = self.storage.create_feed_sync(
+            &request.url,
+            parsed.title.as_deref(),
+            parsed.site_url.as_deref(),
+            request.poll_interval,
+            &request.tag_ids,
+        )?;
 
         // Poll immediately after creation
         let core = self.clone();
-        let feed_id = id.clone();
+        let feed_id = feed.id.clone();
         executor::spawn(async move {
             let _ = core.poll_feed(&feed_id, on_ingest, on_embed).await;
         });
@@ -2445,142 +1651,28 @@ impl AtomicCore {
 
     /// List all feeds.
     pub fn list_feeds(&self) -> Result<Vec<Feed>, AtomicCoreError> {
-        let conn = self.db.read_conn()?;
-        let mut stmt = conn.prepare(
-            "SELECT id, url, title, site_url, poll_interval, last_polled_at, last_error, created_at, is_paused
-             FROM feeds ORDER BY created_at DESC",
-        )?;
-
-        let feeds: Vec<Feed> = stmt
-            .query_map([], |row| {
-                Ok(Feed {
-                    id: row.get(0)?,
-                    url: row.get(1)?,
-                    title: row.get(2)?,
-                    site_url: row.get(3)?,
-                    poll_interval: row.get(4)?,
-                    last_polled_at: row.get(5)?,
-                    last_error: row.get(6)?,
-                    created_at: row.get(7)?,
-                    is_paused: row.get(8)?,
-                    tag_ids: vec![],
-                })
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
-
-        // Batch load feed tags
-        let mut tag_stmt = conn.prepare("SELECT feed_id, tag_id FROM feed_tags")?;
-        let tag_pairs: Vec<(String, String)> = tag_stmt
-            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
-            .collect::<Result<Vec<_>, _>>()?;
-
-        let mut tag_map: HashMap<String, Vec<String>> = HashMap::new();
-        for (feed_id, tag_id) in tag_pairs {
-            tag_map.entry(feed_id).or_default().push(tag_id);
-        }
-
-        Ok(feeds
-            .into_iter()
-            .map(|mut f| {
-                f.tag_ids = tag_map.remove(&f.id).unwrap_or_default();
-                f
-            })
-            .collect())
+        self.storage.list_feeds_sync()
     }
 
     /// Get a single feed by ID.
     pub fn get_feed(&self, id: &str) -> Result<Feed, AtomicCoreError> {
-        let conn = self.db.read_conn()?;
-        let feed = conn
-            .query_row(
-                "SELECT id, url, title, site_url, poll_interval, last_polled_at, last_error, created_at, is_paused
-                 FROM feeds WHERE id = ?1",
-                [id],
-                |row| {
-                    Ok(Feed {
-                        id: row.get(0)?,
-                        url: row.get(1)?,
-                        title: row.get(2)?,
-                        site_url: row.get(3)?,
-                        poll_interval: row.get(4)?,
-                        last_polled_at: row.get(5)?,
-                        last_error: row.get(6)?,
-                        created_at: row.get(7)?,
-                        is_paused: row.get(8)?,
-                        tag_ids: vec![],
-                    })
-                },
-            )
-            .map_err(|e| match e {
-                rusqlite::Error::QueryReturnedNoRows => {
-                    AtomicCoreError::NotFound(format!("Feed not found: {}", id))
-                }
-                _ => AtomicCoreError::Database(e),
-            })?;
-
-        let mut tag_stmt = conn.prepare("SELECT tag_id FROM feed_tags WHERE feed_id = ?1")?;
-        let tag_ids: Vec<String> = tag_stmt
-            .query_map([id], |row| row.get(0))?
-            .collect::<Result<Vec<_>, _>>()?;
-
-        Ok(Feed {
-            tag_ids,
-            ..feed
-        })
+        self.storage.get_feed_sync(id)
     }
 
     /// Update a feed's settings.
     pub fn update_feed(&self, id: &str, request: UpdateFeedRequest) -> Result<Feed, AtomicCoreError> {
-        let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
-
-        // Verify feed exists
-        let exists: bool = conn
-            .query_row(
-                "SELECT EXISTS(SELECT 1 FROM feeds WHERE id = ?1)",
-                [id],
-                |row| row.get(0),
-            )
-            .unwrap_or(false);
-        if !exists {
-            return Err(AtomicCoreError::NotFound(format!("Feed not found: {}", id)));
-        }
-
-        if let Some(interval) = request.poll_interval {
-            conn.execute(
-                "UPDATE feeds SET poll_interval = ?1 WHERE id = ?2",
-                rusqlite::params![interval, id],
-            )?;
-        }
-
-        if let Some(paused) = request.is_paused {
-            conn.execute(
-                "UPDATE feeds SET is_paused = ?1 WHERE id = ?2",
-                rusqlite::params![paused, id],
-            )?;
-        }
-
-        if let Some(ref tag_ids) = request.tag_ids {
-            conn.execute("DELETE FROM feed_tags WHERE feed_id = ?1", [id])?;
-            for tag_id in tag_ids {
-                conn.execute(
-                    "INSERT INTO feed_tags (feed_id, tag_id) VALUES (?1, ?2)",
-                    rusqlite::params![id, tag_id],
-                )?;
-            }
-        }
-
-        drop(conn);
-        self.get_feed(id)
+        self.storage.update_feed_sync(
+            id,
+            None, // title not in UpdateFeedRequest
+            request.poll_interval,
+            request.is_paused,
+            request.tag_ids.as_deref(),
+        )
     }
 
     /// Delete a feed. Does NOT delete atoms created from this feed.
     pub fn delete_feed(&self, id: &str) -> Result<(), AtomicCoreError> {
-        let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
-        let changes = conn.execute("DELETE FROM feeds WHERE id = ?1", [id])?;
-        if changes == 0 {
-            return Err(AtomicCoreError::NotFound(format!("Feed not found: {}", id)));
-        }
-        Ok(())
+        self.storage.delete_feed_sync(id)
     }
 
     /// Poll a single feed: fetch XML, parse, dedup via feed_items, ingest new articles.
@@ -2595,7 +1687,6 @@ impl AtomicCore {
         G: Fn(EmbeddingEvent) + Send + Sync + Clone + 'static,
     {
         let feed = self.get_feed(feed_id)?;
-        let now = chrono::Utc::now().to_rfc3339();
 
         // Fetch feed XML — use shared HTTP client with proper User-Agent
         let feed_data = ingest::fetch::fetch_bytes(&feed.url)
@@ -2668,24 +1759,14 @@ impl AtomicCore {
         }
 
         // Update feed metadata
-        {
-            let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
-            conn.execute(
-                "UPDATE feeds SET last_polled_at = ?1, last_error = NULL WHERE id = ?2",
-                rusqlite::params![&now, feed_id],
+        self.storage.mark_feed_polled_sync(feed_id, None)?;
+        // Backfill title/site_url from feed data if not already set
+        if parsed.title.is_some() || parsed.site_url.is_some() {
+            self.storage.backfill_feed_metadata_sync(
+                feed_id,
+                parsed.title.as_deref(),
+                parsed.site_url.as_deref(),
             )?;
-            if parsed.title.is_some() {
-                conn.execute(
-                    "UPDATE feeds SET title = COALESCE(title, ?1) WHERE id = ?2",
-                    rusqlite::params![&parsed.title, feed_id],
-                )?;
-            }
-            if parsed.site_url.is_some() {
-                conn.execute(
-                    "UPDATE feeds SET site_url = COALESCE(site_url, ?1) WHERE id = ?2",
-                    rusqlite::params![&parsed.site_url, feed_id],
-                )?;
-            }
         }
 
         let result = ingest::FeedPollResult {
@@ -2715,45 +1796,9 @@ impl AtomicCore {
         F: Fn(ingest::IngestionEvent) + Send + Sync + Clone + 'static,
         G: Fn(EmbeddingEvent) + Send + Sync + Clone + 'static,
     {
-        let due_feed_ids: Vec<String> = {
-            let conn = match self.db.read_conn() {
-                Ok(c) => c,
-                Err(_) => return vec![],
-            };
-            let mut stmt = match conn.prepare(
-                "SELECT id, poll_interval, last_polled_at FROM feeds WHERE is_paused = 0",
-            ) {
-                Ok(s) => s,
-                Err(_) => return vec![],
-            };
-
-            let now = chrono::Utc::now();
-            stmt.query_map([], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, i32>(1)?,
-                    row.get::<_, Option<String>>(2)?,
-                ))
-            })
-            .ok()
-            .into_iter()
-            .flatten()
-            .filter_map(|r| r.ok())
-            .filter(|(_, interval, last_polled)| {
-                match last_polled {
-                    None => true,
-                    Some(ts) => {
-                        if let Ok(last) = chrono::DateTime::parse_from_rfc3339(ts) {
-                            let elapsed = now.signed_duration_since(last);
-                            elapsed.num_minutes() >= *interval as i64
-                        } else {
-                            true
-                        }
-                    }
-                }
-            })
-            .map(|(id, _, _)| id)
-            .collect()
+        let due_feed_ids: Vec<String> = match self.storage.get_due_feeds_sync() {
+            Ok(feeds) => feeds.into_iter().map(|f| f.id).collect(),
+            Err(_) => return vec![],
         };
 
         let mut results = Vec::new();
@@ -2771,77 +1816,33 @@ impl AtomicCore {
     /// Atomically claim a feed item GUID. Returns true if this call claimed it,
     /// false if it was already claimed by another poll.
     fn claim_feed_item(&self, feed_id: &str, guid: &str) -> Result<bool, AtomicCoreError> {
-        let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
-        let now = chrono::Utc::now().to_rfc3339();
-        let changes = conn.execute(
-            "INSERT OR IGNORE INTO feed_items (feed_id, guid, skipped, seen_at)
-             VALUES (?1, ?2, 0, ?3)",
-            rusqlite::params![feed_id, guid, &now],
-        )?;
-        Ok(changes > 0)
+        self.storage.claim_feed_item_sync(feed_id, guid)
     }
 
     /// Mark a claimed feed item as successfully ingested with its atom_id.
     fn complete_feed_item(&self, feed_id: &str, guid: &str, atom_id: &str) -> Result<(), AtomicCoreError> {
-        let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
-        conn.execute(
-            "UPDATE feed_items SET atom_id = ?1 WHERE feed_id = ?2 AND guid = ?3",
-            rusqlite::params![atom_id, feed_id, guid],
-        )?;
-        Ok(())
+        self.storage.complete_feed_item_sync(feed_id, guid, atom_id)
     }
 
     /// Mark a claimed feed item as skipped with a reason.
     fn mark_feed_item_skipped(&self, feed_id: &str, guid: &str, reason: &str) -> Result<(), AtomicCoreError> {
-        let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
-        conn.execute(
-            "UPDATE feed_items SET skipped = 1, skip_reason = ?1 WHERE feed_id = ?2 AND guid = ?3",
-            rusqlite::params![reason, feed_id, guid],
-        )?;
-        Ok(())
+        self.storage.mark_feed_item_skipped_sync(feed_id, guid, reason)
     }
 
     /// Helper: update a feed's last_error field.
     fn update_feed_error(&self, feed_id: &str, error: &str) {
-        if let Ok(conn) = self.db.conn.lock() {
-            let _ = conn.execute(
-                "UPDATE feeds SET last_error = ?1 WHERE id = ?2",
-                rusqlite::params![error, feed_id],
-            );
-        }
+        let _ = self.storage.mark_feed_polled_sync(feed_id, Some(error));
     }
 
     /// Get suggested wiki articles (tags without articles, ranked by demand)
     pub fn get_suggested_wiki_articles(&self, limit: i32) -> Result<Vec<SuggestedArticle>, AtomicCoreError> {
-        let conn = self.db.read_conn()?;
-        wiki::get_suggested_wiki_articles(&conn, limit).map_err(|e| AtomicCoreError::Wiki(e))
+        self.storage.get_suggested_wiki_articles_sync(limit)
     }
 
     /// Recompute centroid embeddings for all tags that have atoms with embeddings.
     /// Useful for backfilling after this feature is added to an existing database.
     pub fn recompute_all_tag_embeddings(&self) -> Result<i32, AtomicCoreError> {
-        let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
-
-        // Get all tags that have at least one atom with embeddings
-        let mut stmt = conn.prepare(
-            "SELECT DISTINCT at.tag_id
-             FROM atom_tags at
-             INNER JOIN atom_chunks ac ON at.atom_id = ac.atom_id
-             WHERE ac.embedding IS NOT NULL",
-        )?;
-
-        let tag_ids: Vec<String> = stmt
-            .query_map([], |row| row.get(0))?
-            .collect::<Result<Vec<_>, _>>()?;
-
-        let count = tag_ids.len() as i32;
-        eprintln!("Recomputing centroid embeddings for {} tags...", count);
-
-        embedding::compute_tag_embeddings_batch(&conn, &tag_ids)
-            .map_err(|e| AtomicCoreError::Embedding(e))?;
-
-        eprintln!("Tag centroid embeddings recomputed for {} tags", count);
-        Ok(count)
+        self.storage.recompute_all_tag_embeddings_sync()
     }
 }
 
@@ -2900,7 +1901,7 @@ fn get_or_create_tag(
 
 /// Batch-load all average embeddings in a single query, returning a map from atom_id -> avg embedding.
 /// This replaces 33K individual get_average_embedding() calls with one streaming query.
-fn get_all_average_embeddings(
+pub(crate) fn get_all_average_embeddings(
     conn: &Connection,
 ) -> Result<std::collections::HashMap<String, Vec<f32>>, AtomicCoreError> {
     let mut stmt = conn.prepare(
@@ -2966,7 +1967,7 @@ fn get_all_average_embeddings(
 }
 
 /// Get dominant tags for a cluster of atoms
-fn get_dominant_tags_for_cluster(
+pub(crate) fn get_dominant_tags_for_cluster(
     conn: &Connection,
     atom_ids: &[String],
 ) -> Result<Vec<String>, AtomicCoreError> {
@@ -3004,7 +2005,7 @@ fn get_dominant_tags_for_cluster(
 }
 
 /// Build neighborhood graph for an atom
-fn build_neighborhood_graph(
+pub(crate) fn build_neighborhood_graph(
     conn: &Connection,
     atom_id: &str,
     depth: i32,
@@ -3377,7 +2378,7 @@ pub(crate) fn atom_from_row(row: &rusqlite::Row) -> rusqlite::Result<Atom> {
 }
 
 /// Get tags for a specific atom
-fn get_tags_for_atom(conn: &Connection, atom_id: &str) -> Result<Vec<Tag>, AtomicCoreError> {
+pub(crate) fn get_tags_for_atom(conn: &Connection, atom_id: &str) -> Result<Vec<Tag>, AtomicCoreError> {
     let mut stmt = conn
         .prepare(
             "SELECT t.id, t.name, t.parent_id, t.created_at
@@ -3405,7 +2406,7 @@ fn get_tags_for_atom(conn: &Connection, atom_id: &str) -> Result<Vec<Tag>, Atomi
 
 /// Bulk fetch all atom-tag relationships in a single query.
 /// Returns a map from atom_id to Vec<Tag>.
-fn get_all_atom_tags_map(conn: &Connection) -> Result<std::collections::HashMap<String, Vec<Tag>>, AtomicCoreError> {
+pub(crate) fn get_all_atom_tags_map(conn: &Connection) -> Result<std::collections::HashMap<String, Vec<Tag>>, AtomicCoreError> {
     let mut stmt = conn
         .prepare(
             "SELECT at.atom_id, t.id, t.name, t.parent_id, t.created_at
@@ -3437,7 +2438,7 @@ fn get_all_atom_tags_map(conn: &Connection) -> Result<std::collections::HashMap<
 }
 
 /// Bulk fetch atom-tag relationships for a specific set of atom IDs.
-fn get_atom_tags_map_for_ids(conn: &Connection, atom_ids: &[String]) -> Result<std::collections::HashMap<String, Vec<Tag>>, AtomicCoreError> {
+pub(crate) fn get_atom_tags_map_for_ids(conn: &Connection, atom_ids: &[String]) -> Result<std::collections::HashMap<String, Vec<Tag>>, AtomicCoreError> {
     if atom_ids.is_empty() {
         return Ok(std::collections::HashMap::new());
     }
@@ -3477,18 +2478,6 @@ fn get_atom_tags_map_for_ids(conn: &Connection, atom_ids: &[String]) -> Result<s
 }
 
 /// Helper function to get all descendant tag IDs recursively
-fn get_descendant_ids(tag_id: &str, all_tags: &[Tag]) -> Vec<String> {
-    let mut result = vec![tag_id.to_string()];
-    let children: Vec<&Tag> = all_tags
-        .iter()
-        .filter(|t| t.parent_id.as_deref() == Some(tag_id))
-        .collect();
-    for child in children {
-        result.extend(get_descendant_ids(&child.id, all_tags));
-    }
-    result
-}
-
 /// Build hierarchical tag tree with counts using pre-computed direct counts.
 /// Each parent's count = its own direct count + sum of children's counts.
 /// (May double-count atoms tagged with both parent and child; acceptable for display.)
@@ -3497,7 +2486,7 @@ fn get_descendant_ids(tag_id: &str, all_tags: &[Tag]) -> Vec<String> {
 /// nodes with `atom_count < min_count` are pruned (structural parents are kept).
 /// `children_total` records the unfiltered child count so clients know when to
 /// fetch the full list.
-fn build_tag_tree_with_counts(
+pub(crate) fn build_tag_tree_with_counts(
     all_tags: &[Tag],
     _parent_id: Option<&str>,
     direct_counts: &std::collections::HashMap<String, i32>,
@@ -3574,12 +2563,13 @@ mod tests {
 
     /// Get a seeded category tag by name (e.g., "Topics")
     fn get_seeded_tag(db: &AtomicCore, name: &str) -> Tag {
-        let conn = db.db.conn.lock().unwrap();
-        let (id, tag_name, parent_id, created_at) = conn
+        let sqlite = db.storage.as_sqlite().unwrap();
+        let conn = sqlite.db.conn.lock().unwrap();
+        let (id, tag_name, parent_id, created_at): (String, String, Option<String>, String) = conn
             .query_row(
                 "SELECT id, name, parent_id, created_at FROM tags WHERE LOWER(name) = LOWER(?1)",
                 [name],
-                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, Option<String>>(2)?, row.get::<_, String>(3)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
             )
             .unwrap();
         Tag { id, name: tag_name, parent_id, created_at }
