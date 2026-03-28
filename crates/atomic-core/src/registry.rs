@@ -427,11 +427,13 @@ impl Registry {
             return Err(AtomicCoreError::NotFound(format!("Database '{}'", id)));
         }
 
-        conn.execute("UPDATE databases SET is_default = 0 WHERE is_default = 1", [])?;
-        conn.execute(
+        let tx = conn.unchecked_transaction()?;
+        tx.execute("UPDATE databases SET is_default = 0 WHERE is_default = 1", [])?;
+        tx.execute(
             "UPDATE databases SET is_default = 1 WHERE id = ?1",
             [id],
         )?;
+        tx.commit()?;
         Ok(())
     }
 

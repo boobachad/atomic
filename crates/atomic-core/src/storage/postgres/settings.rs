@@ -368,12 +368,15 @@ impl DatabaseStore for PostgresStorage {
     }
 
     async fn set_default_database(&self, id: &str) -> StorageResult<()> {
+        let mut tx = self.pool.begin().await
+            .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+
         // Verify the database exists
         let exists: Option<i32> = sqlx::query_scalar(
             "SELECT 1 FROM databases WHERE id = $1",
         )
         .bind(id)
-        .fetch_optional(&self.pool)
+        .fetch_optional(&mut *tx)
         .await
         .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
 
@@ -382,14 +385,17 @@ impl DatabaseStore for PostgresStorage {
         }
 
         sqlx::query("UPDATE databases SET is_default = 0 WHERE is_default = 1")
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await
             .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
 
         sqlx::query("UPDATE databases SET is_default = 1 WHERE id = $1")
             .bind(id)
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await
+            .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+
+        tx.commit().await
             .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
 
         Ok(())
