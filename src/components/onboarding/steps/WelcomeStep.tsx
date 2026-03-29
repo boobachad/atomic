@@ -18,6 +18,9 @@ export function WelcomeStep({ state, dispatch, onNext }: WelcomeStepProps) {
   const [claimError, setClaimError] = useState<string | null>(null);
   const [claimedToken, setClaimedToken] = useState<string | null>(null);
   const [tokenCopied, setTokenCopied] = useState(false);
+  const [passphrase, setPassphrase] = useState('');
+  const [passphraseConfirm, setPassphraseConfirm] = useState('');
+  const [enableEncryption, setEnableEncryption] = useState(false);
 
   // On mount (web mode only), check if we're co-hosted with the server
   useEffect(() => {
@@ -44,14 +47,26 @@ export function WelcomeStep({ state, dispatch, onNext }: WelcomeStepProps) {
   }, [isDesktop, dispatch]);
 
   const handleClaim = async () => {
+    if (enableEncryption && passphrase !== passphraseConfirm) {
+      setClaimError('Passphrases do not match');
+      return;
+    }
+    if (enableEncryption && passphrase.length < 8) {
+      setClaimError('Passphrase must be at least 8 characters');
+      return;
+    }
     setIsClaiming(true);
     setClaimError(null);
     const baseUrl = state.serverUrl.trim().replace(/\/$/, '');
     try {
+      const claimBody: Record<string, string> = { name: 'default' };
+      if (enableEncryption && passphrase) {
+        claimBody.passphrase = passphrase;
+      }
       const resp = await fetch(`${baseUrl}/api/setup/claim`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: 'default' }),
+        body: JSON.stringify(claimBody),
       });
       if (!resp.ok) {
         const err = await resp.json().catch(() => ({ error: `HTTP ${resp.status}` }));
@@ -245,7 +260,45 @@ export function WelcomeStep({ state, dispatch, onNext }: WelcomeStepProps) {
           </p>
         </div>
 
-        <Button onClick={handleClaim} disabled={isClaiming}>
+        {/* Encryption option */}
+        <div className="w-full max-w-md space-y-3">
+          <label className="flex items-center gap-3 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={enableEncryption}
+              onChange={(e) => setEnableEncryption(e.target.checked)}
+              className="w-4 h-4 rounded border-[var(--color-border)] text-[var(--color-accent)] focus:ring-[var(--color-accent)]"
+            />
+            <div className="text-left">
+              <span className="text-sm font-medium text-[var(--color-text-primary)]">Encrypt database at rest</span>
+              <p className="text-xs text-[var(--color-text-secondary)]">Protects your data with a passphrase using SQLCipher (AES-256)</p>
+            </div>
+          </label>
+
+          {enableEncryption && (
+            <div className="space-y-2 pl-7">
+              <input
+                type="password"
+                value={passphrase}
+                onChange={(e) => setPassphrase(e.target.value)}
+                placeholder="Passphrase (min 8 characters)"
+                className="w-full px-3 py-2 bg-[var(--color-bg-card)] border border-[var(--color-border)] rounded-md text-[var(--color-text-primary)] placeholder-[var(--color-text-secondary)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)] focus:border-transparent text-sm"
+              />
+              <input
+                type="password"
+                value={passphraseConfirm}
+                onChange={(e) => setPassphraseConfirm(e.target.value)}
+                placeholder="Confirm passphrase"
+                className="w-full px-3 py-2 bg-[var(--color-bg-card)] border border-[var(--color-border)] rounded-md text-[var(--color-text-primary)] placeholder-[var(--color-text-secondary)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)] focus:border-transparent text-sm"
+              />
+              <p className="text-xs text-[var(--color-text-secondary)]">
+                You'll need this passphrase every time the server restarts. If you lose it, your data cannot be recovered.
+              </p>
+            </div>
+          )}
+        </div>
+
+        <Button onClick={handleClaim} disabled={isClaiming || (enableEncryption && (passphrase.length < 8 || passphrase !== passphraseConfirm))}>
           {isClaiming ? 'Setting up...' : 'Get Started'}
         </Button>
 
