@@ -5,16 +5,21 @@ import { useUIStore } from '../../stores/ui';
 export function ServerConnectionStatus() {
   const serverConnected = useUIStore(s => s.serverConnected);
   const prevConnected = useRef<boolean | null>(null);
+  const hasEverConnected = useRef(false);
 
   useEffect(() => {
-    // On reconnection (was disconnected, now connected), show toast
-    if (prevConnected.current === false && serverConnected) {
-      toast.success('Reconnected to server', { duration: 3000 });
+    if (serverConnected) {
+      // Only show reconnection toast if we previously had a successful connection
+      // that was then lost — not on the very first connect
+      if (hasEverConnected.current && prevConnected.current === false) {
+        toast.success('Reconnected to server', { duration: 3000 });
+      }
+      hasEverConnected.current = true;
     }
     prevConnected.current = serverConnected;
   }, [serverConnected]);
 
-  if (serverConnected || prevConnected.current === null) {
+  if (serverConnected || !hasEverConnected.current) {
     return null;
   }
 

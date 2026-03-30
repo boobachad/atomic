@@ -58,13 +58,13 @@ pub async fn embed_batch(
         let body = response.text().await.unwrap_or_default();
 
         if status == 429 {
-            tracing::warn!(status, retry_after, model = %config.model, body_preview = %&body[..body.len().min(200)], "OpenRouter embedding rate limited");
+            tracing::warn!(status, retry_after, model = %config.model, body_preview = %crate::providers::error::truncate_utf8(&body, 200), "OpenRouter embedding rate limited");
             return Err(ProviderError::RateLimited {
                 retry_after_secs: retry_after,
             });
         }
 
-        tracing::error!(status, model = %config.model, body_preview = %&body[..body.len().min(500)], "OpenRouter embedding API error");
+        tracing::error!(status, model = %config.model, body_preview = %crate::providers::error::truncate_utf8(&body, 500), "OpenRouter embedding API error");
         return Err(ProviderError::Api {
             status,
             message: body,
@@ -74,7 +74,7 @@ pub async fn embed_batch(
     let body = response.text().await?;
     let embedding_response: EmbeddingResponse = serde_json::from_str(&body)
         .map_err(|e| {
-            tracing::error!(error = %e, model = %config.model, body_preview = %&body[..body.len().min(500)], "OpenRouter embedding parse error");
+            tracing::error!(error = %e, model = %config.model, body_preview = %crate::providers::error::truncate_utf8(&body, 500), "OpenRouter embedding parse error");
             ProviderError::ParseError(format!("Failed to parse embedding response: {e}"))
         })?;
 

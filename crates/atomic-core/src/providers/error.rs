@@ -94,3 +94,16 @@ impl From<ProviderError> for String {
         err.to_string()
     }
 }
+
+/// Truncate a string to at most `max_bytes` bytes without splitting a UTF-8 character.
+pub fn truncate_utf8(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    // Find the largest char boundary <= max_bytes
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
