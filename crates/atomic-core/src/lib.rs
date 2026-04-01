@@ -1123,10 +1123,9 @@ impl AtomicCore {
         self.storage.get_atoms_with_embeddings_impl()
     }
 
-    /// Compute PCA 2D projection of all atom embeddings and return positioned atoms.
-    ///
-    /// Loads all embeddings, runs PCA, saves positions, joins with metadata.
-    pub fn compute_and_get_canvas_data(&self) -> Result<Vec<CanvasAtomPosition>, AtomicCoreError> {
+    /// Compute PCA 2D projection of all atom embeddings and return positioned atoms,
+    /// top-K edges per atom, and cluster centroid labels.
+    pub fn compute_and_get_canvas_data(&self) -> Result<GlobalCanvasData, AtomicCoreError> {
         let db = self.database().ok_or_else(|| {
             AtomicCoreError::Configuration("Global canvas requires SQLite backend".to_string())
         })?;
@@ -1137,7 +1136,7 @@ impl AtomicCore {
         // Load all average embeddings
         let embedding_map = get_all_average_embeddings(&conn)?;
         if embedding_map.is_empty() {
-            return Ok(vec![]);
+            return Ok(GlobalCanvasData { atoms: vec![], edges: vec![], clusters: vec![] });
         }
 
         // Convert to the format PCA expects
@@ -1146,25 +1145,25 @@ impl AtomicCore {
         // Run PCA projection
         let projected = projection::compute_2d_projection(&embeddings);
 
-        // Save positions
-        let positions: Vec<AtomPosition> = projected.iter().map(|(id, x, y)| {
-            AtomPosition { atom_id: id.clone(), x: *x, y: *y }
-        }).collect();
+        // Build position lookup
+        let position_map: std::collections::HashMap<String, (f64, f64)> = projected.iter()
+            .map(|(id, x, y)| (id.clone(), (*x, *y)))
+            .collect();
 
-        // Save in a transaction
+        // Save positions
         conn.execute_batch("BEGIN")?;
         conn.execute("DELETE FROM atom_positions", [])?;
         let mut stmt = conn.prepare(
             "INSERT INTO atom_positions (atom_id, x, y, updated_at) VALUES (?1, ?2, ?3, ?4)"
         )?;
         let now = chrono::Utc::now().to_rfc3339();
-        for pos in &positions {
-            stmt.execute(rusqlite::params![pos.atom_id, pos.x, pos.y, now])?;
+        for (id, x, y) in &projected {
+            stmt.execute(rusqlite::params![id, x, y, now])?;
         }
         conn.execute_batch("COMMIT")?;
         drop(stmt);
 
-        // Join with atom metadata
+        // Load atom metadata
         let mut result_stmt = conn.prepare(
             "SELECT ap.atom_id, ap.x, ap.y,
                     SUBSTR(a.content, 1, 80) as title,
@@ -1174,7 +1173,7 @@ impl AtomicCore {
              JOIN atoms a ON ap.atom_id = a.id"
         )?;
 
-        let results = result_stmt.query_map([], |row| {
+        let mut atoms: Vec<CanvasAtomPosition> = result_stmt.query_map([], |row| {
             let content: String = row.get(3)?;
             let (title, _) = extract_title_and_snippet(&content, 60);
             Ok(CanvasAtomPosition {
@@ -1184,11 +1183,136 @@ impl AtomicCore {
                 title,
                 primary_tag: row.get(4)?,
                 tag_count: row.get(5)?,
+                tag_ids: vec![],
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;
+        drop(result_stmt);
 
-        Ok(results)
+        // Batch-load tag IDs for all atoms
+        let mut tag_stmt = conn.prepare(
+            "SELECT atom_id, tag_id FROM atom_tags"
+        )?;
+        let mut atom_tag_map: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+        let rows = tag_stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        for row in rows {
+            let (atom_id, tag_id) = row?;
+            atom_tag_map.entry(atom_id).or_default().push(tag_id);
+        }
+        drop(tag_stmt);
+
+        for atom in &mut atoms {
+            if let Some(ids) = atom_tag_map.remove(&atom.atom_id) {
+                atom.tag_ids = ids;
+            }
+        }
+
+        // Load top-2 semantic edges per atom
+        let edges = self.load_top_k_edges(&conn, 2)?;
+
+        // Compute cluster centroids via label propagation
+        let clusters = self.compute_cluster_centroids(&conn, &position_map)?;
+
+        Ok(GlobalCanvasData { atoms, edges, clusters })
+    }
+
+    /// Load top-K strongest edges per atom from semantic_edges table.
+    fn load_top_k_edges(
+        &self,
+        conn: &rusqlite::Connection,
+        top_k: usize,
+    ) -> Result<Vec<CanvasEdgeData>, AtomicCoreError> {
+        let mut stmt = conn.prepare(
+            "SELECT source_atom_id, target_atom_id, similarity_score
+             FROM semantic_edges
+             WHERE similarity_score >= 0.5
+             ORDER BY similarity_score DESC"
+        )?;
+
+        let all_edges: Vec<(String, String, f32)> = stmt.query_map([], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })?.collect::<Result<Vec<_>, _>>()?;
+
+        // Keep top-K per atom
+        let mut per_atom: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        let mut kept: Vec<(String, String, f32)> = Vec::new();
+
+        for (src, tgt, score) in all_edges {
+            let src_count = per_atom.get(&src).copied().unwrap_or(0);
+            let tgt_count = per_atom.get(&tgt).copied().unwrap_or(0);
+            if src_count >= top_k && tgt_count >= top_k {
+                continue;
+            }
+            *per_atom.entry(src.clone()).or_insert(0) += 1;
+            *per_atom.entry(tgt.clone()).or_insert(0) += 1;
+            kept.push((src, tgt, score));
+        }
+
+        // Min-max normalize within the kept set so there's always visual spread
+        let min_w = kept.iter().map(|(_, _, w)| *w).fold(f32::MAX, f32::min);
+        let max_w = kept.iter().map(|(_, _, w)| *w).fold(f32::MIN, f32::max);
+        let range = (max_w - min_w).max(0.001);
+
+        Ok(kept.into_iter().map(|(src, tgt, score)| {
+            CanvasEdgeData {
+                source: src,
+                target: tgt,
+                weight: (score - min_w) / range,
+            }
+        }).collect())
+    }
+
+    /// Run label propagation on semantic edges, compute centroid positions per cluster.
+    fn compute_cluster_centroids(
+        &self,
+        conn: &rusqlite::Connection,
+        position_map: &std::collections::HashMap<String, (f64, f64)>,
+    ) -> Result<Vec<CanvasClusterLabel>, AtomicCoreError> {
+        use crate::clustering;
+
+        let clusters = clustering::compute_atom_clusters(conn, 0.5, 3)
+            .map_err(|e| AtomicCoreError::Configuration(e))?;
+
+        let mut labels = Vec::new();
+        for cluster in &clusters {
+            // Compute centroid from positioned atoms
+            let mut cx = 0.0f64;
+            let mut cy = 0.0f64;
+            let mut count = 0;
+            for aid in &cluster.atom_ids {
+                if let Some(&(x, y)) = position_map.get(aid) {
+                    cx += x;
+                    cy += y;
+                    count += 1;
+                }
+            }
+            if count == 0 {
+                continue;
+            }
+            cx /= count as f64;
+            cy /= count as f64;
+
+            let label = if cluster.dominant_tags.len() >= 2 {
+                format!("{}, {}", cluster.dominant_tags[0], cluster.dominant_tags[1])
+            } else if !cluster.dominant_tags.is_empty() {
+                cluster.dominant_tags[0].clone()
+            } else {
+                format!("Cluster {}", cluster.cluster_id + 1)
+            };
+
+            labels.push(CanvasClusterLabel {
+                id: format!("cluster:{}", cluster.cluster_id),
+                x: cx,
+                y: cy,
+                label,
+                atom_count: cluster.atom_ids.len() as i32,
+                atom_ids: cluster.atom_ids.clone(),
+            });
+        }
+
+        Ok(labels)
     }
 
     // ==================== Semantic Graph Operations ====================

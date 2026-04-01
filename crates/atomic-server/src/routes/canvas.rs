@@ -58,8 +58,8 @@ pub async fn get_canvas_level(
     blocking_ok(move || core.get_canvas_level(parent_id.as_deref(), children_hint)).await
 }
 
-/// Compute PCA 2D projection and return all atoms with positions
-#[utoipa::path(get, path = "/api/canvas/global", responses((status = 200, description = "All atoms with 2D positions", body = Vec<atomic_core::CanvasAtomPosition>)), tag = "canvas")]
+/// Compute PCA 2D projection and return all atoms with positions, edges, and cluster labels
+#[utoipa::path(get, path = "/api/canvas/global", responses((status = 200, description = "Global canvas data", body = atomic_core::GlobalCanvasData)), tag = "canvas")]
 pub async fn get_global_canvas(db: Db) -> HttpResponse {
     let core = db.0;
     blocking_ok(move || core.compute_and_get_canvas_data()).await
