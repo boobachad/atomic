@@ -291,6 +291,49 @@ pub struct AtomPosition {
     pub y: f64,
 }
 
+/// Atom with 2D position and metadata for the global canvas view
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct CanvasAtomPosition {
+    pub atom_id: String,
+    pub x: f64,
+    pub y: f64,
+    pub title: String,
+    pub primary_tag: Option<String>,
+    pub tag_count: i32,
+    pub tag_ids: Vec<String>,
+}
+
+/// Edge between two atoms for the global canvas
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct CanvasEdgeData {
+    pub source: String,
+    pub target: String,
+    pub weight: f32,
+}
+
+/// Cluster centroid label for the global canvas
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct CanvasClusterLabel {
+    pub id: String,
+    pub x: f64,
+    pub y: f64,
+    pub label: String,
+    pub atom_count: i32,
+    pub atom_ids: Vec<String>,
+}
+
+/// Full response for the global canvas view
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct GlobalCanvasData {
+    pub atoms: Vec<CanvasAtomPosition>,
+    pub edges: Vec<CanvasEdgeData>,
+    pub clusters: Vec<CanvasClusterLabel>,
+}
+
 /// Atom with its average embedding vector for similarity calculations
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]

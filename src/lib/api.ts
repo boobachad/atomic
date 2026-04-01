@@ -156,6 +156,42 @@ export async function getCanvasLevel(
   });
 }
 
+// Global canvas (PCA-projected positions)
+export interface CanvasAtomPosition {
+  atom_id: string;
+  x: number;
+  y: number;
+  title: string;
+  primary_tag: string | null;
+  tag_count: number;
+  tag_ids: string[];
+}
+
+export interface CanvasEdgeData {
+  source: string;
+  target: string;
+  weight: number;
+}
+
+export interface CanvasClusterLabel {
+  id: string;
+  x: number;
+  y: number;
+  label: string;
+  atom_count: number;
+  atom_ids: string[];
+}
+
+export interface GlobalCanvasData {
+  atoms: CanvasAtomPosition[];
+  edges: CanvasEdgeData[];
+  clusters: CanvasClusterLabel[];
+}
+
+export async function getGlobalCanvas(): Promise<GlobalCanvasData> {
+  return getTransport().invoke('get_global_canvas', {});
+}
+
 // Semantic graph types and commands
 export interface SemanticEdge {
   id: string;

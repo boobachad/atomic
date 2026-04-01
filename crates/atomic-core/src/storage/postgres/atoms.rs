@@ -972,4 +972,141 @@ impl AtomStore for PostgresStorage {
         .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
         Ok(count as i32)
     }
+
+    async fn get_all_embedding_pairs(&self) -> StorageResult<Vec<(String, Vec<f32>)>> {
+        // Load all chunk embeddings, average per atom
+        let rows: Vec<(String, Vec<f32>)> = sqlx::query_as(
+            "SELECT atom_id, embedding::real[] FROM atom_chunks
+             WHERE embedding IS NOT NULL AND db_id = $1
+             ORDER BY atom_id",
+        )
+        .bind(&self.db_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+
+        // Average chunks per atom
+        let mut result: Vec<(String, Vec<f32>)> = Vec::new();
+        let mut current_id: Option<String> = None;
+        let mut current_sum: Vec<f32> = Vec::new();
+        let mut current_count: f32 = 0.0;
+
+        for (atom_id, embedding) in rows {
+            if current_id.as_ref() != Some(&atom_id) {
+                if let Some(prev_id) = current_id.take() {
+                    if current_count > 0.0 {
+                        for val in &mut current_sum {
+                            *val /= current_count;
+                        }
+                        result.push((prev_id, current_sum.clone()));
+                    }
+                }
+                current_id = Some(atom_id);
+                current_sum = embedding;
+                current_count = 1.0;
+            } else {
+                for (i, val) in embedding.iter().enumerate() {
+                    if i < current_sum.len() {
+                        current_sum[i] += val;
+                    }
+                }
+                current_count += 1.0;
+            }
+        }
+        if let Some(prev_id) = current_id {
+            if current_count > 0.0 {
+                for val in &mut current_sum {
+                    *val /= current_count;
+                }
+                result.push((prev_id, current_sum));
+            }
+        }
+
+        Ok(result)
+    }
+
+    async fn get_top_k_canvas_edges(&self, top_k: usize) -> StorageResult<Vec<CanvasEdgeData>> {
+        let all_edges: Vec<(String, String, f32)> = sqlx::query_as(
+            "SELECT source_atom_id, target_atom_id, similarity_score
+             FROM semantic_edges
+             WHERE similarity_score >= 0.5 AND db_id = $1
+             ORDER BY similarity_score DESC",
+        )
+        .bind(&self.db_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+
+        let mut per_atom: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        let mut kept: Vec<(String, String, f32)> = Vec::new();
+
+        for (src, tgt, score) in all_edges {
+            let src_count = per_atom.get(&src).copied().unwrap_or(0);
+            let tgt_count = per_atom.get(&tgt).copied().unwrap_or(0);
+            if src_count >= top_k && tgt_count >= top_k {
+                continue;
+            }
+            *per_atom.entry(src.clone()).or_insert(0) += 1;
+            *per_atom.entry(tgt.clone()).or_insert(0) += 1;
+            kept.push((src, tgt, score));
+        }
+
+        let min_w = kept.iter().map(|(_, _, w)| *w).fold(f32::MAX, f32::min);
+        let max_w = kept.iter().map(|(_, _, w)| *w).fold(f32::MIN, f32::max);
+        let range = (max_w - min_w).max(0.001);
+
+        Ok(kept.into_iter().map(|(src, tgt, score)| {
+            CanvasEdgeData {
+                source: src,
+                target: tgt,
+                weight: (score - min_w) / range,
+            }
+        }).collect())
+    }
+
+    async fn get_all_atom_tag_ids(&self) -> StorageResult<std::collections::HashMap<String, Vec<String>>> {
+        let rows: Vec<(String, String)> = sqlx::query_as(
+            "SELECT atom_id, tag_id FROM atom_tags WHERE db_id = $1",
+        )
+        .bind(&self.db_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+
+        let mut map: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+        for (atom_id, tag_id) in rows {
+            map.entry(atom_id).or_default().push(tag_id);
+        }
+        Ok(map)
+    }
+
+    async fn get_canvas_atom_metadata(&self) -> StorageResult<Vec<CanvasAtomPosition>> {
+        let rows: Vec<(String, f64, f64, String, Option<String>, i64)> = sqlx::query_as(
+            "SELECT ap.atom_id, ap.x, ap.y,
+                    SUBSTRING(a.content FROM 1 FOR 80) as title,
+                    (SELECT t.name FROM atom_tags at JOIN tags t ON at.tag_id = t.id
+                     WHERE at.atom_id = ap.atom_id AND at.db_id = $1 AND t.db_id = $1 LIMIT 1) as primary_tag,
+                    (SELECT COUNT(*) FROM atom_tags at WHERE at.atom_id = ap.atom_id AND at.db_id = $1) as tag_count
+             FROM atom_positions ap
+             JOIN atoms a ON ap.atom_id = a.id AND a.db_id = $1
+             WHERE ap.db_id = $1",
+        )
+        .bind(&self.db_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+
+        Ok(rows.into_iter().map(|(atom_id, x, y, content, primary_tag, tag_count)| {
+            let (title, _) = crate::extract_title_and_snippet(&content, 60);
+            CanvasAtomPosition {
+                atom_id,
+                x,
+                y,
+                title,
+                primary_tag,
+                tag_count: tag_count as i32,
+                tag_ids: vec![],
+            }
+        }).collect())
+    }
 }

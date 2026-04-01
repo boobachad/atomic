@@ -13,13 +13,13 @@ use crate::models::*;
 /// Maximum nodes to show before aggregating into semantic clusters
 const MAX_TAGS_PER_LEVEL: usize = 40;
 /// Maximum atoms to show before sub-clustering
-const MAX_ATOMS_PER_LEVEL: usize = 50;
+const MAX_ATOMS_PER_LEVEL: usize = 20;
 /// Top N tags to show individually when aggregating
 const TOP_TAGS_SHOWN: usize = 20;
 /// Minimum similarity for semantic edges used in clustering
 const CLUSTER_MIN_SIMILARITY: f32 = 0.5;
 /// Minimum weight to include a canvas edge
-const EDGE_MIN_WEIGHT: f32 = 0.2;
+const EDGE_MIN_WEIGHT: f32 = 0.35;
 /// Maximum number of bind parameters per query (SQLite default limit is 999)
 const MAX_SQL_VARS: usize = 400;
 /// Skip edge computation when total atom count across nodes exceeds this
@@ -1230,10 +1230,12 @@ fn compute_edges_between_nodes(
     }
 
     let max_count = edge_data.values().map(|(_, c)| *c).max().unwrap_or(1) as f32;
+    let min_count = edge_data.values().map(|(_, c)| *c).min().unwrap_or(0) as f32;
+    let range = (max_count - min_count).max(1.0);
     let edges: Vec<CanvasEdge> = edge_data
         .into_iter()
         .map(|((src, tgt), (_, count))| {
-            let weight = (count as f32 / max_count).min(1.0);
+            let weight = ((count as f32 - min_count) / range).min(1.0);
             CanvasEdge {
                 source_id: src,
                 target_id: tgt,
@@ -1247,7 +1249,7 @@ fn compute_edges_between_nodes(
 }
 
 /// Maximum strongest connections to keep per atom node
-const TOP_K_EDGES_PER_ATOM: usize = 3;
+const TOP_K_EDGES_PER_ATOM: usize = 2;
 
 /// Simplified edge computation for atom-level nodes (direct semantic edge lookup).
 /// Keeps only the top-K strongest connections per atom to avoid visual noise.
@@ -1258,9 +1260,11 @@ fn compute_edges_for_atom_set(
     let edges = load_semantic_edges_for_atoms(conn, atom_ids)?;
 
     let max_score = edges.iter().map(|(_, _, s)| *s).fold(0.0f32, f32::max);
+    let min_score = edges.iter().map(|(_, _, s)| *s).fold(f32::MAX, f32::min);
     if max_score == 0.0 {
         return Ok(vec![]);
     }
+    let range = (max_score - min_score).max(0.001);
 
     // For each atom, keep only its top-K strongest edges
     let mut per_atom: HashMap<String, Vec<(String, String, f32)>> = HashMap::new();
@@ -1287,7 +1291,7 @@ fn compute_edges_for_atom_set(
         .map(|(src, tgt, score)| CanvasEdge {
             source_id: src,
             target_id: tgt,
-            weight: score / max_score,
+            weight: (score - min_score) / range,
         })
         .collect())
 }
@@ -1353,12 +1357,14 @@ fn compute_edges_between_nodes_simple(
     }
 
     let max_count = edge_data.values().max().copied().unwrap_or(1) as f32;
+    let min_count = edge_data.values().min().copied().unwrap_or(0) as f32;
+    let range = (max_count - min_count).max(1.0);
     Ok(edge_data
         .into_iter()
         .map(|((src, tgt), count)| CanvasEdge {
             source_id: src,
             target_id: tgt,
-            weight: (count as f32 / max_count).min(1.0),
+            weight: ((count as f32 - min_count) / range).min(1.0),
         })
         .filter(|e| e.weight >= EDGE_MIN_WEIGHT)
         .collect())

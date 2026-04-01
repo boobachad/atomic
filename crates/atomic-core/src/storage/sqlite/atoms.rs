@@ -813,6 +813,95 @@ impl SqliteStorage {
             .unwrap_or(0);
         Ok(count)
     }
+
+    pub(crate) fn get_all_embedding_pairs_sync(&self) -> StorageResult<Vec<(String, Vec<f32>)>> {
+        let conn = self.db.read_conn()?;
+        let map = get_all_average_embeddings(&conn)?;
+        Ok(map.into_iter().collect())
+    }
+
+    pub(crate) fn get_top_k_canvas_edges_sync(&self, top_k: usize) -> StorageResult<Vec<CanvasEdgeData>> {
+        let conn = self.db.read_conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT source_atom_id, target_atom_id, similarity_score
+             FROM semantic_edges
+             WHERE similarity_score >= 0.5
+             ORDER BY similarity_score DESC"
+        )?;
+
+        let all_edges: Vec<(String, String, f32)> = stmt.query_map([], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })?.collect::<Result<Vec<_>, _>>()?;
+
+        let mut per_atom: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        let mut kept: Vec<(String, String, f32)> = Vec::new();
+
+        for (src, tgt, score) in all_edges {
+            let src_count = per_atom.get(&src).copied().unwrap_or(0);
+            let tgt_count = per_atom.get(&tgt).copied().unwrap_or(0);
+            if src_count >= top_k && tgt_count >= top_k {
+                continue;
+            }
+            *per_atom.entry(src.clone()).or_insert(0) += 1;
+            *per_atom.entry(tgt.clone()).or_insert(0) += 1;
+            kept.push((src, tgt, score));
+        }
+
+        let min_w = kept.iter().map(|(_, _, w)| *w).fold(f32::MAX, f32::min);
+        let max_w = kept.iter().map(|(_, _, w)| *w).fold(f32::MIN, f32::max);
+        let range = (max_w - min_w).max(0.001);
+
+        Ok(kept.into_iter().map(|(src, tgt, score)| {
+            CanvasEdgeData {
+                source: src,
+                target: tgt,
+                weight: (score - min_w) / range,
+            }
+        }).collect())
+    }
+
+    pub(crate) fn get_all_atom_tag_ids_sync(&self) -> StorageResult<std::collections::HashMap<String, Vec<String>>> {
+        let conn = self.db.read_conn()?;
+        let mut stmt = conn.prepare("SELECT atom_id, tag_id FROM atom_tags")?;
+        let mut map: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        for row in rows {
+            let (atom_id, tag_id) = row?;
+            map.entry(atom_id).or_default().push(tag_id);
+        }
+        Ok(map)
+    }
+
+    pub(crate) fn get_canvas_atom_metadata_sync(&self) -> StorageResult<Vec<CanvasAtomPosition>> {
+        let conn = self.db.read_conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT ap.atom_id, ap.x, ap.y,
+                    SUBSTR(a.content, 1, 80) as title,
+                    (SELECT t.name FROM atom_tags at JOIN tags t ON at.tag_id = t.id WHERE at.atom_id = ap.atom_id LIMIT 1) as primary_tag,
+                    (SELECT COUNT(*) FROM atom_tags at WHERE at.atom_id = ap.atom_id) as tag_count
+             FROM atom_positions ap
+             JOIN atoms a ON ap.atom_id = a.id"
+        )?;
+
+        let atoms = stmt.query_map([], |row| {
+            let content: String = row.get(3)?;
+            let (title, _) = extract_title_and_snippet(&content, 60);
+            Ok(CanvasAtomPosition {
+                atom_id: row.get(0)?,
+                x: row.get(1)?,
+                y: row.get(2)?,
+                title,
+                primary_tag: row.get(4)?,
+                tag_count: row.get(5)?,
+                tag_ids: vec![],
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(atoms)
+    }
 }
 
 #[async_trait]
@@ -904,5 +993,21 @@ impl AtomStore for SqliteStorage {
 
     async fn count_pending_embeddings(&self) -> StorageResult<i32> {
         self.count_pending_embeddings_sync()
+    }
+
+    async fn get_all_embedding_pairs(&self) -> StorageResult<Vec<(String, Vec<f32>)>> {
+        self.get_all_embedding_pairs_sync()
+    }
+
+    async fn get_top_k_canvas_edges(&self, top_k: usize) -> StorageResult<Vec<CanvasEdgeData>> {
+        self.get_top_k_canvas_edges_sync(top_k)
+    }
+
+    async fn get_all_atom_tag_ids(&self) -> StorageResult<std::collections::HashMap<String, Vec<String>>> {
+        self.get_all_atom_tag_ids_sync()
+    }
+
+    async fn get_canvas_atom_metadata(&self) -> StorageResult<Vec<CanvasAtomPosition>> {
+        self.get_canvas_atom_metadata_sync()
     }
 }

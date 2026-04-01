@@ -3,7 +3,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { AtomGrid } from '../atoms/AtomGrid';
 import { AtomList } from '../atoms/AtomList';
 import { FilterBar } from '../atoms/FilterBar';
-import { HierarchicalCanvas } from '../canvas/HierarchicalCanvas';
+import { SigmaCanvas } from '../canvas/SigmaCanvas';
 import { FAB } from '../ui/FAB';
 import { useAtomsStore } from '../../stores/atoms';
 import { useUIStore } from '../../stores/ui';
@@ -289,7 +289,7 @@ export function MainView() {
       {/* Content */}
       <div className="flex-1 overflow-hidden">
         {viewMode === 'canvas' ? (
-          <HierarchicalCanvas />
+          <SigmaCanvas />
         ) : viewMode === 'grid' ? (
           <AtomGrid
             atoms={displayAtoms}

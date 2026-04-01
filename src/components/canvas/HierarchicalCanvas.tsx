@@ -6,6 +6,7 @@ import { CanvasBreadcrumb } from './CanvasBreadcrumb';
 import { ClusterBubble } from './ClusterBubble';
 import { AtomNode } from './AtomNode';
 import { useHierarchicalForceSimulation } from './useHierarchicalForceSimulation';
+import { useSemanticZoom } from './useSemanticZoom';
 import type { CanvasNode, CanvasEdge } from '../../lib/api';
 
 const EMPTY_NODES: CanvasNode[] = [];
@@ -79,6 +80,24 @@ export function HierarchicalCanvas() {
     height: dimensions.height,
   });
 
+  // Compute initial scale
+  const initialScale = nodes.length <= 8 ? 2 : nodes.length <= 20 ? 1.5 : 1.2;
+
+  // Semantic zoom
+  const {
+    onTransformed,
+    expandedClusterId,
+    expandedSimNodes,
+    expansionProgress,
+    prefetchCluster,
+    isExpandLoading,
+  } = useSemanticZoom({
+    simNodes,
+    dimensions,
+    initialScale,
+    currentLevel,
+  });
+
   const handleBreadcrumbNavigate = useCallback((parentId: string | null) => {
     navigateCanvas(parentId);
   }, [navigateCanvas]);
@@ -106,28 +125,51 @@ export function HierarchicalCanvas() {
     return map;
   }, [simNodes]);
 
+  // Compute per-atom connection counts from edges
+  const atomConnectionCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const edge of edges) {
+      counts.set(edge.source_id, (counts.get(edge.source_id) || 0) + 1);
+      counts.set(edge.target_id, (counts.get(edge.target_id) || 0) + 1);
+    }
+    return counts;
+  }, [edges]);
+
   // Build atom summary objects for AtomNode (minimal shape)
+  const buildAtomSummary = useCallback((node: CanvasNode) => ({
+    id: node.id,
+    title: node.label,
+    snippet: '',
+    tags: (node.dominant_tags || []).map(name => ({ id: name, name, parent_id: null, created_at: '' })),
+    source_url: null,
+    source: null,
+    published_at: null,
+    created_at: '',
+    updated_at: '',
+    embedding_status: 'complete' as const,
+    tagging_status: 'complete' as const,
+  }), []);
+
   const atomSummaryMap = useMemo(() => {
     const map = new Map<string, import('../../stores/atoms').AtomSummary>();
     for (const node of nodes) {
       if (node.node_type === 'atom') {
-        map.set(node.id, {
-          id: node.id,
-          title: node.label,
-          snippet: '',
-          tags: (node.dominant_tags || []).map(name => ({ id: name, name, parent_id: null, created_at: '' })),
-          source_url: null,
-          source: null,
-          published_at: null,
-          created_at: '',
-          updated_at: '',
-          embedding_status: 'complete' as const,
-          tagging_status: 'complete' as const,
-        });
+        map.set(node.id, buildAtomSummary(node));
       }
     }
     return map;
-  }, [nodes]);
+  }, [nodes, buildAtomSummary]);
+
+  // Build summaries for expanded nodes too
+  const expandedAtomSummaryMap = useMemo(() => {
+    const map = new Map<string, import('../../stores/atoms').AtomSummary>();
+    for (const sn of expandedSimNodes) {
+      if (sn.canvasNode.node_type === 'atom') {
+        map.set(sn.id, buildAtomSummary(sn.canvasNode));
+      }
+    }
+    return map;
+  }, [expandedSimNodes, buildAtomSummary]);
 
   return (
     <div className="flex flex-col h-full w-full">
@@ -160,15 +202,21 @@ export function HierarchicalCanvas() {
           </div>
         )}
 
-        {dimensions.width > 0 && simNodes.length > 0 && (
+        {dimensions.width > 0 && simNodes.length > 0 && (() => {
+          const offsetX = -(dimensions.width * initialScale - dimensions.width) / 2;
+          const offsetY = -(dimensions.height * initialScale - dimensions.height) / 2;
+          return (
           <div className={`w-full h-full transition-opacity duration-200 ${fadeIn ? 'opacity-100' : 'opacity-0'}`}>
           <TransformWrapper
-            initialScale={1}
+            initialScale={initialScale}
+            initialPositionX={offsetX}
+            initialPositionY={offsetY}
             minScale={0.3}
-            maxScale={3}
+            maxScale={8}
             limitToBounds={false}
             doubleClick={{ disabled: true }}
             panning={{ velocityDisabled: true }}
+            onTransformed={onTransformed}
           >
             {({ zoomIn, zoomOut, resetTransform }) => (
               <>
@@ -187,6 +235,8 @@ export function HierarchicalCanvas() {
                       const src = nodePositionMap.get(edge.source_id);
                       const tgt = nodePositionMap.get(edge.target_id);
                       if (!src || !tgt) return null;
+                      const w = edge.weight;
+                      const strong = w >= 0.6;
                       return (
                         <line
                           key={`${edge.source_id}-${edge.target_id}`}
@@ -194,20 +244,24 @@ export function HierarchicalCanvas() {
                           y1={src.y}
                           x2={tgt.x}
                           y2={tgt.y}
-                          stroke="var(--color-accent)"
-                          strokeWidth={1 + edge.weight}
-                          strokeOpacity={0.15 + edge.weight * 0.2}
+                          stroke={strong ? 'hsl(265, 55%, 58%)' : 'hsl(0, 0%, 42%)'}
+                          strokeWidth={0.5}
+                          strokeOpacity={strong ? 0.5 : 0.2}
+                          strokeDasharray={strong ? undefined : '3 3'}
                         />
                       );
                     })}
                   </svg>
 
-                  {/* Nodes */}
+                  {/* Parent level nodes */}
                   {simNodes.map((sn) => {
                     const node = sn.canvasNode;
+                    const isExpanding = node.id === expandedClusterId;
+
                     if (node.node_type === 'atom') {
                       const atomSummary = atomSummaryMap.get(node.id);
                       if (!atomSummary) return null;
+                      const connCount = atomConnectionCounts.get(node.id) || 0;
                       return (
                         <AtomNode
                           key={node.id}
@@ -216,10 +270,13 @@ export function HierarchicalCanvas() {
                           x={sn.x}
                           y={sn.y}
                           isFaded={false}
+                          isHub={connCount >= 3}
+                          connectionCount={connCount}
                           onClick={handleAtomNodeClick}
                         />
                       );
                     }
+
                     return (
                       <ClusterBubble
                         key={node.id}
@@ -227,6 +284,61 @@ export function HierarchicalCanvas() {
                         x={sn.x}
                         y={sn.y}
                         onClick={handleNodeClick}
+                        onMouseEnter={
+                          node.children_ids?.length
+                            ? () => prefetchCluster(node.id, node.children_ids)
+                            : undefined
+                        }
+                        style={isExpanding ? { opacity: 1 - expansionProgress } : undefined}
+                      />
+                    );
+                  })}
+
+                  {/* Loading spinner for expanding cluster */}
+                  {isExpandLoading && expandedClusterId && (() => {
+                    const pos = nodePositionMap.get(expandedClusterId);
+                    if (!pos) return null;
+                    return (
+                      <div
+                        className="absolute pointer-events-none"
+                        style={{ left: pos.x, top: pos.y, transform: 'translate(-50%, -50%)' }}
+                      >
+                        <svg className="animate-spin h-4 w-4 text-[var(--color-accent)]" viewBox="0 0 24 24">
+                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                        </svg>
+                      </div>
+                    );
+                  })()}
+
+                  {/* Expanded cluster children */}
+                  {expandedSimNodes.map((sn) => {
+                    const node = sn.canvasNode;
+                    if (node.node_type === 'atom') {
+                      const atomSummary = expandedAtomSummaryMap.get(sn.id);
+                      if (!atomSummary) return null;
+                      return (
+                        <AtomNode
+                          key={`expanded-${sn.id}`}
+                          atom={atomSummary}
+                          atomId={sn.id}
+                          x={sn.x}
+                          y={sn.y}
+                          isFaded={false}
+                          onClick={handleAtomNodeClick}
+                          style={{ opacity: expansionProgress }}
+                        />
+                      );
+                    }
+                    // Sub-clusters from large expansions
+                    return (
+                      <ClusterBubble
+                        key={`expanded-${sn.id}`}
+                        node={node}
+                        x={sn.x}
+                        y={sn.y}
+                        onClick={handleNodeClick}
+                        style={{ opacity: expansionProgress }}
                       />
                     );
                   })}
@@ -266,7 +378,8 @@ export function HierarchicalCanvas() {
             )}
           </TransformWrapper>
           </div>
-        )}
+          );
+        })()}
       </div>
     </div>
   );

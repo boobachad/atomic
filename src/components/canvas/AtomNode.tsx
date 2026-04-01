@@ -11,6 +11,7 @@ interface AtomNodeProps {
   connectionCount?: number;
   onClick: (atomId: string) => void;
   atomId: string;
+  style?: React.CSSProperties;
 }
 
 // Generate a consistent color from a string (tag name)
@@ -46,14 +47,15 @@ export const AtomNode = memo(function AtomNode({
   isFaded,
   isHub = false,
   isHighlighted = false,
-  connectionCount = 0,
+  // connectionCount available via props if needed
   onClick,
   atomId,
+  style: externalStyle,
 }: AtomNodeProps) {
   // Use title if available, fall back to snippet
   const displayContent = useMemo(() => {
     const text = atom.title || atom.snippet || 'Empty atom';
-    return text.length > 50 ? text.substring(0, 47) + '...' : text;
+    return text;
   }, [atom.title, atom.snippet]);
 
   // Get color from primary tag
@@ -62,8 +64,7 @@ export const AtomNode = memo(function AtomNode({
     return stringToColor(atom.tags[0].name);
   }, [atom.tags]);
 
-  // Calculate node width based on connection count (for hubs)
-  const nodeWidth = isHub ? 180 : 160;
+  const nodeWidth = 110;
 
   return (
     <div
@@ -74,67 +75,52 @@ export const AtomNode = memo(function AtomNode({
         left: x,
         top: y,
         transform: 'translate(-50%, -50%)',
+        ...externalStyle,
         width: `${nodeWidth}px`,
       }}
       onClick={() => onClick(atomId)}
     >
       <div
         className={`
-          bg-[var(--color-bg-card)] border rounded-md px-3 py-2
-          hover:scale-[1.02] transition-all duration-150
+          bg-[var(--color-bg-card)] border rounded px-2 py-1.5
+          hover:scale-[1.04] transition-all duration-150
           relative overflow-hidden
           ${isHighlighted
             ? 'border-[var(--color-success)] shadow-[0_0_20px_rgb(var(--color-success-rgb) / 0.5)] animate-pulse ring-2 ring-[var(--color-success)] ring-opacity-50'
             : isHub
-            ? 'border-[var(--color-accent)] shadow-[0_0_12px_rgb(var(--color-accent-rgb) / 0.3)]'
+            ? 'border-[var(--color-accent)] shadow-[0_0_8px_rgb(var(--color-accent-rgb) / 0.3)]'
             : 'border-[var(--color-border)] hover:border-[var(--color-border-hover)]'}
         `}
       >
         {/* Tag color indicator */}
         {tagColor && (
           <div
-            className="absolute left-0 top-0 bottom-0 w-1 rounded-l"
+            className="absolute left-0 top-0 bottom-0 w-0.5 rounded-l"
             style={{ backgroundColor: tagColor.hsl }}
           />
         )}
 
-        {/* Hub indicator */}
-        {isHub && (
-          <div className="absolute top-1 right-1">
-            <div
-              className="w-2 h-2 rounded-full bg-[var(--color-accent)] animate-pulse"
-              title={`Hub: ${connectionCount} connections`}
-            />
-          </div>
-        )}
-
-        <p className={`text-sm text-[var(--color-text-primary)] line-clamp-2 break-words ${isHub ? 'font-medium' : ''}`}>
+        <p className={`text-[10px] text-[var(--color-text-primary)] truncate leading-tight ${isHub ? 'font-medium' : ''}`}>
           {displayContent}
         </p>
 
-        {/* Show tag count indicator */}
+        {/* Compact tag badge */}
         {atom.tags.length > 0 && (
-          <div className="flex items-center gap-1 mt-1.5">
+          <div className="flex items-center gap-1 mt-1">
             <span
-              className="text-[10px] px-1.5 py-0.5 rounded"
+              className="text-[9px] px-1 py-px rounded leading-tight"
               style={{
                 backgroundColor: tagColor ? colorWithAlpha(tagColor, 0.35) : 'var(--color-bg-hover)',
                 color: 'var(--color-text-primary)'
               }}
             >
-              {atom.tags[0].name.length > 12
-                ? atom.tags[0].name.substring(0, 10) + '...'
+              {atom.tags[0].name.length > 10
+                ? atom.tags[0].name.substring(0, 8) + '..'
                 : atom.tags[0].name}
             </span>
             {atom.tags.length > 1 && (
-              <span className="text-[10px] text-[var(--color-text-tertiary)]">
+              <span className="text-[9px] text-[var(--color-text-tertiary)]">
                 +{atom.tags.length - 1}
-              </span>
-            )}
-            {/* Show connection count for hubs */}
-            {isHub && connectionCount > 0 && (
-              <span className="text-[10px] text-[var(--color-accent)] ml-auto">
-                {connectionCount}
               </span>
             )}
           </div>

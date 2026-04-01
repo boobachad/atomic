@@ -44,6 +44,7 @@ pub mod ingest;
 pub mod import;
 pub mod manager;
 pub mod models;
+pub mod projection;
 pub mod providers;
 pub mod registry;
 pub mod search;
@@ -1120,6 +1121,100 @@ impl AtomicCore {
     /// Get atoms with their average embedding vector for similarity calculations
     pub fn get_atoms_with_embeddings(&self) -> Result<Vec<AtomWithEmbedding>, AtomicCoreError> {
         self.storage.get_atoms_with_embeddings_impl()
+    }
+
+    /// Compute PCA 2D projection of all atom embeddings and return positioned atoms,
+    /// top-K edges per atom, and cluster centroid labels.
+    /// Pure read operation — does not persist positions to the database.
+    /// Works with both SQLite and Postgres backends via storage dispatch.
+    pub fn compute_and_get_canvas_data(&self) -> Result<GlobalCanvasData, AtomicCoreError> {
+        // Load all average embeddings via storage abstraction
+        let embeddings = self.storage.get_all_embedding_pairs_sync()?;
+        if embeddings.is_empty() {
+            return Ok(GlobalCanvasData { atoms: vec![], edges: vec![], clusters: vec![] });
+        }
+
+        // Run PCA projection (pure math, backend-agnostic)
+        let projected = projection::compute_2d_projection(&embeddings);
+
+        // Build position lookup
+        let position_map: std::collections::HashMap<String, (f64, f64)> = projected.iter()
+            .map(|(id, x, y)| (id.clone(), (*x, *y)))
+            .collect();
+
+        // Load atom metadata and merge with projected positions
+        let atoms_with_embeddings = self.storage.get_atoms_with_embeddings_impl()?;
+        let mut atom_tag_map = self.storage.get_all_atom_tag_ids_sync()?;
+
+        let atoms: Vec<CanvasAtomPosition> = atoms_with_embeddings.iter()
+            .filter_map(|awe| {
+                let (x, y) = position_map.get(&awe.atom.atom.id)?;
+                let (title, _) = extract_title_and_snippet(&awe.atom.atom.content, 60);
+                let primary_tag = awe.atom.tags.first().map(|t| t.name.clone());
+                let tag_ids = atom_tag_map.remove(&awe.atom.atom.id).unwrap_or_default();
+                Some(CanvasAtomPosition {
+                    atom_id: awe.atom.atom.id.clone(),
+                    x: *x,
+                    y: *y,
+                    title,
+                    primary_tag,
+                    tag_count: awe.atom.tags.len() as i32,
+                    tag_ids,
+                })
+            })
+            .collect();
+
+        // Load top-2 semantic edges per atom
+        let edges = self.storage.get_top_k_canvas_edges_sync(2)?;
+
+        // Compute cluster centroids
+        let cluster_data = self.storage.compute_clusters_sync(0.5, 3)?;
+        let clusters = Self::build_cluster_centroids(&cluster_data, &position_map);
+
+        Ok(GlobalCanvasData { atoms, edges, clusters })
+    }
+
+    /// Build cluster centroid labels from cluster data and position map (pure math).
+    fn build_cluster_centroids(
+        clusters: &[AtomCluster],
+        position_map: &std::collections::HashMap<String, (f64, f64)>,
+    ) -> Vec<CanvasClusterLabel> {
+        let mut labels = Vec::new();
+        for cluster in clusters {
+            let mut cx = 0.0f64;
+            let mut cy = 0.0f64;
+            let mut count = 0;
+            for aid in &cluster.atom_ids {
+                if let Some(&(x, y)) = position_map.get(aid) {
+                    cx += x;
+                    cy += y;
+                    count += 1;
+                }
+            }
+            if count == 0 {
+                continue;
+            }
+            cx /= count as f64;
+            cy /= count as f64;
+
+            let label = if cluster.dominant_tags.len() >= 2 {
+                format!("{}, {}", cluster.dominant_tags[0], cluster.dominant_tags[1])
+            } else if !cluster.dominant_tags.is_empty() {
+                cluster.dominant_tags[0].clone()
+            } else {
+                format!("Cluster {}", cluster.cluster_id + 1)
+            };
+
+            labels.push(CanvasClusterLabel {
+                id: format!("cluster:{}", cluster.cluster_id),
+                x: cx,
+                y: cy,
+                label,
+                atom_count: cluster.atom_ids.len() as i32,
+                atom_ids: cluster.atom_ids.clone(),
+            });
+        }
+        labels
     }
 
     // ==================== Semantic Graph Operations ====================

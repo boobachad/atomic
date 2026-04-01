@@ -282,6 +282,11 @@ export const COMMAND_MAP: Record<string, CommandSpec> = {
     }),
   },
 
+  get_global_canvas: {
+    method: 'GET',
+    path: '/api/canvas/global',
+  },
+
   // ==================== Graph ====================
   get_semantic_edges: {
     method: 'GET',

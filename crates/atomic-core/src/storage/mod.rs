@@ -209,6 +209,14 @@ dispatch! {
         => sqlite: source_url_exists_sync, pg_trait: AtomStore, pg_method: source_url_exists;
     fn count_pending_embeddings_sync(&self) -> Result<i32, AtomicCoreError>
         => sqlite: count_pending_embeddings_sync, pg_trait: AtomStore, pg_method: count_pending_embeddings;
+    fn get_all_embedding_pairs_sync(&self) -> Result<Vec<(String, Vec<f32>)>, AtomicCoreError>
+        => sqlite: get_all_embedding_pairs_sync, pg_trait: AtomStore, pg_method: get_all_embedding_pairs;
+    fn get_top_k_canvas_edges_sync(&self, top_k: usize) -> Result<Vec<CanvasEdgeData>, AtomicCoreError>
+        => sqlite: get_top_k_canvas_edges_sync, pg_trait: AtomStore, pg_method: get_top_k_canvas_edges;
+    fn get_all_atom_tag_ids_sync(&self) -> Result<std::collections::HashMap<String, Vec<String>>, AtomicCoreError>
+        => sqlite: get_all_atom_tag_ids_sync, pg_trait: AtomStore, pg_method: get_all_atom_tag_ids;
+    fn get_canvas_atom_metadata_sync(&self) -> Result<Vec<CanvasAtomPosition>, AtomicCoreError>
+        => sqlite: get_canvas_atom_metadata_sync, pg_trait: AtomStore, pg_method: get_canvas_atom_metadata;
 
     // ---- TagStore ----
     fn get_all_tags_impl(&self) -> Result<Vec<TagWithCount>, AtomicCoreError>

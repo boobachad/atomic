@@ -94,6 +94,21 @@ pub trait AtomStore: Send + Sync {
 
     /// Count atoms with pending embedding status.
     async fn count_pending_embeddings(&self) -> StorageResult<i32>;
+
+    /// Get all average embeddings as (atom_id, embedding) pairs for PCA projection.
+    async fn get_all_embedding_pairs(&self) -> StorageResult<Vec<(String, Vec<f32>)>>;
+
+    /// Get semantic edges for canvas visualization, keeping at least top-K per atom.
+    /// An edge is kept if either endpoint has fewer than top_k edges so far,
+    /// which guarantees every atom gets its strongest connections but allows
+    /// hubs to exceed top_k.
+    async fn get_top_k_canvas_edges(&self, top_k: usize) -> StorageResult<Vec<CanvasEdgeData>>;
+
+    /// Get all atom-to-tag-id mappings in batch.
+    async fn get_all_atom_tag_ids(&self) -> StorageResult<std::collections::HashMap<String, Vec<String>>>;
+
+    /// Get atom metadata for canvas display (title, primary tag, tag count) by position.
+    async fn get_canvas_atom_metadata(&self) -> StorageResult<Vec<CanvasAtomPosition>>;
 }
 
 // ==================== Tag Storage ====================

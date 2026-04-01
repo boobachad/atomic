@@ -34,9 +34,13 @@ pub fn label_propagation(
         all_nodes.insert(target.clone());
     }
 
+    // Sort nodes for deterministic iteration order
+    let mut sorted_nodes: Vec<String> = all_nodes.into_iter().collect();
+    sorted_nodes.sort();
+
     // Initialize each node with its own cluster label
     let mut labels: HashMap<String, u32> = HashMap::new();
-    for (i, node) in all_nodes.iter().enumerate() {
+    for (i, node) in sorted_nodes.iter().enumerate() {
         labels.insert(node.clone(), i as u32);
     }
 
@@ -45,7 +49,7 @@ pub fn label_propagation(
     for _ in 0..max_iterations {
         let mut changed = false;
 
-        for node in all_nodes.iter() {
+        for node in sorted_nodes.iter() {
             if let Some(neighbors) = adjacency.get(node) {
                 let mut label_scores: HashMap<u32, f32> = HashMap::new();
 

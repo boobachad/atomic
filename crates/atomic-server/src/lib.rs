@@ -75,6 +75,7 @@ pub use utoipa_scalar::{Scalar, Servable};
         routes::canvas::save_positions,
         routes::canvas::get_atoms_with_embeddings,
         routes::canvas::get_canvas_level,
+        routes::canvas::get_global_canvas,
         // Graph
         routes::graph::get_semantic_edges,
         routes::graph::get_atom_neighborhood,
