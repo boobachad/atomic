@@ -21,10 +21,6 @@ struct ChatRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     tool_choice: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    temperature: Option<f32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    max_tokens: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     response_format: Option<ResponseFormat>,
     stream: bool,
 }
@@ -264,13 +260,15 @@ async fn complete_internal(
         }
     });
 
+    // temperature and max_tokens are intentionally omitted:
+    // - temperature is rejected by reasoning models (OpenAI o-series)
+    // - max_tokens is rejected by OpenAI o-series (wants max_completion_tokens),
+    //   and callers already handle token budgets via context-window truncation.
     let request = ChatRequest {
         model: config.model.clone(),
         messages: api_messages,
         tools: api_tools,
         tool_choice: None,
-        temperature: config.params.temperature,
-        max_tokens: config.params.max_tokens,
         response_format,
         stream: false,
     };
@@ -355,8 +353,6 @@ pub async fn complete_streaming_with_tools(
         messages: api_messages,
         tools: api_tools,
         tool_choice: None,
-        temperature: config.params.temperature,
-        max_tokens: config.params.max_tokens,
         response_format: None,
         stream: true,
     };
