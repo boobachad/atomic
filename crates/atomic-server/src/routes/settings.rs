@@ -108,7 +108,15 @@ pub async fn test_openai_compat_connection(
         .build()
         .unwrap_or_else(|_| reqwest::Client::new());
 
-    let mut req = client.get(format!("{}/models", body.base_url));
+    // Normalize URL the same way OpenAICompatProvider does
+    let trimmed = body.base_url.trim_end_matches('/');
+    let base_url = if trimmed.ends_with("/v1") {
+        trimmed.to_string()
+    } else {
+        format!("{}/v1", trimmed)
+    };
+
+    let mut req = client.get(format!("{}/models", base_url));
 
     if let Some(ref api_key) = body.api_key {
         if !api_key.is_empty() {

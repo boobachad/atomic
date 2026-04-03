@@ -1013,8 +1013,8 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                       value={provider}
                       onChange={(v) => handleProviderChange(v as 'openrouter' | 'ollama' | 'openai_compat')}
                       options={[
-                        { value: 'openrouter', label: 'OpenRouter (Cloud)' },
-                        { value: 'ollama', label: 'Ollama (Local)' },
+                        { value: 'openrouter', label: 'OpenRouter' },
+                        { value: 'ollama', label: 'Ollama' },
                         { value: 'openai_compat', label: 'OpenAI Compatible' },
                       ]}
                     />
