@@ -12,6 +12,7 @@ import { THEMES, Theme } from '../../hooks/useTheme';
 import { FONTS, Font } from '../../hooks/useFont';
 import {
   getAvailableLlmModels,
+  getOpenRouterEmbeddingModels,
   testOllamaConnection,
   testOpenAICompatConnection,
   getOllamaModels,
@@ -27,6 +28,7 @@ import {
   deleteFeed,
   pollFeed,
   type AvailableModel,
+  type OpenRouterEmbeddingModel,
   type OllamaModel,
   type ImportResult,
   type McpConfig,
@@ -286,9 +288,9 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
   const [autoTaggingEnabled, setAutoTaggingEnabled] = useState(true);
   const [embeddingModel, setEmbeddingModel] = useState('openai/text-embedding-3-small');
   const [taggingModel, setTaggingModel] = useState('openai/gpt-4o-mini');
-  const [wikiModel, setWikiModel] = useState('anthropic/claude-sonnet-4.5');
+  const [wikiModel, setWikiModel] = useState('anthropic/claude-sonnet-4.6');
   const [wikiStrategy, setWikiStrategy] = useState('centroid');
-  const [chatModel, setChatModel] = useState('anthropic/claude-sonnet-4.5');
+  const [chatModel, setChatModel] = useState('anthropic/claude-sonnet-4.6');
   const [saveError, setSaveError] = useState<string | null>(null);
 
   // Re-embedding confirmation
@@ -296,6 +298,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
 
   // OpenRouter model loading
   const [availableModels, setAvailableModels] = useState<AvailableModel[]>([]);
+  const [openrouterEmbeddingModels, setOpenrouterEmbeddingModels] = useState<OpenRouterEmbeddingModel[]>([]);
   const [isLoadingModels, setIsLoadingModels] = useState(false);
 
   // Import state
@@ -626,6 +629,10 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
           .then(models => setAvailableModels(models))
           .catch(err => { console.error('Failed to load models:', err); toast.error('Failed to load models', { description: String(err) }); })
           .finally(() => setIsLoadingModels(false));
+        // Fetch curated OpenRouter embedding model registry
+        getOpenRouterEmbeddingModels()
+          .then(models => setOpenrouterEmbeddingModels(models))
+          .catch(err => { console.error('Failed to load embedding models:', err); });
       }
       // Load API tokens when connected to a non-local server
       if (!isLocalServer() && transport.isConnected()) {
@@ -662,9 +669,9 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
     setAutoTaggingEnabled(settings.auto_tagging_enabled !== 'false');
     setEmbeddingModel(settings.embedding_model || 'openai/text-embedding-3-small');
     setTaggingModel(settings.tagging_model || 'openai/gpt-4o-mini');
-    setWikiModel(settings.wiki_model || 'anthropic/claude-sonnet-4.5');
+    setWikiModel(settings.wiki_model || 'anthropic/claude-sonnet-4.6');
     setWikiStrategy(settings.wiki_strategy || 'centroid');
-    setChatModel(settings.chat_model || 'anthropic/claude-sonnet-4.5');
+    setChatModel(settings.chat_model || 'anthropic/claude-sonnet-4.6');
     setOllamaHost(settings.ollama_host || 'http://127.0.0.1:11434');
     setOllamaEmbeddingModel(settings.ollama_embedding_model || 'nomic-embed-text');
     setOllamaLlmModel(settings.ollama_llm_model || 'llama3.2');
@@ -1110,13 +1117,14 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                           <p className="text-xs text-[var(--color-text-secondary)]">
                             Used for semantic search
                           </p>
-                          <CustomSelect
+                          <SearchableSelect
                             value={embeddingModel}
                             onChange={handleEmbeddingModelChange}
-                            options={[
-                              { value: 'openai/text-embedding-3-small', label: 'text-embedding-3-small (1536 dim)' },
-                              { value: 'openai/text-embedding-3-large', label: 'text-embedding-3-large (3072 dim)' },
-                            ]}
+                            options={openrouterEmbeddingModels.map(m => ({
+                              id: m.id,
+                              name: `${m.name} (${m.dimension})`,
+                            }))}
+                            placeholder="Select embedding model..."
                           />
                         </div>
 
