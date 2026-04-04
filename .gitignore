@@ -23,5 +23,11 @@ ios/AtomicMobile.xcodeproj/
 ios/DerivedData/
 ios/build/
 
+# Discord bot
+discord/data/
+discord/dist/
+discord/node_modules/
+atomic-discord.config.yaml
+
 # Claude Code
 .claude/
