@@ -160,7 +160,7 @@ impl ChunkStore for PostgresStorage {
     }
 
     async fn reset_failed_embeddings(&self) -> StorageResult<i32> {
-        let result = sqlx::query(
+        let embedding_result = sqlx::query(
             "UPDATE atoms SET embedding_status = 'pending', embedding_error = NULL WHERE embedding_status = 'failed' AND db_id = $1",
         )
         .bind(&self.db_id)
@@ -173,7 +173,20 @@ impl ChunkStore for PostgresStorage {
             ))
         })?;
 
-        Ok(result.rows_affected() as i32)
+        let tagging_result = sqlx::query(
+            "UPDATE atoms SET tagging_status = 'pending', tagging_error = NULL WHERE tagging_status = 'failed' AND db_id = $1",
+        )
+        .bind(&self.db_id)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| {
+            AtomicCoreError::DatabaseOperation(format!(
+                "Failed to reset failed tagging: {}",
+                e
+            ))
+        })?;
+
+        Ok((embedding_result.rows_affected() + tagging_result.rows_affected()) as i32)
     }
 
     async fn rebuild_semantic_edges(&self) -> StorageResult<i32> {

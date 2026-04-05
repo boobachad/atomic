@@ -95,6 +95,8 @@ pub async fn generate_embeddings_with_config(
 }
 
 /// Error from embedding generation with retryability info
+#[derive(Debug, thiserror::Error)]
+#[error("{message}")]
 pub struct EmbedError {
     pub message: String,
     pub retryable: bool,

@@ -160,7 +160,7 @@ impl SqliteStorage {
         Ok((embedding_count + tagging_count) as i32)
     }
 
-    /// Reset failed embedding atoms back to pending (for auto-retry on config fix).
+    /// Reset failed embedding and tagging atoms back to pending (for auto-retry on config fix).
     pub(crate) fn reset_failed_embeddings_sync(&self) -> StorageResult<i32> {
         let conn = self
             .db
@@ -168,12 +168,17 @@ impl SqliteStorage {
             .lock()
             .map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
 
-        let count = conn.execute(
+        let embedding_count = conn.execute(
             "UPDATE atoms SET embedding_status = 'pending', embedding_error = NULL WHERE embedding_status = 'failed'",
             [],
         )?;
 
-        Ok(count as i32)
+        let tagging_count = conn.execute(
+            "UPDATE atoms SET tagging_status = 'pending', tagging_error = NULL WHERE tagging_status = 'failed'",
+            [],
+        )?;
+
+        Ok((embedding_count + tagging_count) as i32)
     }
 
     pub(crate) fn rebuild_semantic_edges_sync(&self) -> StorageResult<i32> {
@@ -532,12 +537,35 @@ impl SqliteStorage {
             })?
             .collect::<Result<Vec<_>, _>>()?;
 
+        let tagging_failed_count: i32 = conn.query_row(
+            "SELECT COUNT(*) FROM atoms WHERE tagging_status = 'failed'",
+            [],
+            |r| r.get(0),
+        )?;
+
+        let mut stmt = conn.prepare(
+            "SELECT id, title, snippet, tagging_error, updated_at FROM atoms WHERE tagging_status = 'failed' ORDER BY updated_at DESC LIMIT 100",
+        )?;
+        let tagging_failed: Vec<FailedAtom> = stmt
+            .query_map([], |row| {
+                Ok(FailedAtom {
+                    atom_id: row.get(0)?,
+                    title: row.get(1)?,
+                    snippet: row.get(2)?,
+                    error: row.get(3)?,
+                    updated_at: row.get(4)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+
         Ok(PipelineStatus {
             pending,
             processing,
             complete,
             failed_count,
             failed,
+            tagging_failed_count,
+            tagging_failed,
         })
     }
 }

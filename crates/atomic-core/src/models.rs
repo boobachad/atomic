@@ -653,6 +653,8 @@ pub struct PipelineStatus {
     pub complete: i32,
     pub failed_count: i32,
     pub failed: Vec<FailedAtom>,
+    pub tagging_failed_count: i32,
+    pub tagging_failed: Vec<FailedAtom>,
 }
 
 /// An atom that failed embedding or tagging

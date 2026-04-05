@@ -908,6 +908,14 @@ impl AtomicCore {
     where
         F: Fn(EmbeddingEvent) + Send + Sync + 'static,
     {
+        let status = self.storage.get_embedding_status_impl(atom_id)?;
+        if status == "processing" {
+            return Err(AtomicCoreError::Validation(format!(
+                "Atom {} is already being embedded",
+                atom_id
+            )));
+        }
+
         let content = self.storage.get_atom_content_impl(atom_id)?
             .ok_or_else(|| AtomicCoreError::NotFound(format!("Atom {} not found", atom_id)))?;
 
@@ -999,6 +1007,13 @@ impl AtomicCore {
         // Verify atom exists
         self.storage.get_atom_content_impl(atom_id)?
             .ok_or_else(|| AtomicCoreError::NotFound(format!("Atom {} not found", atom_id)))?;
+        let status = self.storage.get_tagging_status_impl(atom_id)?;
+        if status == "processing" {
+            return Err(AtomicCoreError::Validation(format!(
+                "Atom {} is already being tagged",
+                atom_id
+            )));
+        }
         // Reset tagging status to pending
         self.storage.set_tagging_status_sync(atom_id, "pending", None)?;
 
@@ -1415,7 +1430,8 @@ impl AtomicCore {
                     key,
                     "Provider config updated — retrying previously failed atoms"
                 );
-                let _ = self.process_pending_embeddings(on_event);
+                let _ = self.process_pending_embeddings(on_event.clone());
+                let _ = self.process_pending_tagging(on_event);
             }
         }
 
