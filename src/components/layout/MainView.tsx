@@ -5,6 +5,7 @@ import { AtomList } from '../atoms/AtomList';
 import { FilterBar } from '../atoms/FilterBar';
 import { SigmaCanvas } from '../canvas/SigmaCanvas';
 import { FAB } from '../ui/FAB';
+import { EmbeddingProgressBanner } from '../ui/EmbeddingProgressBanner';
 import { useAtomsStore } from '../../stores/atoms';
 import { useUIStore } from '../../stores/ui';
 
@@ -158,7 +159,7 @@ export function MainView() {
   const displayCount = isSemanticSearch ? displayAtoms.length : totalCount;
 
   return (
-    <main className="flex-1 flex flex-col h-full bg-[var(--color-bg-main)] overflow-hidden">
+    <main className="relative flex-1 flex flex-col h-full bg-[var(--color-bg-main)] overflow-hidden">
       {/* Titlebar row - aligned with traffic lights */}
       <div className="h-[52px] flex items-center gap-3 px-4 flex-shrink-0">
         {/* Sidebar toggle — visible on small screens when panel is collapsed */}
@@ -342,6 +343,9 @@ export function MainView() {
 
       {/* FAB */}
       <FAB onClick={handleNewAtom} title="Create new atom" />
+
+      {/* Embedding progress overlay */}
+      <EmbeddingProgressBanner />
     </main>
   );
 }
