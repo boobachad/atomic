@@ -543,7 +543,7 @@ dependencies = [
 
 [[package]]
 name = "atomic"
-version = "1.13.3"
+version = "1.14.0"
 dependencies = [
  "atomic-core",
  "reqwest 0.12.26",
@@ -551,6 +551,7 @@ dependencies = [
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
+ "tauri-plugin-fs",
  "tauri-plugin-opener",
  "tauri-plugin-shell",
  "tracing",
