@@ -116,7 +116,7 @@ pub struct EmbedError {
 }
 
 /// Maximum texts per embedding API call for cross-atom batching.
-/// At ~2500 tokens/chunk this yields ~75k tokens per API call, which fits
+/// At ~800 tokens/chunk this yields ~24k tokens per API call, which fits
 /// within most providers' limits. The adaptive retry will split further
 /// if a provider rejects the batch size.
 const EMBEDDING_BATCH_SIZE: usize = 30;

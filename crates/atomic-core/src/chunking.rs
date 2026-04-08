@@ -4,10 +4,10 @@
 //! - Uses pulldown-cmark to parse markdown structure
 //! - Never splits code blocks (kept atomic for syntax integrity)
 //! - Headers create natural chunk boundaries
-//! - Target chunk size: ~10000 chars (~2500 tokens)
-//! - Minimum chunk size: ~400 chars (~100 tokens)
-//! - Maximum chunk size: ~12000 chars (~3000 tokens, except code blocks)
-//! - Overlap: ~800 chars (~200 tokens) from next chunk appended to each chunk
+//! - Target chunk size: ~3200 chars (~800 tokens)
+//! - Minimum chunk size: ~240 chars (~60 tokens)
+//! - Maximum chunk size: ~4000 chars (~1000 tokens, except code blocks)
+//! - Overlap: ~320 chars (~80 tokens) from next chunk appended to each chunk
 //!
 //! Uses character counts for fast size estimation (~4 chars/token).
 //! Exact token counts (via `count_tokens`) are available for callers that
@@ -21,10 +21,10 @@ use tiktoken_rs::{cl100k_base, CoreBPE};
 const CHARS_PER_TOKEN: usize = 4;
 
 /// Configuration constants for chunking (in characters)
-const TARGET_CHUNK_CHARS: usize = 2500 * CHARS_PER_TOKEN;
-const OVERLAP_CHARS: usize = 200 * CHARS_PER_TOKEN;
-const MIN_CHUNK_CHARS: usize = 100 * CHARS_PER_TOKEN;
-const MAX_CHUNK_CHARS: usize = 3000 * CHARS_PER_TOKEN;
+const TARGET_CHUNK_CHARS: usize = 800 * CHARS_PER_TOKEN;
+const OVERLAP_CHARS: usize = 80 * CHARS_PER_TOKEN;
+const MIN_CHUNK_CHARS: usize = 60 * CHARS_PER_TOKEN;
+const MAX_CHUNK_CHARS: usize = 1000 * CHARS_PER_TOKEN;
 
 /// Lazily initialized tokenizer (loaded once, reused for all operations)
 static BPE: LazyLock<CoreBPE> = LazyLock::new(|| {
