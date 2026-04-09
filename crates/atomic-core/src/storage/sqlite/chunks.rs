@@ -106,7 +106,8 @@ impl SqliteStorage {
     }
 
     /// Save chunks and embeddings for multiple atoms in a single transaction.
-    /// Each entry is (atom_id, chunks). One lock acquire, one fsync.
+    /// Each atom is wrapped in a SAVEPOINT so a mid-atom failure rolls back
+    /// only that atom's partial state (DELETEs + INSERTs), not the whole batch.
     pub(crate) fn save_chunks_and_embeddings_batch_sync(
         &self,
         atoms: &[(String, Vec<(String, Vec<f32>)>)],
@@ -119,15 +120,26 @@ impl SqliteStorage {
             .conn
             .lock()
             .map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
-        let tx = conn.transaction()
+        let mut tx = conn.transaction()
             .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
 
         let mut succeeded = Vec::new();
         for (atom_id, chunks) in atoms {
-            match Self::save_chunks_for_atom(&tx, atom_id, chunks) {
-                Ok(()) => succeeded.push(atom_id.clone()),
+            // SAVEPOINT per atom: if save_chunks_for_atom fails mid-way
+            // (after DELETE but during INSERTs), the SAVEPOINT rollback
+            // restores the atom's prior chunk/FTS state instead of
+            // committing a partial write.
+            let sp = tx.savepoint()
+                .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+            match Self::save_chunks_for_atom(&sp, atom_id, chunks) {
+                Ok(()) => {
+                    sp.commit()
+                        .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+                    succeeded.push(atom_id.clone());
+                }
                 Err(e) => {
-                    tracing::warn!(atom_id = %atom_id, error = %e, "Failed to save chunks for atom");
+                    // sp is dropped without commit → implicit rollback to savepoint
+                    tracing::warn!(atom_id = %atom_id, error = %e, "Failed to save chunks for atom, rolled back");
                 }
             }
         }
@@ -551,32 +563,38 @@ impl SqliteStorage {
             .map_err(|e| AtomicCoreError::Embedding(e))
     }
 
-    /// Compute semantic edges for a batch of atoms in a single transaction.
-    /// Returns total number of edges created across all atoms.
+    /// Compute semantic edges for a batch of atoms, processing in sub-batches
+    /// of EDGE_SUB_BATCH atoms each. Each sub-batch acquires the write lock,
+    /// runs a transaction, and releases — keeping mutex hold times short so
+    /// concurrent writes (e.g. UI atom saves) aren't stalled.
     pub(crate) fn compute_semantic_edges_batch_sync(
         &self,
         atom_ids: &[String],
         threshold: f32,
         max_edges: i32,
     ) -> StorageResult<i32> {
-        let mut conn = self
-            .db
-            .conn
-            .lock()
-            .map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
-        let tx = conn.transaction()
-            .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+        const EDGE_SUB_BATCH: usize = 50;
         let mut total_edges = 0;
-        for atom_id in atom_ids {
-            match embedding::compute_semantic_edges_for_atom(&tx, atom_id, threshold, max_edges) {
-                Ok(count) => total_edges += count,
-                Err(e) => {
-                    tracing::warn!(atom_id = %atom_id, error = %e, "Failed to compute edges for atom");
+        for chunk in atom_ids.chunks(EDGE_SUB_BATCH) {
+            let mut conn = self
+                .db
+                .conn
+                .lock()
+                .map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+            let tx = conn.transaction()
+                .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+            for atom_id in chunk {
+                match embedding::compute_semantic_edges_for_atom(&tx, atom_id, threshold, max_edges) {
+                    Ok(count) => total_edges += count,
+                    Err(e) => {
+                        tracing::warn!(atom_id = %atom_id, error = %e, "Failed to compute edges for atom");
+                    }
                 }
             }
+            tx.commit()
+                .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+            // conn lock dropped here — other writers can proceed between sub-batches
         }
-        tx.commit()
-            .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
         Ok(total_edges)
     }
 
