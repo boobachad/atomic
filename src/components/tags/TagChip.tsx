@@ -4,12 +4,13 @@ interface TagChipProps {
   name: string;
   onClick?: (e: React.MouseEvent) => void;
   onRemove?: () => void;
-  size?: 'sm' | 'md';
+  size?: 'xs' | 'sm' | 'md';
   className?: string;
 }
 
 export const TagChip = memo(function TagChip({ name, onClick, onRemove, size = 'sm', className = '' }: TagChipProps) {
   const sizeStyles = {
+    xs: 'px-1.5 py-0 text-[10px] leading-4',
     sm: 'px-2 py-0.5 text-xs',
     md: 'px-2.5 py-1 text-sm',
   };

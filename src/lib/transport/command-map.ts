@@ -406,7 +406,10 @@ export const COMMAND_MAP: Record<string, CommandSpec> = {
     method: 'POST',
     path: (a) => `/api/conversations/${encodeURIComponent(a.conversationId as string)}/messages`,
     argsMode: 'body',
-    transformArgs: (a) => ({ content: a.content }),
+    transformArgs: (a) => ({
+      content: a.content,
+      ...(a.canvasContext ? { canvas_context: a.canvasContext } : {}),
+    }),
   },
 
   // ==================== Ollama ====================

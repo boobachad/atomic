@@ -1,7 +1,6 @@
 import { memo, MouseEvent, useCallback } from 'react';
 import { TagWithCount, useTagsStore } from '../../stores/tags';
 import { useUIStore } from '../../stores/ui';
-import { useWikiStore } from '../../stores/wiki';
 
 interface TagNodeProps {
   tag: TagWithCount;
@@ -12,8 +11,7 @@ interface TagNodeProps {
 }
 
 export const TagNode = memo(function TagNode({ tag, level, selectedTagId, onSelect, onContextMenu }: TagNodeProps) {
-  const setViewMode = useUIStore(s => s.setViewMode);
-  const openChatDrawer = useUIStore(s => s.openChatDrawer);
+  const openChatSidebar = useUIStore(s => s.openChatSidebar);
   const isExpanded = useUIStore(s => !!s.expandedTagIds[tag.id]);
   const toggleTagExpanded = useUIStore(s => s.toggleTagExpanded);
   const fetchTagChildren = useTagsStore(s => s.fetchTagChildren);
@@ -34,17 +32,16 @@ export const TagNode = memo(function TagNode({ tag, level, selectedTagId, onSele
     onContextMenu(e, tag);
   };
 
-  const openArticle = useWikiStore(s => s.openArticle);
+  const openWikiReader = useUIStore(s => s.openWikiReader);
 
   const handleWikiClick = (e: MouseEvent) => {
     e.stopPropagation();
-    setViewMode('wiki');
-    openArticle(tag.id, tag.name);
+    openWikiReader(tag.id, tag.name);
   };
 
   const handleChatClick = (e: MouseEvent) => {
     e.stopPropagation();
-    openChatDrawer(tag.id);
+    openChatSidebar(tag.id);
   };
 
   return (

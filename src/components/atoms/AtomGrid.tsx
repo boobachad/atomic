@@ -62,7 +62,7 @@ export const AtomGrid = memo(function AtomGrid({
 
   if (atoms.length === 0 && isLoading) {
     return (
-      <div ref={parentRef} className="h-full overflow-y-auto p-4">
+      <div ref={parentRef} className="h-full overflow-y-auto scrollbar-auto-hide p-4">
         <div
           style={{
             display: 'grid',
@@ -103,7 +103,7 @@ export const AtomGrid = memo(function AtomGrid({
   }
 
   return (
-    <div ref={parentRef} className="h-full overflow-y-auto">
+    <div ref={parentRef} className="h-full overflow-y-auto scrollbar-auto-hide">
       <div
         className="relative w-full p-4"
         style={{ height: `${virtualizer.getTotalSize() + PADDING * 2 + (isLoadingMore ? 48 : 0)}px` }}

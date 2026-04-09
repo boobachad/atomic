@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, Fragment, ReactNode } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { WikiArticle, WikiCitation, WikiLink, RelatedTag, useWikiStore } from '../../stores/wiki';
+import { WikiArticle, WikiCitation, WikiLink, RelatedTag } from '../../stores/wiki';
 import { CitationLink } from './CitationLink';
 import { CitationPopover } from './CitationPopover';
 import { WikiLinkInline } from './WikiLinkInline';
@@ -26,7 +26,6 @@ interface WikiArticleContentProps {
 export function WikiArticleContent({ article, citations, wikiLinks, relatedTags, tagName, updatedAt, sourceCount, titleActions, onViewAtom, onNavigateToArticle }: WikiArticleContentProps) {
   const [activeCitation, setActiveCitation] = useState<WikiCitation | null>(null);
   const [anchorRect, setAnchorRect] = useState<{ top: number; left: number; bottom: number; width: number } | null>(null);
-  const openAndGenerate = useWikiStore(s => s.openAndGenerate);
 
   // Content search
   const {
@@ -73,10 +72,8 @@ export function WikiArticleContent({ article, citations, wikiLinks, relatedTags,
   };
 
   const handleWikiLinkClick = (link: WikiLink) => {
-    if (link.has_article && link.target_tag_id) {
+    if (link.target_tag_id) {
       onNavigateToArticle(link.target_tag_id, link.target_tag_name);
-    } else if (link.target_tag_id) {
-      openAndGenerate(link.target_tag_id, link.target_tag_name);
     }
   };
 
@@ -289,7 +286,7 @@ export function WikiArticleContent({ article, citations, wikiLinks, relatedTags,
               {relatedTags.filter(t => !t.has_article).map(tag => (
                 <button
                   key={tag.tag_id}
-                  onClick={() => openAndGenerate(tag.tag_id, tag.tag_name)}
+                  onClick={() => onNavigateToArticle(tag.tag_id, tag.tag_name)}
                   className="w-full group flex items-center justify-between px-3 py-2 hover:bg-[var(--color-bg-elevated)] transition-colors text-left"
                 >
                   <div className="min-w-0 flex-1">

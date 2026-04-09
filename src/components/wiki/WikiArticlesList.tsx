@@ -31,18 +31,6 @@ export function WikiArticlesList() {
 
   return (
     <div className="h-full flex flex-col">
-      <div className="flex-shrink-0 p-4 border-b border-[var(--color-border)]">
-        <button
-          onClick={() => setIsModalOpen(true)}
-          className="w-full flex items-center justify-center gap-2 px-4 py-2 bg-[var(--color-accent)] hover:bg-[var(--color-accent-hover)] text-white rounded-lg transition-colors text-sm"
-        >
-          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-          </svg>
-          New Article
-        </button>
-      </div>
-
       {/* Scrollable content: articles + suggestions */}
       <div className="flex-1 overflow-y-auto">
         {articles.length === 0 && suggestedArticles.length === 0 ? (
@@ -117,6 +105,19 @@ export function WikiArticlesList() {
             )}
           </>
         )}
+      </div>
+
+      {/* New Article button */}
+      <div className="px-3 py-2 border-t border-[var(--color-border)] shrink-0">
+        <button
+          onClick={() => setIsModalOpen(true)}
+          className="w-full flex items-center justify-start gap-1.5 px-2 py-1.5 text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-hover)] rounded-md transition-colors"
+        >
+          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+          </svg>
+          New Article
+        </button>
       </div>
 
       {/* New Wiki Modal */}

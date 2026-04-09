@@ -3,7 +3,6 @@ import { TransformWrapper, TransformComponent } from 'react-zoom-pan-pinch';
 import * as d3 from 'd3-force';
 import { getAtomNeighborhood, type NeighborhoodGraph, type NeighborhoodAtom } from '../../lib/api';
 import { useUIStore } from '../../stores/ui';
-import { isTauri } from '../../lib/platform';
 
 // Generate a consistent HSL color from a string (tag name)
 function stringToHSL(str: string): string {
@@ -23,19 +22,12 @@ interface SimulationNode extends d3.SimulationNodeDatum {
   atom: NeighborhoodAtom;
 }
 
-interface LocalGraphViewProps {
-  onAtomClick: (atomId: string) => void;
-}
-
-export function LocalGraphView({ onAtomClick: _onAtomClick }: LocalGraphViewProps) {
+export function LocalGraphView() {
   const localGraph = useUIStore(s => s.localGraph);
   const navigateLocalGraph = useUIStore(s => s.navigateLocalGraph);
   const goBackLocalGraph = useUIStore(s => s.goBackLocalGraph);
   const setLocalGraphDepth = useUIStore(s => s.setLocalGraphDepth);
   const overlayNavigate = useUIStore(s => s.overlayNavigate);
-  const overlayBack = useUIStore(s => s.overlayBack);
-  const overlayDismiss = useUIStore(s => s.overlayDismiss);
-  const overlayNav = useUIStore(s => s.overlayNav);
   const [graph, setGraph] = useState<NeighborhoodGraph | null>(null);
   const [nodes, setNodes] = useState<SimulationNode[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -149,33 +141,10 @@ export function LocalGraphView({ onAtomClick: _onAtomClick }: LocalGraphViewProp
   if (!localGraph.isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 bg-[var(--color-bg-main)] flex flex-col">
+    <div className="h-full bg-[var(--color-bg-main)] flex flex-col">
       {/* Header */}
-      <div className={`flex items-center justify-between px-4 py-3 border-b border-[var(--color-border)] ${isTauri() ? 'pl-[78px]' : ''}`} data-tauri-drag-region>
+      <div className="flex items-center justify-between px-4 py-3 border-b border-[var(--color-border)]">
         <div className="flex items-center gap-3">
-          {/* Overlay back/forward */}
-          <div className="flex items-center gap-1">
-            <button
-              onClick={overlayBack}
-              disabled={overlayNav.index <= 0}
-              className={`p-1.5 rounded-md transition-colors ${overlayNav.index > 0 ? 'text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-hover)]' : 'text-[var(--color-text-tertiary)] cursor-default'}`}
-              title="Back"
-            >
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
-              </svg>
-            </button>
-            <button
-              onClick={overlayNav.index < overlayNav.stack.length - 1 ? () => useUIStore.getState().overlayForward() : undefined}
-              disabled={overlayNav.index >= overlayNav.stack.length - 1}
-              className={`p-1.5 rounded-md transition-colors ${overlayNav.index < overlayNav.stack.length - 1 ? 'text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-hover)]' : 'text-[var(--color-text-tertiary)] cursor-default'}`}
-              title="Forward"
-            >
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-              </svg>
-            </button>
-          </div>
           {/* Graph-internal back */}
           {localGraph.navigationHistory.length > 1 && (
             <button
@@ -224,16 +193,6 @@ export function LocalGraphView({ onAtomClick: _onAtomClick }: LocalGraphViewProp
             </button>
           </div>
 
-          {/* Dismiss button */}
-          <button
-            onClick={overlayDismiss}
-            className="p-1.5 rounded hover:bg-[var(--color-bg-hover)] text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]"
-            title="Close"
-          >
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-            </svg>
-          </button>
         </div>
       </div>
 

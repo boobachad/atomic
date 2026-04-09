@@ -3,16 +3,15 @@ import { persist } from 'zustand/middleware';
 import type { CanvasLevel } from '../lib/api';
 import { getCanvasLevel } from '../lib/api';
 
-export type DrawerMode = 'editor' | 'viewer' | 'wiki' | 'chat';
+export type DrawerMode = 'editor' | 'viewer' | 'wiki';
 export type ViewMode = 'grid' | 'list' | 'canvas' | 'wiki';
 
 interface DrawerState {
   isOpen: boolean;
   mode: DrawerMode;
   atomId: string | null;      // For editor/viewer modes
-  tagId: string | null;       // For wiki and chat modes
+  tagId: string | null;       // For wiki mode
   tagName: string | null;     // For wiki mode (display purposes)
-  conversationId: string | null;  // For chat mode
   highlightText: string | null;   // For viewer mode (text to highlight and scroll to)
 }
 
@@ -39,9 +38,15 @@ interface ReaderState {
   highlightText: string | null;
 }
 
+interface WikiReaderState {
+  tagId: string | null;
+  tagName: string | null;
+}
+
 type OverlayNavEntry =
   | { type: 'reader'; atomId: string; highlightText?: string | null }
   | { type: 'graph'; atomId: string }
+  | { type: 'wiki'; tagId: string; tagName: string }
 
 interface OverlayNav {
   stack: OverlayNavEntry[];
@@ -53,13 +58,19 @@ interface UIStore {
   expandedTagIds: Record<string, boolean>;  // Tags that should be expanded in sidebar
   drawerState: DrawerState;
   readerState: ReaderState;
+  wikiReaderState: WikiReaderState;
   overlayNav: OverlayNav;
   viewMode: ViewMode;
   searchQuery: string;
   loadingOperations: LoadingOperation[];
   // Panel state
   leftPanelOpen: boolean;
+  leftPanelOpenBeforeReader: boolean;
   wikiSidebarOpen: boolean;
+  // Chat sidebar state
+  chatSidebarOpen: boolean;
+  chatSidebarInitialTagId: string | null;
+  chatSidebarInitialConversationId: string | null;
   // Server connection state
   serverConnected: boolean;
   // Local graph state
@@ -83,6 +94,7 @@ interface UIStore {
   toggleTagExpanded: (tagId: string) => void;
   openReader: (atomId: string, highlightText?: string) => void;
   closeReader: () => void;
+  openWikiReader: (tagId: string, tagName: string) => void;
   overlayNavigate: (entry: OverlayNavEntry) => void;
   overlayBack: () => void;
   overlayForward: () => void;
@@ -90,8 +102,12 @@ interface UIStore {
   openDrawer: (mode: DrawerMode, atomId?: string, highlightText?: string) => void;
   openWikiDrawer: (tagId: string, tagName: string) => void;
   openWikiListDrawer: () => void;
-  openChatDrawer: (tagId?: string, conversationId?: string) => void;
   closeDrawer: () => void;
+  // Chat sidebar actions
+  toggleChatSidebar: () => void;
+  setChatSidebarOpen: (open: boolean) => void;
+  openChatSidebar: (tagId?: string, conversationId?: string) => void;
+  clearChatSidebarInitial: () => void;
   setViewMode: (mode: ViewMode) => void;
   setSearchQuery: (query: string) => void;
   addLoadingOperation: (id: string, message: string) => void;
@@ -124,12 +140,15 @@ export const useUIStore = create<UIStore>()(
         atomId: null,
         tagId: null,
         tagName: null,
-        conversationId: null,
         highlightText: null,
       },
       readerState: {
         atomId: null,
         highlightText: null,
+      },
+      wikiReaderState: {
+        tagId: null,
+        tagName: null,
       },
       overlayNav: {
         stack: [],
@@ -146,7 +165,11 @@ export const useUIStore = create<UIStore>()(
       },
       highlightedAtomId: null,
       leftPanelOpen: true,
+      leftPanelOpenBeforeReader: false,
       wikiSidebarOpen: true,
+      chatSidebarOpen: false,
+      chatSidebarInitialTagId: null,
+      chatSidebarInitialConversationId: null,
       serverConnected: false,
       commandPaletteOpen: false,
       commandPaletteInitialQuery: '',
@@ -185,11 +208,14 @@ export const useUIStore = create<UIStore>()(
         const entry: OverlayNavEntry = { type: 'reader', atomId, highlightText };
         set((state) => {
           const stack = state.overlayNav.stack.slice(0, state.overlayNav.index + 1);
+          const isFirstOpen = state.overlayNav.index === -1;
           stack.push(entry);
           return {
             readerState: { atomId, highlightText: highlightText || null },
+            wikiReaderState: { tagId: null, tagName: null },
             overlayNav: { stack, index: stack.length - 1 },
             localGraph: { ...state.localGraph, isOpen: false },
+            ...(isFirstOpen && state.leftPanelOpen ? { leftPanelOpen: false, leftPanelOpenBeforeReader: true } : {}),
           };
         });
       },
@@ -197,25 +223,51 @@ export const useUIStore = create<UIStore>()(
       closeReader: () =>
         set({
           readerState: { atomId: null, highlightText: null },
+          wikiReaderState: { tagId: null, tagName: null },
           overlayNav: { stack: [], index: -1 },
         }),
+
+      openWikiReader: (tagId: string, tagName: string) => {
+        const entry: OverlayNavEntry = { type: 'wiki', tagId, tagName };
+        set((state) => {
+          const stack = state.overlayNav.stack.slice(0, state.overlayNav.index + 1);
+          const isFirstOpen = state.overlayNav.index === -1;
+          stack.push(entry);
+          return {
+            wikiReaderState: { tagId, tagName },
+            readerState: { atomId: null, highlightText: null },
+            overlayNav: { stack, index: stack.length - 1 },
+            localGraph: { ...state.localGraph, isOpen: false },
+            ...(isFirstOpen && state.leftPanelOpen ? { leftPanelOpen: false, leftPanelOpenBeforeReader: true } : {}),
+          };
+        });
+      },
 
       overlayNavigate: (entry: OverlayNavEntry) =>
         set((state) => {
           const stack = state.overlayNav.stack.slice(0, state.overlayNav.index + 1);
           stack.push(entry);
           const index = stack.length - 1;
-          // Sync readerState and localGraph based on entry type
+          // Sync readerState, wikiReaderState, and localGraph based on entry type
           if (entry.type === 'reader') {
             return {
               overlayNav: { stack, index },
               readerState: { atomId: entry.atomId, highlightText: entry.highlightText || null },
+              wikiReaderState: { tagId: null, tagName: null },
+              localGraph: { ...state.localGraph, isOpen: false },
+            };
+          } else if (entry.type === 'wiki') {
+            return {
+              overlayNav: { stack, index },
+              readerState: { atomId: null, highlightText: null },
+              wikiReaderState: { tagId: entry.tagId, tagName: entry.tagName },
               localGraph: { ...state.localGraph, isOpen: false },
             };
           } else {
             return {
               overlayNav: { stack, index },
               readerState: { atomId: null, highlightText: null },
+              wikiReaderState: { tagId: null, tagName: null },
               localGraph: { isOpen: true, centerAtomId: entry.atomId, depth: 1, navigationHistory: [entry.atomId] },
             };
           }
@@ -229,7 +281,9 @@ export const useUIStore = create<UIStore>()(
             return {
               overlayNav: { stack: [], index: -1 },
               readerState: { atomId: null, highlightText: null },
+              wikiReaderState: { tagId: null, tagName: null },
               localGraph: { ...state.localGraph, isOpen: false },
+              ...(state.leftPanelOpenBeforeReader ? { leftPanelOpen: true, leftPanelOpenBeforeReader: false } : {}),
             };
           }
           const entry = state.overlayNav.stack[newIndex];
@@ -237,12 +291,21 @@ export const useUIStore = create<UIStore>()(
             return {
               overlayNav: { ...state.overlayNav, index: newIndex },
               readerState: { atomId: entry.atomId, highlightText: entry.highlightText || null },
+              wikiReaderState: { tagId: null, tagName: null },
+              localGraph: { ...state.localGraph, isOpen: false },
+            };
+          } else if (entry.type === 'wiki') {
+            return {
+              overlayNav: { ...state.overlayNav, index: newIndex },
+              readerState: { atomId: null, highlightText: null },
+              wikiReaderState: { tagId: entry.tagId, tagName: entry.tagName },
               localGraph: { ...state.localGraph, isOpen: false },
             };
           } else {
             return {
               overlayNav: { ...state.overlayNav, index: newIndex },
               readerState: { atomId: null, highlightText: null },
+              wikiReaderState: { tagId: null, tagName: null },
               localGraph: { isOpen: true, centerAtomId: entry.atomId, depth: 1, navigationHistory: [entry.atomId] },
             };
           }
@@ -257,12 +320,21 @@ export const useUIStore = create<UIStore>()(
             return {
               overlayNav: { ...state.overlayNav, index: newIndex },
               readerState: { atomId: entry.atomId, highlightText: entry.highlightText || null },
+              wikiReaderState: { tagId: null, tagName: null },
+              localGraph: { ...state.localGraph, isOpen: false },
+            };
+          } else if (entry.type === 'wiki') {
+            return {
+              overlayNav: { ...state.overlayNav, index: newIndex },
+              readerState: { atomId: null, highlightText: null },
+              wikiReaderState: { tagId: entry.tagId, tagName: entry.tagName },
               localGraph: { ...state.localGraph, isOpen: false },
             };
           } else {
             return {
               overlayNav: { ...state.overlayNav, index: newIndex },
               readerState: { atomId: null, highlightText: null },
+              wikiReaderState: { tagId: null, tagName: null },
               localGraph: { isOpen: true, centerAtomId: entry.atomId, depth: 1, navigationHistory: [entry.atomId] },
             };
           }
@@ -272,7 +344,9 @@ export const useUIStore = create<UIStore>()(
         set((state) => ({
           overlayNav: { stack: [], index: -1 },
           readerState: { atomId: null, highlightText: null },
+          wikiReaderState: { tagId: null, tagName: null },
           localGraph: { ...state.localGraph, isOpen: false },
+          ...(state.leftPanelOpenBeforeReader ? { leftPanelOpen: true, leftPanelOpenBeforeReader: false } : {}),
         })),
 
 
@@ -284,7 +358,6 @@ export const useUIStore = create<UIStore>()(
             atomId: atomId || null,
             tagId: null,
             tagName: null,
-            conversationId: null,
             highlightText: highlightText || null,
           },
         }),
@@ -297,7 +370,6 @@ export const useUIStore = create<UIStore>()(
             atomId: null,
             tagId,
             tagName,
-            conversationId: null,
             highlightText: null,
           },
         }),
@@ -310,20 +382,6 @@ export const useUIStore = create<UIStore>()(
             atomId: null,
             tagId: null,
             tagName: null,
-            conversationId: null,
-            highlightText: null,
-          },
-        }),
-
-      openChatDrawer: (tagId?: string, conversationId?: string) =>
-        set({
-          drawerState: {
-            isOpen: true,
-            mode: 'chat',
-            atomId: null,
-            tagId: tagId || null,
-            tagName: null,
-            conversationId: conversationId || null,
             highlightText: null,
           },
         }),
@@ -337,9 +395,20 @@ export const useUIStore = create<UIStore>()(
           },
         })),
 
+      // Chat sidebar actions
+      toggleChatSidebar: () => set((state) => ({ chatSidebarOpen: !state.chatSidebarOpen })),
+      setChatSidebarOpen: (open: boolean) => set({ chatSidebarOpen: open }),
+      openChatSidebar: (tagId?: string, conversationId?: string) =>
+        set({
+          chatSidebarOpen: true,
+          chatSidebarInitialTagId: tagId || null,
+          chatSidebarInitialConversationId: conversationId || null,
+        }),
+      clearChatSidebarInitial: () =>
+        set({ chatSidebarInitialTagId: null, chatSidebarInitialConversationId: null }),
+
       setViewMode: (mode: ViewMode) => set({
         viewMode: mode,
-        leftPanelOpen: mode !== 'wiki',
       }),
 
       setSearchQuery: (query: string) => set({ searchQuery: query }),
@@ -444,7 +513,7 @@ export const useUIStore = create<UIStore>()(
     }),
     {
       name: 'atomic-ui-storage',
-      partialize: (state) => ({ viewMode: state.viewMode, readerTheme: state.readerTheme }),
+      partialize: (state) => ({ viewMode: state.viewMode, readerTheme: state.readerTheme, chatSidebarOpen: state.chatSidebarOpen }),
     }
   )
 );

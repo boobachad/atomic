@@ -48,7 +48,7 @@ export const AtomList = memo(function AtomList({
 
   if (atoms.length === 0 && isLoading) {
     return (
-      <div ref={parentRef} className="h-full overflow-y-auto px-4 pt-4">
+      <div ref={parentRef} className="h-full overflow-y-auto scrollbar-auto-hide px-4 pt-4">
         <div className="flex flex-col gap-2">
           {Array.from({ length: 8 }, (_, i) => (
             <AtomCardSkeleton key={i} viewMode="list" />
@@ -83,7 +83,7 @@ export const AtomList = memo(function AtomList({
   }
 
   return (
-    <div ref={parentRef} className="h-full overflow-y-auto">
+    <div ref={parentRef} className="h-full overflow-y-auto scrollbar-auto-hide">
       <div
         className="relative w-full px-4 pt-4"
         style={{ height: `${virtualizer.getTotalSize() + 16 + (isLoadingMore ? 48 : 0)}px` }}

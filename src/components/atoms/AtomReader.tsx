@@ -2,7 +2,6 @@ import { useState, useEffect, useCallback, ReactNode, useRef, useMemo, memo } fr
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { openExternalUrl } from '../../lib/platform';
-import { Button } from '../ui/Button';
 import { Modal } from '../ui/Modal';
 import { SearchBar } from '../ui/SearchBar';
 import { MarkdownImage } from '../ui/MarkdownImage';
@@ -48,11 +47,7 @@ export function AtomReader({ atomId, highlightText }: AtomReaderProps) {
   const fetchTags = useTagsStore(s => s.fetchTags);
   const setSelectedTag = useUIStore(s => s.setSelectedTag);
   const overlayNavigate = useUIStore(s => s.overlayNavigate);
-  const overlayBack = useUIStore(s => s.overlayBack);
-  const overlayForward = useUIStore(s => s.overlayForward);
   const overlayDismiss = useUIStore(s => s.overlayDismiss);
-  const overlayNav = useUIStore(s => s.overlayNav);
-  const openDrawer = useUIStore(s => s.openDrawer);
 
   const [atom, setAtom] = useState<AtomWithTags | null>(null);
   const [isLoadingAtom, setIsLoadingAtom] = useState(true);
@@ -104,15 +99,8 @@ export function AtomReader({ atomId, highlightText }: AtomReaderProps) {
     }
   }, [atomId, storeAtomUpdatedAt, isLoadingAtom]);
 
-  const canGoBack = overlayNav.index > 0;
-  const canGoForward = overlayNav.index < overlayNav.stack.length - 1;
-
-  // Backdrop always renders immediately for instant feedback
   return (
-    <div
-      className="h-full transition-[backdrop-filter] duration-200 ease-out"
-      style={{ backdropFilter: 'blur(20px)', WebkitBackdropFilter: 'blur(20px)', backgroundColor: 'rgba(30, 30, 30, 0.6)' }}
-    >
+    <div className="h-full bg-[var(--color-bg-main)]">
       {isLoadingAtom ? (
         showLoading ? (
           <div className="flex items-center justify-center h-full text-[var(--color-text-secondary)]">
@@ -127,12 +115,7 @@ export function AtomReader({ atomId, highlightText }: AtomReaderProps) {
         <AtomReaderContent
           atom={atom}
           highlightText={highlightText}
-          onBack={overlayBack}
-          onForward={overlayForward}
           onDismiss={overlayDismiss}
-          canGoBack={canGoBack}
-          canGoForward={canGoForward}
-          onEdit={() => openDrawer('editor', atomId)}
           onDelete={async () => {
             await deleteAtom(atomId);
             await fetchTags();
@@ -150,12 +133,7 @@ export function AtomReader({ atomId, highlightText }: AtomReaderProps) {
 interface AtomReaderContentProps {
   atom: AtomWithTags;
   highlightText?: string | null;
-  onBack: () => void;
-  onForward: () => void;
   onDismiss: () => void;
-  canGoBack: boolean;
-  canGoForward: boolean;
-  onEdit: () => void;
   onDelete: () => Promise<void>;
   onTagClick: (tagId: string) => void;
   onRelatedAtomClick: (atomId: string) => void;
@@ -163,11 +141,10 @@ interface AtomReaderContentProps {
 }
 
 function AtomReaderContent({
-  atom, highlightText, onBack, onForward, onDismiss, canGoBack, canGoForward,
-  onEdit, onDelete, onTagClick, onRelatedAtomClick, onViewGraph,
+  atom, highlightText, onDismiss,
+  onDelete, onTagClick, onRelatedAtomClick, onViewGraph,
 }: AtomReaderContentProps) {
   const readerTheme = useUIStore(s => s.readerTheme);
-  const toggleReaderTheme = useUIStore(s => s.toggleReaderTheme);
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
   const articleRef = useRef<HTMLElement | null>(null);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
@@ -346,85 +323,8 @@ function AtomReaderContent({
       data-reader-theme={readerTheme}
       className={`h-full flex flex-col bg-[var(--color-bg-main)] transition-opacity duration-300 ease-out ${revealed ? 'opacity-100' : 'opacity-0'}`}
     >
-      {/* Top bar */}
-      <div className="flex items-center justify-between px-6 py-3 flex-shrink-0">
-        <div className="flex items-center gap-1">
-          {/* Back */}
-          <button
-            onClick={onBack}
-            disabled={!canGoBack}
-            className={`p-1.5 rounded-md transition-colors ${canGoBack ? 'text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-hover)]' : 'text-[var(--color-text-tertiary)] cursor-default'}`}
-            title="Back"
-          >
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
-            </svg>
-          </button>
-          {/* Forward */}
-          <button
-            onClick={onForward}
-            disabled={!canGoForward}
-            className={`p-1.5 rounded-md transition-colors ${canGoForward ? 'text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-hover)]' : 'text-[var(--color-text-tertiary)] cursor-default'}`}
-            title="Forward"
-          >
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-            </svg>
-          </button>
-        </div>
-        <div className="flex items-center gap-3">
-          {atom.embedding_status !== 'failed' && (
-            <Button variant="ghost" size="sm" onClick={onViewGraph} title="View neighborhood graph">
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <circle cx="12" cy="12" r="3" strokeWidth={2} />
-                <circle cx="5" cy="8" r="2" strokeWidth={2} />
-                <circle cx="19" cy="8" r="2" strokeWidth={2} />
-                <circle cx="7" cy="18" r="2" strokeWidth={2} />
-                <circle cx="17" cy="18" r="2" strokeWidth={2} />
-                <path strokeLinecap="round" strokeWidth={2} d="M9.5 10.5L6.5 9M14.5 10.5L17.5 9M10 14L8 16.5M14 14L16 16.5" />
-              </svg>
-            </Button>
-          )}
-          <Button variant="ghost" size="sm" onClick={onEdit}>
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-            </svg>
-          </Button>
-          <Button variant="ghost" size="sm" onClick={() => setShowDeleteModal(true)}>
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-            </svg>
-          </Button>
-          <button
-            onClick={toggleReaderTheme}
-            className="p-1.5 rounded-md text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-hover)] transition-colors"
-            title={readerTheme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
-          >
-            {readerTheme === 'dark' ? (
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z" />
-              </svg>
-            ) : (
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" />
-              </svg>
-            )}
-          </button>
-          <div className="w-px h-4 bg-[var(--color-border)] mx-1" />
-          <button
-            onClick={onDismiss}
-            className="p-1.5 rounded-md text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-hover)] transition-colors"
-            title="Close"
-          >
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-            </svg>
-          </button>
-        </div>
-      </div>
-
       {/* Scrollable content area */}
-      <div ref={scrollContainerRef} className="flex-1 overflow-y-auto">
+      <div ref={scrollContainerRef} className="flex-1 overflow-y-auto scrollbar-auto-hide">
         {/* Search bar */}
         {isSearchOpen && (
           <div className="max-w-2xl mx-auto px-6">

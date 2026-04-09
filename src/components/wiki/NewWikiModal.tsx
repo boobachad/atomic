@@ -2,6 +2,7 @@ import { useState, useMemo, useRef, useEffect } from 'react';
 import { Modal } from '../ui/Modal';
 import { useTagsStore, TagWithCount } from '../../stores/tags';
 import { useWikiStore } from '../../stores/wiki';
+import { useUIStore } from '../../stores/ui';
 
 interface NewWikiModalProps {
   isOpen: boolean;
@@ -85,9 +86,8 @@ export function NewWikiModal({ isOpen, onClose }: NewWikiModalProps) {
   const [selectedTag, setSelectedTag] = useState<FlatTag | null>(null);
   const allTags = useTagsStore(s => s.tags);
   const articles = useWikiStore(s => s.articles);
-  const openArticle = useWikiStore(s => s.openArticle);
-  const openAndGenerate = useWikiStore(s => s.openAndGenerate);
   const isGenerating = useWikiStore(s => s.isGenerating);
+  const openWikiReader = useUIStore(s => s.openWikiReader);
   const inputRef = useRef<HTMLInputElement>(null);
 
   // Set of tag IDs that already have wiki articles
@@ -157,9 +157,7 @@ export function NewWikiModal({ isOpen, onClose }: NewWikiModalProps) {
 
   const handleGenerate = () => {
     if (!selectedTag) return;
-
-    // Open article view and start generation
-    openAndGenerate(selectedTag.id, selectedTag.name);
+    openWikiReader(selectedTag.id, selectedTag.name);
     onClose();
   };
 
@@ -167,7 +165,7 @@ export function NewWikiModal({ isOpen, onClose }: NewWikiModalProps) {
     if (!selectedTag) return;
     const article = articles.find((a) => a.tag_id === selectedTag.id);
     if (article) {
-      openArticle(article.tag_id, article.tag_name);
+      openWikiReader(article.tag_id, article.tag_name);
       onClose();
     }
   };

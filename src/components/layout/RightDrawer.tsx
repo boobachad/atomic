@@ -6,7 +6,6 @@ import { AtomEditor } from '../atoms/AtomEditor';
 import { AtomViewer } from '../atoms/AtomViewer';
 import { WikiViewer } from '../wiki/WikiViewer';
 import { WikiListViewer } from '../wiki/WikiListViewer';
-import { ChatViewer } from '../chat/ChatViewer';
 import { useUIStore } from '../../stores/ui';
 import { useAtomsStore, type AtomWithTags } from '../../stores/atoms';
 import { useClickOutside } from '../../hooks/useClickOutside';
@@ -30,7 +29,7 @@ export function RightDrawer() {
   const drawerRef = useRef<HTMLDivElement>(null);
   const openTimeRef = useRef<number | null>(null);
 
-  const { isOpen, mode, atomId, tagId, tagName, conversationId, highlightText } = drawerState;
+  const { isOpen, mode, atomId, tagId, tagName, highlightText } = drawerState;
 
   const [atom, setAtom] = useState<AtomWithTags | null>(null);
   const [isLoadingAtom, setIsLoadingAtom] = useState(false);
@@ -192,11 +191,6 @@ export function RightDrawer() {
         }
         contentType = 'wiki';
         result = <WikiViewer tagId={tagId} tagName={tagName} />;
-        break;
-      case 'chat':
-        contentType = 'chat';
-        // Only render when open to ensure proper initialization on each open
-        result = isOpen ? <ChatViewer initialTagId={tagId} initialConversationId={conversationId} /> : null;
         break;
       default:
         contentType = 'null';

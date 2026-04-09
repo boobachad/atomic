@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useCallback } from 'react';
 import { useUIStore } from '../../stores/ui';
 import { useDatabasesStore } from '../../stores/databases';
 import { getGlobalCanvas, type GlobalCanvasData } from '../../lib/api';
+import { getTransport } from '../../lib/transport';
 import Graph from 'graphology';
 import Sigma from 'sigma';
 import EdgeCurveProgram from '@sigma/edge-curve';
@@ -12,6 +13,8 @@ import {
   edgeColor,
   type CanvasTheme,
 } from './sigma/themes';
+import { AtomPreviewPopover } from './AtomPreviewPopover';
+import { useCanvasStore } from '../../stores/canvas';
 
 function truncLabel(str: string, max: number): string {
   return str.length > max ? str.substring(0, max - 1) + '\u2026' : str;
@@ -34,6 +37,15 @@ export function SigmaCanvas() {
   const edgeAnimProgress = useRef(1); // 0 = invisible, 1 = fully visible
   const themeRef = useRef(theme);
   themeRef.current = theme;
+
+  // Atom preview popover state
+  const [previewAtomId, setPreviewAtomId] = useState<string | null>(null);
+  const [previewAnchorRect, setPreviewAnchorRect] = useState<{ top: number; left: number; bottom: number; width: number } | null>(null);
+
+  const closePreview = useCallback(() => {
+    setPreviewAtomId(null);
+    setPreviewAnchorRect(null);
+  }, []);
 
   // Build a set of atom IDs that match the selected tag
   const selectedTagRef = useRef(selectedTagId);
@@ -344,18 +356,78 @@ export function SigmaCanvas() {
     requestAnimationFrame(animateTick);
     const cancelAnim = () => { cancelledAnim = true; };
 
+    // Helper to show atom preview popover at a node's screen position
+    const showAtomPreview = (atomId: string) => {
+      if (!graph.hasNode(atomId) || !sigma) return;
+      const nodeAttrs = graph.getNodeAttributes(atomId);
+      const viewportPos = sigma.graphToViewport({ x: nodeAttrs.x as number, y: nodeAttrs.y as number });
+      const containerRect = container!.getBoundingClientRect();
+      const nodeSize = (nodeAttrs.size as number) || 4;
+      const screenX = containerRect.left + viewportPos.x;
+      const screenY = containerRect.top + viewportPos.y;
+      setPreviewAnchorRect({
+        top: screenY - nodeSize,
+        left: screenX - nodeSize,
+        bottom: screenY + nodeSize,
+        width: nodeSize * 2,
+      });
+      setPreviewAtomId(atomId);
+    };
+
     sigma.on('clickNode', ({ node }) => {
-      openReader(node);
+      showAtomPreview(node);
+    });
+
+    // Register canvas controller for chat tools
+    // Sigma camera uses normalized [0,1] coords; convert graph coords through the BBox
+    const bboxW = xMax - xMin || 1;
+    const bboxH = yMax - yMin || 1;
+    const graphToCamera = (gx: number, gy: number) => ({
+      x: (gx - xMin) / bboxW,
+      y: (gy - yMin) / bboxH,
+    });
+
+    const { registerController, setCanvasData } = useCanvasStore.getState();
+    setCanvasData(data);
+    registerController({
+      zoomToCluster: (clusterLabel: string) => {
+        const cluster = data.clusters.find(
+          (c) => c.label.toLowerCase() === clusterLabel.toLowerCase()
+        );
+        if (!cluster || !graph || !sigma) return;
+        let cx = 0, cy = 0, count = 0;
+        for (const atomId of cluster.atom_ids) {
+          if (!graph.hasNode(atomId)) continue;
+          cx += graph.getNodeAttribute(atomId, 'x') as number;
+          cy += graph.getNodeAttribute(atomId, 'y') as number;
+          count++;
+        }
+        if (count === 0) return;
+        cx /= count;
+        cy /= count;
+        const cam = graphToCamera(cx, cy);
+        sigma.getCamera().animate({ x: cam.x, y: cam.y, ratio: 0.3 }, { duration: 800 });
+      },
+      focusAtom: (atomId: string) => {
+        if (!graph.hasNode(atomId) || !sigma) return;
+        const gx = graph.getNodeAttribute(atomId, 'x') as number;
+        const gy = graph.getNodeAttribute(atomId, 'y') as number;
+        const cam = graphToCamera(gx, gy);
+        sigma.getCamera().animate({ x: cam.x, y: cam.y, ratio: 0.15 }, { duration: 600 });
+        // Show preview after camera animation settles
+        setTimeout(() => showAtomPreview(atomId), 650);
+      },
     });
 
     return () => {
       cancelAnim();
+      useCanvasStore.getState().unregisterController();
       sigma.kill();
       labelCanvas.remove();
       sigmaRef.current = null;
       graphRef.current = null;
     };
-  }, [data, openReader]); // intentionally exclude theme — handled below
+  }, [data]); // intentionally exclude theme — handled below
 
   // Update colors when theme changes (without recreating graph)
   useEffect(() => {
@@ -382,6 +454,39 @@ export function SigmaCanvas() {
   useEffect(() => {
     sigmaRef.current?.refresh();
   }, [selectedTagId]);
+
+  // Continuously refresh sigma during chat sidebar transition so the graph resizes smoothly
+  const chatSidebarOpen = useUIStore(s => s.chatSidebarOpen);
+  useEffect(() => {
+    const start = performance.now();
+    let raf: number;
+    function tick(now: number) {
+      sigmaRef.current?.refresh();
+      if (now - start < 350) {
+        raf = requestAnimationFrame(tick);
+      }
+    }
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [chatSidebarOpen]);
+
+  // Subscribe to canvas action events from the chat agent
+  useEffect(() => {
+    const transport = getTransport();
+    const unsub = transport.subscribe<{ conversation_id: string; action: string; params: Record<string, string> }>(
+      'chat-canvas-action',
+      (payload) => {
+        const ctrl = useCanvasStore.getState().controller;
+        if (!ctrl) return;
+        if (payload.action === 'zoom_to_cluster') {
+          ctrl.zoomToCluster(payload.params.cluster_label);
+        } else if (payload.action === 'focus_atom') {
+          ctrl.focusAtom(payload.params.atom_id);
+        }
+      }
+    );
+    return () => unsub();
+  }, []);
 
   // Animate edge threshold changes
   const thresholdAnimRef = useRef<number | null>(null);
@@ -502,6 +607,20 @@ export function SigmaCanvas() {
             </div>
           </div>
         )}
+
+        {/* Atom preview popover */}
+        {previewAtomId && previewAnchorRect && (
+          <AtomPreviewPopover
+            atomId={previewAtomId}
+            anchorRect={previewAnchorRect}
+            onClose={closePreview}
+            onViewAtom={(atomId) => {
+              closePreview();
+              openReader(atomId);
+            }}
+          />
+        )}
+
       </div>
     </div>
   );

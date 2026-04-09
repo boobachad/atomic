@@ -80,7 +80,7 @@ export const commands: Command[] = [
     category: 'navigation',
     keywords: ['wiki', 'articles', 'list', 'browse', 'knowledge'],
     icon: BookOpenIcon,
-    action: () => useUIStore.getState().openWikiListDrawer(),
+    action: () => useUIStore.getState().setViewMode('wiki'),
   },
   {
     id: 'open-chat-list',
@@ -88,7 +88,7 @@ export const commands: Command[] = [
     category: 'navigation',
     keywords: ['chat', 'conversations', 'messages', 'talk'],
     icon: MessageCircleIcon,
-    action: () => useUIStore.getState().openChatDrawer(),
+    action: () => useUIStore.getState().openChatSidebar(),
   },
   {
     id: 'create-new-chat',
@@ -96,7 +96,7 @@ export const commands: Command[] = [
     category: 'navigation',
     keywords: ['chat', 'conversation', 'new', 'start'],
     icon: MessageCircleIcon,
-    action: () => useUIStore.getState().openChatDrawer(),
+    action: () => useUIStore.getState().openChatSidebar(),
   },
   {
     id: 'switch-to-grid',

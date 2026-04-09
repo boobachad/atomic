@@ -1,5 +1,7 @@
 import { create } from 'zustand';
 import { getTransport } from '../lib/transport';
+import { useUIStore } from './ui';
+import { useCanvasStore } from './canvas';
 
 // ==================== Types ====================
 
@@ -368,9 +370,24 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     });
 
     try {
+      // Auto-inject canvas context when chatting from canvas view
+      let canvasContext = undefined;
+      if (useUIStore.getState().viewMode === 'canvas') {
+        const canvasData = useCanvasStore.getState().canvasData;
+        if (canvasData) {
+          canvasContext = {
+            clusters: canvasData.clusters.map((c) => ({
+              label: c.label,
+              atom_count: c.atom_count,
+            })),
+          };
+        }
+      }
+
       await getTransport().invoke<ChatMessageWithContext>('send_chat_message', {
         conversationId: currentConversation.id,
         content,
+        canvasContext,
       });
 
       // Refetch the conversation to get the properly saved messages

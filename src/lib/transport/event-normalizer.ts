@@ -26,6 +26,8 @@ export function normalizeServerEvent(data: Record<string, unknown>): NormalizedE
       return { event: 'chat-tool-complete', payload: data };
     case 'ChatComplete':
       return { event: 'chat-complete', payload: data };
+    case 'ChatCanvasAction':
+      return { event: 'chat-canvas-action', payload: data };
     case 'ChatError':
       return { event: 'chat-error', payload: data };
     case 'AtomCreated':

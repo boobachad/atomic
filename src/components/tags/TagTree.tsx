@@ -4,7 +4,6 @@ import { TagNode } from './TagNode';
 import { ContextMenu } from '../ui/ContextMenu';
 import { Modal } from '../ui/Modal';
 import { Input } from '../ui/Input';
-import { Button } from '../ui/Button';
 import { useTagsStore, TagWithCount } from '../../stores/tags';
 import { useUIStore } from '../../stores/ui';
 import { useAtomsStore } from '../../stores/atoms';
@@ -302,18 +301,16 @@ export function TagTree() {
       </div>
 
       {/* New Tag button */}
-      <div className="p-3 border-t border-[var(--color-border)] shrink-0">
-        <Button
-          variant="ghost"
-          size="sm"
-          className="w-full justify-start"
+      <div className="px-3 py-2 border-t border-[var(--color-border)] shrink-0">
+        <button
+          className="w-full flex items-center justify-start gap-1.5 px-2 py-1.5 text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-hover)] rounded-md transition-colors"
           onClick={() => setNewTagModal({ isOpen: true, parentId: null, name: '' })}
         >
-          <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
           </svg>
           New Tag
-        </Button>
+        </button>
       </div>
 
       {/* Context Menu */}

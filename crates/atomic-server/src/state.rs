@@ -152,6 +152,11 @@ pub enum ServerEvent {
         conversation_id: String,
         message: atomic_core::ChatMessageWithContext,
     },
+    ChatCanvasAction {
+        conversation_id: String,
+        action: String,
+        params: serde_json::Value,
+    },
     ChatError {
         conversation_id: String,
         error: String,
@@ -260,6 +265,15 @@ impl From<atomic_core::ChatEvent> for ServerEvent {
             } => ServerEvent::ChatComplete {
                 conversation_id,
                 message,
+            },
+            atomic_core::ChatEvent::CanvasAction {
+                conversation_id,
+                action,
+                params,
+            } => ServerEvent::ChatCanvasAction {
+                conversation_id,
+                action,
+                params,
             },
             atomic_core::ChatEvent::Error {
                 conversation_id,
