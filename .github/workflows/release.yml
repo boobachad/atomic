@@ -112,6 +112,33 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple: -k "" $KEYCHAIN_PATH
           security list-keychain -d user -s $KEYCHAIN_PATH
 
+      - name: Extract release notes from CHANGELOG
+        id: changelog
+        shell: bash
+        run: |
+          if [[ ! -f CHANGELOG.md ]]; then
+            notes='See the assets to download this version and install.'
+          else
+            # Print everything from the first `## ` section up to (but not
+            # including) the second one. This gives us the current release's
+            # entry as authored by scripts/build-release.js.
+            notes=$(awk '
+              /^## / { count++ }
+              count == 2 { exit }
+              count == 1 { print }
+            ' CHANGELOG.md)
+            if [[ -z "$notes" ]]; then
+              notes='See the assets to download this version and install.'
+            else
+              notes="${notes}"$'\n\n---\n\nDownload the assets below to install.'
+            fi
+          fi
+          {
+            echo 'notes<<CHANGELOG_EOF'
+            echo "$notes"
+            echo 'CHANGELOG_EOF'
+          } >> "$GITHUB_OUTPUT"
+
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
         env:
@@ -123,7 +150,7 @@ jobs:
         with:
           tagName: ${{ github.ref_name }}
           releaseName: 'Atomic ${{ github.ref_name }}'
-          releaseBody: 'See the assets to download this version and install.'
+          releaseBody: ${{ steps.changelog.outputs.notes }}
           releaseDraft: false
           prerelease: false
           args: ${{ matrix.args }}
