@@ -1009,6 +1009,8 @@ export function SettingsModal({ isOpen, onClose, initialTab }: SettingsModalProp
       const bridgePath = await getMcpBridgePath();
       if (bridgePath) {
         setMcpConfig(getMcpStdioConfig(bridgePath));
+      } else {
+        setMcpTokenError('Could not locate atomic-mcp-bridge. Ensure the app bundle is complete.');
       }
     }
   };

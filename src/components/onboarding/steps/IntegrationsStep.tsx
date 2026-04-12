@@ -140,8 +140,8 @@ function McpRemoteContent() {
     setError(null);
     try {
       const result = await createApiToken('mcp-integration');
-      const { url } = getServerInfo();
-      setMcpConfig(getMcpHttpConfig(url, result.token));
+      const transport = getTransport() as HttpTransport;
+      setMcpConfig(getMcpHttpConfig(transport.getConfig().baseUrl, result.token));
     } catch (e) {
       setError(String(e));
     } finally {

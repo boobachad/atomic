@@ -134,7 +134,7 @@ async fn process_sse_stream(
 
                     // Combine data lines and output
                     if !data_lines.is_empty() {
-                        let data = data_lines.join("");
+                        let data = data_lines.join("\n");
                         if data != "[DONE]" {
                             send_stdout(&data);
                         }

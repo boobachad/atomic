@@ -36,6 +36,9 @@ fn get_local_server_config(
 fn get_mcp_bridge_path() -> Result<String, String> {
     let exe_path = std::env::current_exe().map_err(|e| e.to_string())?;
     let exe_dir = exe_path.parent().ok_or("Cannot determine executable directory")?;
+    #[cfg(windows)]
+    let bridge_path = exe_dir.join("atomic-mcp-bridge.exe");
+    #[cfg(not(windows))]
     let bridge_path = exe_dir.join("atomic-mcp-bridge");
     Ok(bridge_path.to_string_lossy().to_string())
 }
