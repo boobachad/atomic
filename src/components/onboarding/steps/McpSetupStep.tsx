@@ -30,6 +30,7 @@ export function McpSetupStep() {
     if (isLocal) {
       getMcpBridgePath().then((path) => {
         if (path) setMcpConfig(getMcpStdioConfig(path));
+        else setError('Could not locate atomic-mcp-bridge. Ensure the app bundle is complete.');
       });
     }
   }, [isLocal]);

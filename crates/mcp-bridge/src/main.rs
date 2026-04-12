@@ -21,19 +21,9 @@ const MCP_PROTOCOL_VERSION: &str = "2025-03-26";
 const TOKEN_FILE_NAME: &str = "local_server_token";
 
 /// Resolve the platform-specific Atomic data directory.
+/// Must match Tauri's `app.path().app_data_dir()` for identifier `com.atomic.app`.
 fn atomic_data_dir() -> Option<PathBuf> {
-    #[cfg(target_os = "macos")]
-    {
-        dirs::data_dir().map(|d| d.join("com.atomic.app"))
-    }
-    #[cfg(target_os = "linux")]
-    {
-        dirs::config_dir().map(|d| d.join("atomic"))
-    }
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-    {
-        dirs::data_dir().map(|d| d.join("atomic"))
-    }
+    dirs::data_dir().map(|d| d.join("com.atomic.app"))
 }
 
 /// Discover the auth token: ATOMIC_TOKEN env var, then local token file on disk.

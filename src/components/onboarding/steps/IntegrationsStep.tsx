@@ -86,10 +86,12 @@ function Section({
 function McpLocalContent() {
   const [mcpConfig, setMcpConfig] = useState<McpConfig | null>(null);
   const [copied, setCopied] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     getMcpBridgePath().then((path) => {
       if (path) setMcpConfig(getMcpStdioConfig(path));
+      else setError('Could not locate atomic-mcp-bridge. Ensure the app bundle is complete.');
     });
   }, []);
 
@@ -113,12 +115,13 @@ function McpLocalContent() {
       </ol>
       <div className="relative">
         <pre className="p-3 bg-[var(--color-bg-main)] border border-[var(--color-border)] rounded-lg text-xs text-[var(--color-text-primary)] overflow-x-auto font-mono">
-          {configJson || 'Loading...'}
+          {configJson || (error ? '' : 'Loading...')}
         </pre>
         <Button variant="secondary" size="sm" onClick={handleCopy} className="absolute top-2 right-2" disabled={!mcpConfig}>
           {copied ? 'Copied!' : 'Copy'}
         </Button>
       </div>
+      {error && <p className="text-xs text-red-500">{error}</p>}
       <p className="text-xs text-[var(--color-text-secondary)]">
         After saving, restart your MCP client. Atomic will appear as an available MCP tool.
       </p>
