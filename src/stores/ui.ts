@@ -5,18 +5,8 @@ import { getCanvasLevel } from '../lib/api';
 import { navigateTo, navigateBack } from '../router/navigate-ref';
 import { viewPath, atomReaderPath, wikiReaderPath, atomGraphPath } from '../router/routes';
 
-export type DrawerMode = 'editor' | 'viewer' | 'wiki';
 export type ViewMode = 'dashboard' | 'atoms' | 'canvas' | 'wiki';
 export type AtomsLayout = 'grid' | 'list';
-
-interface DrawerState {
-  isOpen: boolean;
-  mode: DrawerMode;
-  atomId: string | null;      // For editor/viewer modes
-  tagId: string | null;       // For wiki mode
-  tagName: string | null;     // For wiki mode (display purposes)
-  highlightText: string | null;   // For viewer mode (text to highlight and scroll to)
-}
 
 interface LocalGraphState {
   isOpen: boolean;
@@ -61,7 +51,6 @@ export interface OverlayNav {
 interface UIStore {
   selectedTagId: string | null;
   expandedTagIds: Record<string, boolean>;  // Tags that should be expanded in sidebar
-  drawerState: DrawerState;
   readerState: ReaderState;
   wikiReaderState: WikiReaderState;
   overlayNav: OverlayNav;
@@ -109,10 +98,6 @@ interface UIStore {
   overlayBack: () => void;
   overlayForward: () => void;
   overlayDismiss: () => void;
-  openDrawer: (mode: DrawerMode, atomId?: string, highlightText?: string) => void;
-  openWikiDrawer: (tagId: string, tagName: string) => void;
-  openWikiListDrawer: () => void;
-  closeDrawer: () => void;
   // Chat sidebar actions
   toggleChatSidebar: () => void;
   setChatSidebarOpen: (open: boolean) => void;
@@ -147,14 +132,6 @@ export const useUIStore = create<UIStore>()(
     (set, get) => ({
       selectedTagId: null,
       expandedTagIds: {} as Record<string, boolean>,
-      drawerState: {
-        isOpen: false,
-        mode: 'viewer',
-        atomId: null,
-        tagId: null,
-        tagName: null,
-        highlightText: null,
-      },
       readerState: {
         atomId: null,
         highlightText: null,
@@ -391,51 +368,6 @@ export const useUIStore = create<UIStore>()(
         navigateTo(viewPath(state.viewMode, state.selectedTagId));
       },
 
-
-      openDrawer: (mode: DrawerMode, atomId?: string, highlightText?: string) =>
-        set({
-          drawerState: {
-            isOpen: true,
-            mode,
-            atomId: atomId || null,
-            tagId: null,
-            tagName: null,
-            highlightText: highlightText || null,
-          },
-        }),
-
-      openWikiDrawer: (tagId: string, tagName: string) =>
-        set({
-          drawerState: {
-            isOpen: true,
-            mode: 'wiki',
-            atomId: null,
-            tagId,
-            tagName,
-            highlightText: null,
-          },
-        }),
-
-      openWikiListDrawer: () =>
-        set({
-          drawerState: {
-            isOpen: true,
-            mode: 'wiki',
-            atomId: null,
-            tagId: null,
-            tagName: null,
-            highlightText: null,
-          },
-        }),
-
-      closeDrawer: () =>
-        set((state) => ({
-          drawerState: {
-            ...state.drawerState,
-            isOpen: false,
-            highlightText: null,
-          },
-        })),
 
       // Chat sidebar actions
       toggleChatSidebar: () => set((state) => ({ chatSidebarOpen: !state.chatSidebarOpen })),
