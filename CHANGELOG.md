@@ -2,6 +2,10 @@
 
 All notable changes to Atomic are documented here.
 
+## v1.21.7 — 2026-04-13
+
+- Improve internal release infrastructure
+
 ## v1.21.6 — 2026-04-13
 
 - Add knowledge-graph canvas to the Obsidian plugin with curved edges, cluster-colored nodes, cluster labels, and five switchable color themes (Ember, Steel Violet, Aurora, Midnight, Mono)
