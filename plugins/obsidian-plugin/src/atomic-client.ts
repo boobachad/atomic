@@ -33,6 +33,7 @@ export interface TagWithCount {
   name: string;
   parent_id: string | null;
   created_at: string;
+  is_autotag_target: boolean;
   atom_count: number;
   children_total: number;
   children: TagWithCount[];
@@ -81,6 +82,64 @@ export interface WikiCitation {
 export interface WikiArticleWithCitations {
   article: WikiArticle;
   citations: WikiCitation[];
+}
+
+// Chat
+
+export interface Conversation {
+  id: string;
+  title: string | null;
+  created_at: string;
+  updated_at: string;
+  is_archived: boolean;
+}
+
+export interface ConversationWithTags extends Conversation {
+  tags: Tag[];
+  message_count: number;
+  last_message_preview: string | null;
+}
+
+export interface ChatMessage {
+  id: string;
+  conversation_id: string;
+  role: "user" | "assistant" | "system" | "tool";
+  content: string;
+  created_at: string;
+  message_index: number;
+}
+
+export interface ChatToolCall {
+  id: string;
+  message_id: string;
+  tool_name: string;
+  tool_input: unknown;
+  tool_output: unknown | null;
+  status: "pending" | "running" | "complete" | "failed";
+  created_at: string;
+  completed_at: string | null;
+}
+
+export interface ChatCitation {
+  id: string;
+  message_id: string;
+  citation_index: number;
+  atom_id: string;
+  chunk_index: number | null;
+  excerpt: string;
+  relevance_score: number | null;
+  /** Source URL of the cited atom (populated by server for client linking). */
+  source_url?: string | null;
+}
+
+export interface ChatMessageWithContext extends ChatMessage {
+  tool_calls: ChatToolCall[];
+  citations: ChatCitation[];
+}
+
+export interface ConversationWithMessages extends Conversation {
+  tags: Tag[];
+  messages: ChatMessageWithContext[];
 }
 
 export interface CreateAtomRequest {
@@ -248,6 +307,74 @@ export class AtomicClient {
   async getWikiSuggestions(query: string): Promise<TagWithCount[]> {
     return this.request({
       url: `${this.baseUrl}/api/wiki/suggestions?q=${encodeURIComponent(query)}`,
+      method: "GET",
+    });
+  }
+
+  // Chat
+
+  async listConversations(filterTagId?: string, limit = 50): Promise<ConversationWithTags[]> {
+    const params = new URLSearchParams();
+    if (filterTagId) params.set("filter_tag_id", filterTagId);
+    params.set("limit", String(limit));
+    return this.request({
+      url: `${this.baseUrl}/api/conversations?${params}`,
+      method: "GET",
+    });
+  }
+
+  async createConversation(tagIds: string[] = [], title?: string): Promise<ConversationWithTags> {
+    return this.request({
+      url: `${this.baseUrl}/api/conversations`,
+      method: "POST",
+      body: JSON.stringify({ tag_ids: tagIds, title: title ?? null }),
+    });
+  }
+
+  async getConversation(id: string): Promise<ConversationWithMessages> {
+    return this.request({
+      url: `${this.baseUrl}/api/conversations/${id}`,
+      method: "GET",
+    });
+  }
+
+  async updateConversation(
+    id: string,
+    update: { title?: string | null; is_archived?: boolean }
+  ): Promise<ConversationWithTags> {
+    return this.request({
+      url: `${this.baseUrl}/api/conversations/${id}`,
+      method: "PUT",
+      body: JSON.stringify(update),
+    });
+  }
+
+  async deleteConversation(id: string): Promise<void> {
+    await this.request({
+      url: `${this.baseUrl}/api/conversations/${id}`,
+      method: "DELETE",
+    });
+  }
+
+  async setConversationScope(id: string, tagIds: string[]): Promise<ConversationWithTags> {
+    return this.request({
+      url: `${this.baseUrl}/api/conversations/${id}/scope`,
+      method: "PUT",
+      body: JSON.stringify({ tag_ids: tagIds }),
+    });
+  }
+
+  async sendChatMessage(conversationId: string, content: string): Promise<ChatMessageWithContext> {
+    return this.request({
+      url: `${this.baseUrl}/api/conversations/${conversationId}/messages`,
+      method: "POST",
+      body: JSON.stringify({ content }),
+    });
+  }
+
+  async getAtom(id: string): Promise<AtomWithTags> {
+    return this.request({
+      url: `${this.baseUrl}/api/atoms/${id}`,
       method: "GET",
     });
   }

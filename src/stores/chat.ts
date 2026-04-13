@@ -66,13 +66,6 @@ export interface ConversationWithMessages extends Conversation {
   messages: ChatMessageWithContext[];
 }
 
-export interface RetrievalStep {
-  step_number: number;
-  tool_name: string;
-  query: string;
-  results_count: number;
-  timestamp: string;
-}
 
 // ==================== Store ====================
 
@@ -95,7 +88,13 @@ interface ChatStore {
   isStreaming: boolean;
   streamingContent: string;
   streamingMessageId: string | null;
-  retrievalSteps: RetrievalStep[];
+  /**
+   * Tool calls fired during the current streaming turn. Populated from
+   * chat-tool-start / chat-tool-complete events so the UI can render
+   * collapsible cards that persist through streaming and get superseded
+   * (not discarded) when the final ChatComplete message arrives.
+   */
+  streamingToolCalls: ChatToolCall[];
 
   // Error state
   error: string | null;
@@ -123,7 +122,8 @@ interface ChatStore {
 
   // Actions - Streaming updates (called from event handlers)
   appendStreamContent: (delta: string) => void;
-  addRetrievalStep: (step: RetrievalStep) => void;
+  startStreamingToolCall: (call: { tool_call_id: string; tool_name: string; tool_input: unknown }) => void;
+  completeStreamingToolCall: (update: { tool_call_id: string; results_count: number }) => void;
   completeMessage: (message: ChatMessageWithContext) => void;
   setStreamingError: (error: string) => void;
 
@@ -143,7 +143,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   isStreaming: false,
   streamingContent: '',
   streamingMessageId: null,
-  retrievalSteps: [],
+  streamingToolCalls: [],
   error: null,
 
   // Navigation
@@ -221,7 +221,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       currentConversation: null,
       messages: [],
       streamingContent: '',
-      retrievalSteps: [],
+      streamingToolCalls: [],
     });
     useUIStore.getState().setChatSidebarConversationId(null);
     get().fetchConversations(listFilterTagId ?? undefined);
@@ -368,7 +368,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       messages: [...messages, userMessage],
       isStreaming: true,
       streamingContent: '',
-      retrievalSteps: [],
+      streamingToolCalls: [],
       error: null,
     });
 
@@ -417,9 +417,38 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     set({ streamingContent: content });
   },
 
-  addRetrievalStep: (step: RetrievalStep) => {
+  startStreamingToolCall: ({ tool_call_id, tool_name, tool_input }) => {
+    const now = new Date().toISOString();
     set((state) => ({
-      retrievalSteps: [...state.retrievalSteps, step],
+      streamingToolCalls: [
+        ...state.streamingToolCalls,
+        {
+          id: tool_call_id,
+          message_id: '',
+          tool_name,
+          tool_input,
+          tool_output: null,
+          status: 'running',
+          created_at: now,
+          completed_at: null,
+        },
+      ],
+    }));
+  },
+
+  completeStreamingToolCall: ({ tool_call_id, results_count }) => {
+    const now = new Date().toISOString();
+    set((state) => ({
+      streamingToolCalls: state.streamingToolCalls.map((call) =>
+        call.id === tool_call_id
+          ? {
+              ...call,
+              status: 'complete' as const,
+              tool_output: { results_count },
+              completed_at: now,
+            }
+          : call
+      ),
     }));
   },
 
@@ -432,7 +461,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
           isStreaming: false,
           streamingContent: '',
           streamingMessageId: null,
-          retrievalSteps: [],
+          streamingToolCalls: [],
         };
       }
       return {
@@ -440,7 +469,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         isStreaming: false,
         streamingContent: '',
         streamingMessageId: null,
-        retrievalSteps: [],
+        streamingToolCalls: [],
       };
     });
   },
@@ -467,7 +496,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       isStreaming: false,
       streamingContent: '',
       streamingMessageId: null,
-      retrievalSteps: [],
+      streamingToolCalls: [],
       error: null,
     }),
 }));

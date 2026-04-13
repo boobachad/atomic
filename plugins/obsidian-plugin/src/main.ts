@@ -6,6 +6,8 @@ import { SyncState, type SyncStateData } from "./sync-state";
 import { SearchModal } from "./search-modal";
 import { SimilarView, SIMILAR_VIEW_TYPE } from "./similar-view";
 import { WikiView, WIKI_VIEW_TYPE } from "./wiki-view";
+import { ChatView, CHAT_VIEW_TYPE } from "./chat-view";
+import { AtomicWebSocket } from "./ws-client";
 import { OnboardingModal } from "./onboarding-modal";
 
 interface PluginData {
@@ -16,12 +18,14 @@ interface PluginData {
 export default class AtomicPlugin extends Plugin {
   settings: AtomicSettings = DEFAULT_SETTINGS;
   client: AtomicClient = new AtomicClient(this.settings);
+  ws: AtomicWebSocket = new AtomicWebSocket(this.settings);
   syncEngine!: SyncEngine;
   private syncState: SyncState = new SyncState();
 
   async onload(): Promise<void> {
     await this.loadSettings();
     this.client = new AtomicClient(this.settings);
+    this.ws = new AtomicWebSocket(this.settings);
 
     this.syncEngine = new SyncEngine(
       this.app,
@@ -71,6 +75,12 @@ export default class AtomicPlugin extends Plugin {
     });
 
     this.addCommand({
+      id: "open-chat",
+      name: "Open Chat",
+      callback: () => this.activateView(CHAT_VIEW_TYPE),
+    });
+
+    this.addCommand({
       id: "setup-wizard",
       name: "Setup Wizard",
       callback: () => new OnboardingModal(this.app, this).open(),
@@ -85,6 +95,13 @@ export default class AtomicPlugin extends Plugin {
     this.registerView(WIKI_VIEW_TYPE, (leaf) => new WikiView(
       leaf,
       this.client,
+      () => this.settings.vaultName || this.app.vault.getName(),
+    ));
+
+    this.registerView(CHAT_VIEW_TYPE, (leaf) => new ChatView(
+      leaf,
+      this.client,
+      this.ws,
       () => this.settings.vaultName || this.app.vault.getName(),
     ));
 
@@ -109,6 +126,7 @@ export default class AtomicPlugin extends Plugin {
 
   async onunload(): Promise<void> {
     this.syncEngine.stopWatching();
+    this.ws.close();
   }
 
   async loadSettings(): Promise<void> {
@@ -117,6 +135,7 @@ export default class AtomicPlugin extends Plugin {
   }
 
   async saveSettings(): Promise<void> {
+    this.ws.updateSettings(this.settings);
     await this.savePluginData();
   }
 

@@ -10,6 +10,7 @@ export class WikiView extends ItemView {
   private selectedTagId: string | null = null;
   private article: WikiArticleWithCitations | null = null;
   private loading = false;
+  private generatingAtomCount: number | null = null;
 
   constructor(leaf: WorkspaceLeaf, client: AtomicClient, getVaultName: () => string) {
     super(leaf);
@@ -45,6 +46,16 @@ export class WikiView extends ItemView {
   private flattenTags(tags: TagWithCount[], depth = 0): Array<{ tag: TagWithCount; depth: number }> {
     const result: Array<{ tag: TagWithCount; depth: number }> = [];
     for (const tag of tags) {
+      // Autotag category roots (Topics, People, Locations, …) aren't meaningful
+      // wiki subjects on their own — they're buckets for extracted tags. Skip
+      // the bucket itself but surface its children at the current depth so the
+      // real tags remain selectable.
+      if (tag.is_autotag_target) {
+        if (tag.children.length > 0) {
+          result.push(...this.flattenTags(tag.children, depth));
+        }
+        continue;
+      }
       result.push({ tag, depth });
       if (tag.children.length > 0) {
         result.push(...this.flattenTags(tag.children, depth + 1));
@@ -110,7 +121,8 @@ export class WikiView extends ItemView {
     wrapper.querySelectorAll(".atomic-wiki-content, .atomic-wiki-empty, .atomic-wiki-actions").forEach((el) => el.remove());
 
     if (this.loading) {
-      wrapper.createDiv({ cls: "atomic-wiki-empty", text: "Loading..." });
+      const name = this.findTagName(this.selectedTagId ?? "") ?? "";
+      this.renderGenerating(wrapper, name, this.generatingAtomCount);
       return;
     }
 
@@ -135,15 +147,18 @@ export class WikiView extends ItemView {
           genBtn.setText("Tag not found");
           return;
         }
-        genBtn.disabled = true;
-        genBtn.setText("Generating...");
+        this.generatingAtomCount = this.findTagAtomCount(this.selectedTagId);
+        this.loading = true;
+        this.renderContent(wrapper);
         try {
           this.article = await this.client.generateWikiArticle(this.selectedTagId, tagName);
-          this.renderContent(wrapper);
         } catch (e) {
-          genBtn.setText("Failed - Retry");
-          genBtn.disabled = false;
           console.error("Atomic: Failed to generate wiki:", e);
+          this.article = null;
+        } finally {
+          this.loading = false;
+          this.generatingAtomCount = null;
+          this.renderContent(wrapper);
         }
       });
       return;
@@ -154,7 +169,37 @@ export class WikiView extends ItemView {
       this.article.article.content,
       this.article.citations
     );
-    MarkdownRenderer.render(this.app, rewritten, contentEl, "", this);
+    const sourcePath = this.app.workspace.getActiveFile()?.path ?? "";
+    MarkdownRenderer.render(this.app, rewritten, contentEl, sourcePath, this);
+
+    // Obsidian's global click handler for .internal-link is scoped to
+    // markdown file views, not custom ItemViews — wire it up manually.
+    contentEl.addEventListener("click", async (evt) => {
+      const target = evt.target as HTMLElement | null;
+      const link = target?.closest("a") as HTMLAnchorElement | null;
+      if (!link) return;
+      evt.preventDefault();
+      evt.stopPropagation();
+      const href = link.getAttribute("data-href") ?? link.getAttribute("href");
+      if (!href) return;
+
+      // Cross-wiki references: the LLM emits `[[Other Topic]]` when another
+      // wiki article exists for that tag. These look identical to Obsidian
+      // wikilinks, so we check the tag list first and switch the view when
+      // the target matches a known tag (case-insensitive, same as the core).
+      const tagMatch = this.findTagByName(href);
+      if (tagMatch) {
+        this.selectedTagId = tagMatch.id;
+        const select = wrapper.querySelector<HTMLSelectElement>(".atomic-wiki-tag-select");
+        if (select) select.value = tagMatch.id;
+        await this.loadArticle(tagMatch.id);
+        this.renderContent(wrapper);
+        return;
+      }
+
+      const newLeaf = evt.ctrlKey || evt.metaKey;
+      this.app.workspace.openLinkText(href, sourcePath, newLeaf);
+    }, true);
   }
 
   /**
@@ -202,8 +247,63 @@ export class WikiView extends ItemView {
         return ""; // malformed encoding — strip rather than render garbage
       }
       const target = path.replace(/\.md$/i, "");
-      return `[[${target}]]`;
+      // Use a wikilink alias so the citation renders as `[N]` inline
+      // instead of the full note name, which was swamping the prose.
+      // Obsidian resolves `[[target|alias]]` to the target file on click.
+      return `[[${target}|${index}]]`;
     });
+  }
+
+  private renderGenerating(wrapper: HTMLElement, tagName: string, atomCount: number | null): void {
+    const el = wrapper.createDiv({ cls: "atomic-wiki-generating" });
+
+    const spinner = el.createDiv({ cls: "atomic-wiki-spinner" });
+    spinner.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>`;
+
+    const title = tagName
+      ? `Synthesizing article about "${tagName}"…`
+      : "Loading…";
+    el.createEl("h3", { cls: "atomic-wiki-generating-title", text: title });
+
+    if (atomCount !== null && atomCount > 0) {
+      el.createEl("p", {
+        cls: "atomic-wiki-generating-sub",
+        text: `Processing ${atomCount} source${atomCount === 1 ? "" : "s"}`,
+      });
+    }
+    el.createEl("p", {
+      cls: "atomic-wiki-generating-hint",
+      text: "This may take a moment",
+    });
+  }
+
+  private findTagByName(name: string): TagWithCount | null {
+    const needle = name.trim().toLowerCase();
+    const search = (nodes: TagWithCount[]): TagWithCount | null => {
+      for (const node of nodes) {
+        if (node.name.toLowerCase() === needle) return node;
+        if (node.children.length > 0) {
+          const found = search(node.children);
+          if (found) return found;
+        }
+      }
+      return null;
+    };
+    return search(this.tags);
+  }
+
+  private findTagAtomCount(tagId: string): number | null {
+    const search = (nodes: TagWithCount[]): number | null => {
+      for (const node of nodes) {
+        if (node.id === tagId) return node.atom_count;
+        if (node.children.length > 0) {
+          const found = search(node.children);
+          if (found !== null) return found;
+        }
+      }
+      return null;
+    };
+    return search(this.tags);
   }
 
   private findTagName(tagId: string): string | null {

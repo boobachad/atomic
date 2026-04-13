@@ -1,5 +1,6 @@
 import { useState, useCallback, Fragment, ReactNode } from 'react';
-import { ChatMessageWithContext, ChatCitation } from '../../stores/chat';
+import { CheckCircle2, Loader2, Wrench, XCircle } from 'lucide-react';
+import { ChatMessageWithContext, ChatCitation, ChatToolCall } from '../../stores/chat';
 import { CitationLink, CitationPopover } from '../wiki';
 import { MarkdownImage } from '../ui/MarkdownImage';
 import ReactMarkdown from 'react-markdown';
@@ -180,16 +181,35 @@ export function ChatMessage({ message, isStreaming = false, onViewAtom, searchQu
               : 'bg-[var(--color-bg-card)] text-[var(--color-text-primary)]'
           }`}
         >
+          {/* Tool calls — render above message content so users see the
+              retrieval steps before the prose that references them. Rendered
+              during streaming (from streamingToolCalls) and persisted after
+              completion (from message.tool_calls). */}
+          {isAssistant && message.tool_calls && message.tool_calls.length > 0 && (
+            <ToolCallList calls={message.tool_calls} />
+          )}
+
           {/* Message content */}
           {isAssistant ? (
-            <div className="prose prose-invert prose-sm max-w-none prose-headings:text-[var(--color-text-primary)] prose-p:text-[var(--color-text-primary)] prose-a:text-[var(--color-text-primary)] prose-a:underline prose-a:decoration-[var(--color-border-hover)] prose-a:hover:decoration-current prose-strong:text-[var(--color-text-primary)] prose-code:text-[var(--color-accent-light)] prose-code:bg-[var(--color-bg-card)] prose-code:px-1 prose-code:py-0.5 prose-code:rounded prose-pre:bg-[var(--color-bg-card)] prose-pre:border prose-pre:border-[var(--color-border)] prose-blockquote:border-l-[var(--color-accent)] prose-blockquote:text-[var(--color-text-secondary)] prose-li:text-[var(--color-text-primary)] prose-hr:border-[var(--color-border)]">
-              <ReactMarkdown
-                remarkPlugins={[remarkGfm]}
-                components={markdownComponents}
-              >
-                {message.content}
-              </ReactMarkdown>
-            </div>
+            message.content ? (
+              <div className="prose prose-invert prose-sm max-w-none prose-headings:text-[var(--color-text-primary)] prose-p:text-[var(--color-text-primary)] prose-a:text-[var(--color-text-primary)] prose-a:underline prose-a:decoration-[var(--color-border-hover)] prose-a:hover:decoration-current prose-strong:text-[var(--color-text-primary)] prose-code:text-[var(--color-accent-light)] prose-code:bg-[var(--color-bg-card)] prose-code:px-1 prose-code:py-0.5 prose-code:rounded prose-pre:bg-[var(--color-bg-card)] prose-pre:border prose-pre:border-[var(--color-border)] prose-blockquote:border-l-[var(--color-accent)] prose-blockquote:text-[var(--color-text-secondary)] prose-li:text-[var(--color-text-primary)] prose-hr:border-[var(--color-border)]">
+                <ReactMarkdown
+                  remarkPlugins={[remarkGfm]}
+                  components={markdownComponents}
+                >
+                  {message.content}
+                </ReactMarkdown>
+              </div>
+            ) : isStreaming ? (
+              <div className="flex items-center gap-2 text-sm text-[var(--color-text-secondary)]">
+                <div className="flex gap-1">
+                  <span className="w-1.5 h-1.5 rounded-full bg-[var(--color-accent)] animate-bounce" style={{ animationDelay: '0ms' }} />
+                  <span className="w-1.5 h-1.5 rounded-full bg-[var(--color-accent)] animate-bounce" style={{ animationDelay: '150ms' }} />
+                  <span className="w-1.5 h-1.5 rounded-full bg-[var(--color-accent)] animate-bounce" style={{ animationDelay: '300ms' }} />
+                </div>
+                <span>Thinking…</span>
+              </div>
+            ) : null
           ) : (
             <p className="whitespace-pre-wrap text-sm">
               {searchQuery.trim() && highlightText
@@ -198,8 +218,8 @@ export function ChatMessage({ message, isStreaming = false, onViewAtom, searchQu
             </p>
           )}
 
-          {/* Streaming indicator */}
-          {isStreaming && (
+          {/* Streaming indicator (cursor) — only once content has started */}
+          {isStreaming && message.content && (
             <span className="inline-block w-2 h-4 ml-1 bg-[var(--color-accent-light)] animate-pulse" />
           )}
 
@@ -222,27 +242,6 @@ export function ChatMessage({ message, isStreaming = false, onViewAtom, searchQu
             </div>
           )}
 
-          {/* Tool calls (collapsible) */}
-          {isAssistant && message.tool_calls && message.tool_calls.length > 0 && (
-            <details className="mt-3 pt-3 border-t border-[var(--color-border)]">
-              <summary className="text-xs text-[var(--color-text-secondary)] cursor-pointer hover:text-[var(--color-accent-light)]">
-                {message.tool_calls.length} retrieval step{message.tool_calls.length !== 1 ? 's' : ''}
-              </summary>
-              <div className="mt-2 space-y-2">
-                {message.tool_calls.map((toolCall) => (
-                  <div
-                    key={toolCall.id}
-                    className="text-xs p-2 bg-[var(--color-bg-main)] rounded"
-                  >
-                    <span className="text-[var(--color-accent)]">{toolCall.tool_name}</span>
-                    <span className="text-[var(--color-text-tertiary)] ml-2">
-                      {toolCall.status === 'complete' ? '✓' : toolCall.status}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            </details>
-          )}
         </div>
       </div>
 
@@ -256,5 +255,76 @@ export function ChatMessage({ message, isStreaming = false, onViewAtom, searchQu
         />
       )}
     </>
+  );
+}
+
+function ToolCallList({ calls }: { calls: ChatToolCall[] }) {
+  return (
+    <div className="mb-2 space-y-1">
+      {calls.map((call) => (
+        <ToolCallCard key={call.id} call={call} />
+      ))}
+    </div>
+  );
+}
+
+function ToolCallCard({ call }: { call: ChatToolCall }) {
+  const statusIcon =
+    call.status === 'running' ? (
+      <Loader2 className="w-3.5 h-3.5 text-[var(--color-accent-light)] animate-spin" />
+    ) : call.status === 'failed' ? (
+      <XCircle className="w-3.5 h-3.5 text-red-400" />
+    ) : call.status === 'complete' ? (
+      <CheckCircle2 className="w-3.5 h-3.5 text-[var(--color-accent-light)]" />
+    ) : (
+      <Wrench className="w-3.5 h-3.5 text-[var(--color-text-tertiary)]" />
+    );
+
+  const resultsCount =
+    call.tool_output && typeof call.tool_output === 'object' && call.tool_output !== null
+      ? (call.tool_output as { results_count?: number }).results_count
+      : undefined;
+
+  const summaryText =
+    call.status === 'running'
+      ? 'running…'
+      : resultsCount !== undefined
+      ? `${resultsCount} result${resultsCount === 1 ? '' : 's'}`
+      : call.status;
+
+  return (
+    <details className="group text-xs bg-[var(--color-bg-main)] rounded border border-[var(--color-border)] open:border-[var(--color-border-hover)]">
+      <summary className="flex items-center gap-2 px-2 py-1.5 cursor-pointer list-none hover:bg-[var(--color-bg-hover)]">
+        {statusIcon}
+        <span className="font-mono text-[var(--color-accent)]">{call.tool_name}</span>
+        <span className="ml-auto text-[var(--color-text-tertiary)]">{summaryText}</span>
+      </summary>
+      <div className="px-2 pb-2 pt-1 border-t border-[var(--color-border)] space-y-2">
+        <ToolJsonBlock label="input" value={call.tool_input} />
+        {call.tool_output !== null && call.tool_output !== undefined && (
+          <ToolJsonBlock label="output" value={call.tool_output} />
+        )}
+      </div>
+    </details>
+  );
+}
+
+function ToolJsonBlock({ label, value }: { label: string; value: unknown }) {
+  const formatted = (() => {
+    try {
+      return JSON.stringify(value, null, 2);
+    } catch {
+      return String(value);
+    }
+  })();
+  return (
+    <div>
+      <div className="text-[10px] uppercase tracking-wide text-[var(--color-text-tertiary)] mb-0.5">
+        {label}
+      </div>
+      <pre className="text-[11px] whitespace-pre-wrap break-words bg-[var(--color-bg-card)] rounded px-2 py-1.5 text-[var(--color-text-secondary)]">
+        {formatted}
+      </pre>
+    </div>
   );
 }

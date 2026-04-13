@@ -85,13 +85,26 @@ fn get_tools() -> Vec<ToolDefinition> {
         ),
         ToolDefinition::new(
             "get_atom",
-            "Get the full content of a specific atom by its ID. Use this when you need more detail about an atom returned from search.",
+            "Get the content of a specific atom by its ID. Returns up to `limit` lines starting at `offset` (defaults: offset=0, limit=500). If the atom has more content, the response includes a line-count header indicating how to continue reading via a follow-up call with a higher offset.",
             json!({
                 "type": "object",
                 "properties": {
                     "atom_id": {
                         "type": "string",
                         "description": "The ID of the atom to retrieve"
+                    },
+                    "offset": {
+                        "type": "integer",
+                        "description": "Line number to start reading from (0-indexed). Use the value from a prior response's header to continue reading a truncated atom.",
+                        "minimum": 0,
+                        "default": 0
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum number of lines to return. Defaults to 500; prefer the default unless you know you need more.",
+                        "minimum": 1,
+                        "maximum": 2000,
+                        "default": 500
                     }
                 },
                 "required": ["atom_id"]
@@ -219,8 +232,69 @@ async fn execute_search_atoms(
     Ok(crate::search::merge_search_results_rrf(semantic, keyword, limit))
 }
 
-fn execute_get_atom(storage: &StorageBackend, atom_id: &str) -> Result<Option<String>, String> {
-    storage.get_atom_content_impl(atom_id).map_err(|e| e.to_string())
+/// Default line limit for a single `get_atom` call. Chosen to keep context
+/// usage bounded on long atoms (imports, pasted articles) while being large
+/// enough that most notes fit in one call.
+const GET_ATOM_DEFAULT_LIMIT: usize = 500;
+const GET_ATOM_MAX_LIMIT: usize = 2000;
+
+fn execute_get_atom(
+    storage: &StorageBackend,
+    atom_id: &str,
+    offset: usize,
+    limit: usize,
+) -> Result<Option<String>, String> {
+    let Some(content) = storage
+        .get_atom_content_impl(atom_id)
+        .map_err(|e| e.to_string())?
+    else {
+        return Ok(None);
+    };
+
+    let lines: Vec<&str> = content.lines().collect();
+    let total = lines.len();
+
+    // Empty atom — return empty before the range math, otherwise a nonzero
+    // offset would produce lines[offset..0] and panic.
+    if total == 0 {
+        return Ok(Some(String::new()));
+    }
+
+    if offset >= total {
+        return Ok(Some(format!(
+            "[offset={} is past end of atom ({} total lines)]",
+            offset, total
+        )));
+    }
+
+    let end = (offset + limit).min(total);
+    let slice = lines[offset..end].join("\n");
+
+    // Only annotate when we truncated or started partway through, so short
+    // atoms (the common case) read clean without metadata noise.
+    if offset == 0 && end == total {
+        return Ok(Some(slice));
+    }
+
+    let header = if end < total {
+        format!(
+            "[lines {}-{} of {}. {} more lines. Call get_atom again with offset={} to continue.]\n",
+            offset + 1,
+            end,
+            total,
+            total - end,
+            end,
+        )
+    } else {
+        format!(
+            "[lines {}-{} of {} (end of atom).]\n",
+            offset + 1,
+            end,
+            total,
+        )
+    };
+
+    Ok(Some(format!("{}{}", header, slice)))
 }
 
 // ==================== System Prompt ====================
@@ -518,7 +592,17 @@ where
                     }
                     "get_atom" => {
                         let atom_id = tool_args["atom_id"].as_str().unwrap_or("");
-                        match execute_get_atom(&storage, atom_id) {
+                        let offset = tool_args
+                            .get("offset")
+                            .and_then(|v| v.as_u64())
+                            .map(|v| v as usize)
+                            .unwrap_or(0);
+                        let limit = tool_args
+                            .get("limit")
+                            .and_then(|v| v.as_u64())
+                            .map(|v| (v as usize).clamp(1, GET_ATOM_MAX_LIMIT))
+                            .unwrap_or(GET_ATOM_DEFAULT_LIMIT);
+                        match execute_get_atom(&storage, atom_id, offset, limit) {
                             Ok(Some(content)) => (content, 1),
                             Ok(None) => ("Atom not found".to_string(), 0),
                             Err(e) => (format!("Error: {}", e), 0),

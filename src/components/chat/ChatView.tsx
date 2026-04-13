@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
-import { MessageSquare, Search as SearchIcon } from 'lucide-react';
+import { MessageSquare } from 'lucide-react';
 import { useChatStore } from '../../stores/chat';
 import { useUIStore } from '../../stores/ui';
 import { useChatEvents } from '../../hooks/useChatEvents';
@@ -15,7 +15,7 @@ export function ChatView() {
   const isLoading = useChatStore(s => s.isLoading);
   const isStreaming = useChatStore(s => s.isStreaming);
   const streamingContent = useChatStore(s => s.streamingContent);
-  const retrievalSteps = useChatStore(s => s.retrievalSteps);
+  const streamingToolCalls = useChatStore(s => s.streamingToolCalls);
   const error = useChatStore(s => s.error);
   const sendMessage = useChatStore(s => s.sendMessage);
   const goBack = useChatStore(s => s.goBack);
@@ -168,41 +168,11 @@ export function ChatView() {
           />
         ))}
 
-        {/* Thinking indicator — before any streaming content arrives */}
-        {isStreaming && !streamingContent && (
-          <div className="flex justify-start">
-            <div className="max-w-[85%] rounded-lg px-4 py-3 bg-[var(--color-bg-card)] text-[var(--color-text-primary)]">
-              <div className="flex items-center gap-2 text-sm text-[var(--color-text-secondary)]">
-                <div className="flex gap-1">
-                  <span className="w-1.5 h-1.5 rounded-full bg-[var(--color-accent)] animate-bounce" style={{ animationDelay: '0ms' }} />
-                  <span className="w-1.5 h-1.5 rounded-full bg-[var(--color-accent)] animate-bounce" style={{ animationDelay: '150ms' }} />
-                  <span className="w-1.5 h-1.5 rounded-full bg-[var(--color-accent)] animate-bounce" style={{ animationDelay: '300ms' }} />
-                </div>
-                <span>Thinking…</span>
-              </div>
-              {retrievalSteps.length > 0 && (
-                <div className="mt-2 space-y-1">
-                  {retrievalSteps.map((step, i) => {
-                    let displayQuery = step.query;
-                    try {
-                      const parsed = JSON.parse(step.query);
-                      displayQuery = parsed.query || parsed.search || parsed.text || step.query;
-                    } catch { /* use raw */ }
-                    return (
-                      <div key={i} className="flex items-center gap-2 text-xs text-[var(--color-text-tertiary)]">
-                        <SearchIcon className="w-3 h-3 flex-shrink-0 animate-pulse" />
-                        <span className="truncate">Searching: {displayQuery}</span>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-          </div>
-        )}
-
-        {/* Streaming message */}
-        {isStreaming && streamingContent && (
+        {/* Streaming bubble — rendered for the whole streaming turn so tool
+            calls show up while the model is still thinking and persist as
+            streaming content flows in. ChatMessage handles the empty-content
+            "Thinking…" fallback. */}
+        {isStreaming && (
           <ChatMessage
             message={{
               id: 'streaming',
@@ -211,7 +181,7 @@ export function ChatView() {
               content: streamingContent,
               created_at: new Date().toISOString(),
               message_index: messages.length,
-              tool_calls: [],
+              tool_calls: streamingToolCalls,
               citations: [],
             }}
             isStreaming
