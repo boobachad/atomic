@@ -47,6 +47,10 @@ pub struct Folder {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Note {
     pub pk: i64,
+    /// Stable UUID (Apple Notes `zidentifier`). Used for the source URL and
+    /// `applenotes:note/<UUID>` deeplinks so the link survives across
+    /// re-imports even if row PKs shift.
+    pub identifier: String,
     pub title: String,
     #[serde(rename = "folderPk")]
     pub folder_pk: Option<i64>,
@@ -272,7 +276,7 @@ fn load_notes(conn: &Connection, ic_note: i64) -> Result<Vec<Note>, rusqlite::Er
     // SELECT keeps working against older schemas that don't have
     // `zcreationdate3`, `zcreationdate2`, or `zispasswordprotected` yet.
     let sql = "\
-        SELECT nd.znote, zcso.ztitle1, zcso.zfolder, nd.zdata, \
+        SELECT nd.znote, zcso.zidentifier, zcso.ztitle1, zcso.zfolder, nd.zdata, \
                zcso.zcreationdate1, zcso.zcreationdate2, zcso.zcreationdate3, \
                zcso.zmodificationdate1, zcso.zispasswordprotected \
         FROM zicnotedata AS nd, \
@@ -283,20 +287,22 @@ fn load_notes(conn: &Connection, ic_note: i64) -> Result<Vec<Note>, rusqlite::Er
     let mut stmt = conn.prepare(sql)?;
     let rows = stmt.query_map([ic_note], |r| {
         let pk: i64 = r.get(0)?;
-        let title: Option<String> = r.get(1)?;
-        let folder_pk: Option<i64> = r.get(2)?;
-        let zdata: Option<Vec<u8>> = r.get(3)?;
-        let cd1: Option<f64> = r.get(4)?;
-        let cd2: Option<f64> = r.get(5)?;
-        let cd3: Option<f64> = r.get(6)?;
-        let md1: Option<f64> = r.get(7)?;
-        let password: Option<i64> = r.get(8)?;
+        let identifier: Option<String> = r.get(1)?;
+        let title: Option<String> = r.get(2)?;
+        let folder_pk: Option<i64> = r.get(3)?;
+        let zdata: Option<Vec<u8>> = r.get(4)?;
+        let cd1: Option<f64> = r.get(5)?;
+        let cd2: Option<f64> = r.get(6)?;
+        let cd3: Option<f64> = r.get(7)?;
+        let md1: Option<f64> = r.get(8)?;
+        let password: Option<i64> = r.get(9)?;
 
         // Prefer the most specific creation date column available.
         let creation = cd3.or(cd2).or(cd1);
 
         Ok(Note {
             pk,
+            identifier: identifier.unwrap_or_default(),
             title: title.unwrap_or_default(),
             folder_pk,
             creation_date: creation.map(coretime_to_unix_ms),
@@ -376,8 +382,8 @@ mod tests {
         let blob = gzip(b"hello-protobuf");
         conn.execute(
             "INSERT INTO ziccloudsyncingobject \
-             (z_pk, z_ent, ztitle1, zfolder, zcreationdate1, zmodificationdate1) \
-             VALUES (300, 3, 'Good Note', 200, 700000000, 700000100)",
+             (z_pk, z_ent, ztitle1, zidentifier, zfolder, zcreationdate1, zmodificationdate1) \
+             VALUES (300, 3, 'Good Note', 'UUID-GOOD', 200, 700000000, 700000100)",
             [],
         )
         .unwrap();
@@ -389,8 +395,8 @@ mod tests {
 
         conn.execute(
             "INSERT INTO ziccloudsyncingobject \
-             (z_pk, z_ent, ztitle1, zfolder, zispasswordprotected, zcreationdate1) \
-             VALUES (301, 3, 'Locked Note', 200, 1, 700000200)",
+             (z_pk, z_ent, ztitle1, zidentifier, zfolder, zispasswordprotected, zcreationdate1) \
+             VALUES (301, 3, 'Locked Note', 'UUID-LOCKED', 200, 1, 700000200)",
             [],
         )
         .unwrap();
@@ -403,8 +409,8 @@ mod tests {
         // Garbled zdata — must not panic, protobuf_base64 = None
         conn.execute(
             "INSERT INTO ziccloudsyncingobject \
-             (z_pk, z_ent, ztitle1, zfolder, zcreationdate1) \
-             VALUES (302, 3, 'Corrupt', 200, 700000300)",
+             (z_pk, z_ent, ztitle1, zidentifier, zfolder, zcreationdate1) \
+             VALUES (302, 3, 'Corrupt', 'UUID-CORRUPT', 200, 700000300)",
             [],
         )
         .unwrap();
@@ -417,7 +423,8 @@ mod tests {
         // Note with no title — must be filtered out by the WHERE clause
         conn.execute(
             "INSERT INTO ziccloudsyncingobject \
-             (z_pk, z_ent, ztitle1, zfolder) VALUES (303, 3, NULL, 200)",
+             (z_pk, z_ent, ztitle1, zidentifier, zfolder) \
+             VALUES (303, 3, NULL, 'UUID-NOTITLE', 200)",
             [],
         )
         .unwrap();
@@ -478,6 +485,7 @@ mod tests {
 
         let good = data.notes.iter().find(|n| n.title == "Good Note").unwrap();
         assert!(!good.is_password_protected);
+        assert_eq!(good.identifier, "UUID-GOOD");
         let decoded = base64::engine::general_purpose::STANDARD
             .decode(good.protobuf_base64.as_ref().unwrap())
             .unwrap();

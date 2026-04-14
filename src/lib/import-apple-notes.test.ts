@@ -36,6 +36,7 @@ function encodeNote(noteText: string): string {
 function note(overrides: Partial<AppleNotesNote> = {}): AppleNotesNote {
   return {
     pk: 1,
+    identifier: 'uuid-1',
     title: 'Title',
     folderPk: 100,
     creationDate: 1_700_000_000_000,
@@ -137,7 +138,7 @@ describe('importAppleNotesWithDeps', () => {
       skipIfSourceExists: boolean;
     }[];
     expect(atoms).toHaveLength(1);
-    expect(atoms[0].sourceUrl).toBe('applenotes://acct-uuid/1');
+    expect(atoms[0].sourceUrl).toBe('applenotes:note/UUID-1?ownerIdentifier=acct-uuid');
     expect(atoms[0].skipIfSourceExists).toBe(true);
     expect(atoms[0].content.startsWith('# ')).toBe(true);
   });

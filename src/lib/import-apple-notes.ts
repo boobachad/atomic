@@ -53,6 +53,7 @@ export interface AppleNotesFolder {
 
 export interface AppleNotesNote {
   pk: number;
+  identifier: string;
   title: string;
   folderPk: number | null;
   creationDate: number | null;
@@ -166,7 +167,6 @@ export async function importAppleNotesWithDeps(
   );
   const activeFolderPks = new Set(activeFolders.map((f) => f.pk));
 
-  const noteTitlesByPk = new Map(data.notes.map((n) => [n.pk, n.title]));
   const multiAccount = data.accounts.length > 1;
 
   const protobufRoot = Root.fromJSON(descriptor);
@@ -181,16 +181,13 @@ export async function importAppleNotesWithDeps(
       return new converterType(ctx, decoded);
     },
     lookupAttachment: async () => null,
-    resolveInternalLinkTitle: async (identifier: string) => {
-      // The identifier is a note UUID (uppercase). Apple Notes stores this as
-      // `zidentifier` on a ICNote row — we don't return it from the backend,
-      // so fall back to scanning by raw identifier. In practice most internal
-      // links are to notes also being imported, and if the target title
-      // happens to match we can wikilink. Otherwise return the raw id so the
-      // user can find it.
-      const lower = identifier.toLowerCase();
+    resolveInternalLinkTitle: async (linkIdentifier: string) => {
+      // `applenotes:note/<UUID>` links point at another note by UUID; find it
+      // by matching `zidentifier`. Apple stores these uppercase so we compare
+      // case-insensitively to be safe.
+      const target = linkIdentifier.toLowerCase();
       for (const n of data.notes) {
-        if (n.title && n.title.toLowerCase() === lower) return n.title;
+        if (n.identifier && n.identifier.toLowerCase() === target) return n.title;
       }
       return null;
     },
@@ -261,10 +258,17 @@ export async function importAppleNotesWithDeps(
         tagsLinked += tagIds.length;
       }
 
+      // Real Apple Notes deeplink scheme: `applenotes:note/<UUID>` opens the
+      // note in the Apple Notes app on macOS. Appending `?ownerIdentifier=<acct>`
+      // disambiguates in multi-account setups. We uppercase the UUID to match
+      // the format Apple's own `applenotes:` handler emits.
       const account = note.folderPk !== null
         ? accountsByPk.get(data.folders.find((f) => f.pk === note.folderPk)?.accountPk ?? -1)
         : undefined;
-      const sourceUrl = `applenotes://${account?.uuid ?? 'unknown'}/${note.pk}`;
+      const identifier = note.identifier ? note.identifier.toUpperCase() : String(note.pk);
+      const sourceUrl = account?.uuid
+        ? `applenotes:note/${identifier}?ownerIdentifier=${encodeURIComponent(account.uuid)}`
+        : `applenotes:note/${identifier}`;
 
       prepared.push({
         atom: { content, sourceUrl, skipIfSourceExists: true, tagIds },
@@ -294,10 +298,6 @@ export async function importAppleNotesWithDeps(
       console.error('Apple Notes import: bulk create failed:', e);
     }
   }
-
-  // Silence the linter — we exported this for parity with the markdown importer,
-  // but we don't need the reverse lookup because note titles are already in data.notes.
-  void noteTitlesByPk;
 
   return {
     imported,
