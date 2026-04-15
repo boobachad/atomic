@@ -11,7 +11,7 @@ const config: CapacitorConfig = {
   webDir: 'dist-web',
   ios: {
     path: 'mobile/ios',
-    contentInset: 'always',
+    contentInset: 'never',
     backgroundColor: '#1e1e1e',
   },
   ...(devUrl
