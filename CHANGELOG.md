@@ -2,6 +2,10 @@
 
 All notable changes to Atomic are documented here.
 
+## v1.22.1 — 2026-04-15
+
+- Fix scheduled tasks (e.g. daily briefing) only running for one database in multi-database deployments
+
 ## v1.22.0 — 2026-04-14
 
 - Add Apple Notes importer — import notes directly from macOS Apple Notes with folder-based tags, duplicate detection, and protobuf-to-markdown conversion
