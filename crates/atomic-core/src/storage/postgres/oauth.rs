@@ -122,20 +122,20 @@ impl PostgresStorage {
         code_hash: &str,
         token_id: Option<&str>,
     ) -> Result<(), AtomicCoreError> {
-        sqlx::query("UPDATE oauth_codes SET used = 1 WHERE code_hash = $1")
-            .bind(code_hash)
-            .execute(&self.pool)
-            .await
-            .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
-
-        if let Some(tid) = token_id {
-            sqlx::query("UPDATE oauth_codes SET token_id = $1 WHERE code_hash = $2")
-                .bind(tid)
-                .bind(code_hash)
-                .execute(&self.pool)
-                .await
-                .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
-        }
+        // Single UPDATE so `used` and `token_id` move together — a crash
+        // between two queries could otherwise leave a code marked used with
+        // no audit pointer to the issued token. COALESCE preserves any
+        // previously stored token_id when None is passed.
+        sqlx::query(
+            "UPDATE oauth_codes
+                SET used = 1, token_id = COALESCE($2, token_id)
+              WHERE code_hash = $1",
+        )
+        .bind(code_hash)
+        .bind(token_id)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
         Ok(())
     }
 

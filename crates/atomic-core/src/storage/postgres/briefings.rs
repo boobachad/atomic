@@ -197,7 +197,7 @@ impl BriefingStore for PostgresStorage {
         )>(
             "SELECT bc.id, bc.briefing_id, bc.citation_index, bc.atom_id, bc.excerpt, a.source_url
              FROM briefing_citations bc
-             LEFT JOIN atoms a ON a.id = bc.atom_id
+             LEFT JOIN atoms a ON a.id = bc.atom_id AND a.db_id = $2
              WHERE bc.briefing_id = $1 AND bc.db_id = $2
              ORDER BY bc.citation_index",
         )
