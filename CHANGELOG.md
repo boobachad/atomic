@@ -2,6 +2,10 @@
 
 All notable changes to Atomic are documented here.
 
+## v1.22.4 — 2026-04-16
+
+- Fix a startup crash when initializing the desktop app authentication token
+
 ## v1.22.3 — 2026-04-16
 
 - Add Postgres-only deployment mode — the server no longer requires a local SQLite registry file, so Postgres deployments need no writable filesystem
