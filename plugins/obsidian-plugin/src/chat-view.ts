@@ -341,7 +341,7 @@ export class ChatView extends ItemView {
   }
 
   private conversationTitle(): string {
-    if (!this.active) return "Atomic Chat";
+    if (!this.active) return "Atomic chat";
     if (this.active.title) return this.active.title;
     const firstUser = this.active.messages.find((m) => m.role === "user");
     if (firstUser) {

@@ -424,23 +424,23 @@ export class OnboardingModal extends Modal {
 
     this.renderFeatureCard(cards, {
       icon: "search",
-      title: "Semantic Search",
+      title: "Semantic search",
       desc: "Search by meaning across your entire vault.",
-      shortcut: "Cmd+P \u2192 Atomic: Semantic Search",
+      shortcut: "Cmd+P \u2192 Atomic: Semantic search",
     });
 
     this.renderFeatureCard(cards, {
       icon: "arrow-left-right",
-      title: "Similar Notes",
+      title: "Similar notes",
       desc: "See related notes in the sidebar as you work.",
-      shortcut: "Cmd+P \u2192 Atomic: Open Similar Notes",
+      shortcut: "Cmd+P \u2192 Atomic: Open similar notes",
     });
 
     this.renderFeatureCard(cards, {
       icon: "book-open",
-      title: "Wiki Articles",
+      title: "Wiki articles",
       desc: "AI-generated summaries of topics in your notes.",
-      shortcut: "Cmd+P \u2192 Atomic: Open Wiki",
+      shortcut: "Cmd+P \u2192 Atomic: Open wiki",
     });
 
     const footer = container.createDiv({ cls: "atomic-onboarding-footer" });
