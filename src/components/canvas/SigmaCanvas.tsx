@@ -64,6 +64,12 @@ export function SigmaCanvas({ mode = 'main', onPreviewClick }: SigmaCanvasProps 
   // against this so the enter/leave transitions fade instead of snapping.
   const hoverAnimRef = useRef(0);
   const hoverTargetRef = useRef(0);
+  // Pinned node: the node whose popover is open. Its outline persists while
+  // the popover is open so hovering other nodes still shows their titles.
+  const pinnedNodeRef = useRef<string | null>(null);
+  // Lifted out of the sigma useEffect so pinNode (defined before main-mode
+  // branch) can kick the hover-fade animation loop.
+  const startHoverAnimRef = useRef<() => void>(() => {});
 
   // Atom preview popover state
   const [previewAtomId, setPreviewAtomId] = useState<string | null>(null);
@@ -72,6 +78,10 @@ export function SigmaCanvas({ mode = 'main', onPreviewClick }: SigmaCanvasProps 
   const closePreview = useCallback(() => {
     setPreviewAtomId(null);
     setPreviewAnchorRect(null);
+    pinnedNodeRef.current = null;
+    // Redraw so the pinned ring disappears. Hover state is already correct
+    // because enterNode/leaveNode have been running normally all along.
+    sigmaRef.current?.refresh();
   }, []);
 
   // Build a set of atom IDs that match the selected tag
@@ -204,21 +214,27 @@ export function SigmaCanvas({ mode = 'main', onPreviewClick }: SigmaCanvasProps 
       defaultDrawNodeHover: () => {},
       nodeReducer: (node, attrs) => {
         const hovered = hoveredNodeRef.current;
-        if (hovered) {
-          if (node === hovered) return { ...attrs, zIndex: 2 };
-          const isNeighbor = neighborsRef.current.get(hovered)?.has(node);
+        const pinned = pinnedNodeRef.current;
+        if (hovered || pinned) {
+          if (hovered && node === hovered) return { ...attrs, zIndex: 2 };
+          if (pinned && node === pinned) return { ...attrs, zIndex: 2 };
+          const isNeighbor =
+            (hovered && neighborsRef.current.get(hovered)?.has(node)) ||
+            (pinned && neighborsRef.current.get(pinned)?.has(node));
           if (isNeighbor) return { ...attrs, zIndex: 1 };
-          // Lerp node color toward dark grey and shrink, driven by hoverAnim.
-          const h = hoverAnimRef.current;
+          // Non-neighbors dim. Hover fades in/out via hoverAnim; pin holds
+          // the dim at full strength so edges/nodes stay faded after the
+          // cursor moves off the pinned node.
+          const dim = pinned ? 1 : hoverAnimRef.current;
           const rgb = parseRgbColor(attrs.color as string);
           const color = rgb
-            ? `rgb(${Math.round(rgb[0] + (60 - rgb[0]) * h)},${Math.round(rgb[1] + (60 - rgb[1]) * h)},${Math.round(rgb[2] + (60 - rgb[2]) * h)})`
+            ? `rgb(${Math.round(rgb[0] + (60 - rgb[0]) * dim)},${Math.round(rgb[1] + (60 - rgb[1]) * dim)},${Math.round(rgb[2] + (60 - rgb[2]) * dim)})`
             : attrs.color;
           return {
             ...attrs,
             color,
-            size: (attrs.size || 4) * (1 - 0.45 * h),
-            label: h > 0.5 ? '' : (attrs.label as string),
+            size: (attrs.size || 4) * (1 - 0.45 * dim),
+            label: dim > 0.5 ? '' : (attrs.label as string),
           };
         }
         const tagId = selectedTagRef.current;
@@ -236,14 +252,18 @@ export function SigmaCanvas({ mode = 'main', onPreviewClick }: SigmaCanvasProps 
       edgeReducer: (edge, attrs) => {
         const w = (attrs as any).weight ?? 0.5;
         const hovered = hoveredNodeRef.current;
+        const pinned = pinnedNodeRef.current;
         const t = themeRef.current;
         const anim = edgeAnimProgress.current;
-        if (hovered) {
+        if (hovered || pinned) {
           const g = graphRef.current!;
-          const touches = g.source(edge) === hovered || g.target(edge) === hovered;
+          const src = g.source(edge);
+          const dst = g.target(edge);
+          const touchesHovered = hovered && (src === hovered || dst === hovered);
+          const touchesPinned = pinned && (src === pinned || dst === pinned);
           const h = hoverAnimRef.current;
-          if (touches) {
-            // Lerp brightness + size from normal → emphasized.
+          if (touchesHovered) {
+            // Hover boosts brightness + size on its incident edges.
             const bright = w * anim * (1 + 0.4 * h);
             const size = (0.2 + w * 0.7) * anim + ((0.5 + w * 1.2) * anim - (0.2 + w * 0.7) * anim) * h;
             return {
@@ -253,11 +273,22 @@ export function SigmaCanvas({ mode = 'main', onPreviewClick }: SigmaCanvasProps 
               zIndex: 1,
             };
           }
-          // Non-incident: fade color toward edgeMin (naturally dim) and shrink.
+          if (touchesPinned) {
+            // Pinned edges stay at normal brightness — they don't pulse like hover.
+            return {
+              ...attrs,
+              color: edgeColor(t, w * anim),
+              size: (0.2 + w * 0.7) * anim,
+              zIndex: 1,
+            };
+          }
+          // Non-incident: fade. Pin holds the fade at full so edges stay dim
+          // after the cursor leaves the pinned node.
+          const dim = pinned ? 1 : h;
           return {
             ...attrs,
-            color: edgeColor(t, w * anim * (1 - h)),
-            size: (0.2 + w * 0.7) * anim * (1 - h),
+            color: edgeColor(t, w * anim * (1 - dim)),
+            size: (0.2 + w * 0.7) * anim * (1 - dim),
           };
         }
         if (w < edgeThresholdRef.current) {
@@ -406,10 +437,24 @@ export function SigmaCanvas({ mode = 'main', onPreviewClick }: SigmaCanvasProps 
         ctx.fillText(c.label, lx, ly);
       }
 
+      // === Pinned-node ring (persists while a popover is open) ===
+      const pinnedId = pinnedNodeRef.current;
+      if (pinnedId && graph!.hasNode(pinnedId)) {
+        const pAttrs = graph!.getNodeAttributes(pinnedId);
+        const pPos = sigma!.graphToViewport({ x: pAttrs.x as number, y: pAttrs.y as number });
+        const pSize = sigma!.scaleSize(pAttrs.size as number);
+        ctx.beginPath();
+        ctx.arc(pPos.x, pPos.y, pSize + 3, 0, Math.PI * 2);
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.75)';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+      }
+
       // === Hover pill + ring (drawn last so it paints above everything) ===
+      // Suppress the pill/ring for the pinned node — its outline already marks it.
       const hoveredId = hoveredNodeRef.current;
       const hAnim = hoverAnimRef.current;
-      if (hoveredId && hAnim > 0.01 && graph!.hasNode(hoveredId)) {
+      if (hoveredId && hoveredId !== pinnedId && hAnim > 0.01 && graph!.hasNode(hoveredId)) {
         const hAttrs = graph!.getNodeAttributes(hoveredId);
         const hPos = sigma!.graphToViewport({ x: hAttrs.x as number, y: hAttrs.y as number });
         const hSize = sigma!.scaleSize(hAttrs.size as number);
@@ -510,7 +555,8 @@ export function SigmaCanvas({ mode = 'main', onPreviewClick }: SigmaCanvasProps 
     }
     const cancelAnim = () => { cancelledAnim = true; };
 
-    // Helper to show atom preview popover at a node's screen position
+    // Helper to show atom preview popover at a node's screen position.
+    // Pinning is handled by clickNode / focusAtom so this stays purely positional.
     const showAtomPreview = (atomId: string) => {
       if (!graph.hasNode(atomId) || !sigma) return;
       const nodeAttrs = graph.getNodeAttributes(atomId);
@@ -526,6 +572,15 @@ export function SigmaCanvas({ mode = 'main', onPreviewClick }: SigmaCanvasProps 
         width: nodeSize * 2,
       });
       setPreviewAtomId(atomId);
+    };
+
+    // Pin a node so hover emphasis stays on it while its popover is open.
+    const pinNode = (atomId: string) => {
+      if (!graph.hasNode(atomId)) return;
+      pinnedNodeRef.current = atomId;
+      hoveredNodeRef.current = atomId;
+      hoverTargetRef.current = 1;
+      startHoverAnimRef.current();
     };
 
     // Build a controller both modes use. Main mode registers it in the global
@@ -565,16 +620,13 @@ export function SigmaCanvas({ mode = 'main', onPreviewClick }: SigmaCanvasProps 
         const cam = graphToCamera(gx, gy);
         sigma.getCamera().animate({ x: cam.x, y: cam.y, ratio: 0.15 }, { duration: 600 });
         // Main view shows the popover after the camera settles; preview stays quiet.
-        if (!isPreview) setTimeout(() => showAtomPreview(atomId), 650);
+        if (!isPreview) setTimeout(() => { pinNode(atomId); showAtomPreview(atomId); }, 650);
       },
     };
 
     if (isPreview) {
       useCanvasStore.getState().registerPreviewController(controller);
     } else {
-      sigma.on('clickNode', ({ node }) => {
-        showAtomPreview(node);
-      });
       // Hover animation: exponential ease toward target (0 or 1).
       // Loop stops itself when target is reached, so idle cost is zero.
       let hoverRaf: number | null = null;
@@ -595,6 +647,12 @@ export function SigmaCanvas({ mode = 'main', onPreviewClick }: SigmaCanvasProps 
         if (hoverRaf !== null) return;
         hoverRaf = requestAnimationFrame(tickHover);
       };
+      startHoverAnimRef.current = startHoverAnim;
+      sigma.on('clickNode', ({ node }) => {
+        // Pin the clicked node so emphasis persists while the popover is open.
+        pinNode(node);
+        showAtomPreview(node);
+      });
       sigma.on('enterNode', ({ node }) => {
         hoveredNodeRef.current = node;
         hoverTargetRef.current = 1;
