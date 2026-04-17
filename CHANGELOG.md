@@ -2,6 +2,14 @@
 
 All notable changes to Atomic are documented here.
 
+## v1.23.0 — 2026-04-17
+
+- Add a first-run welcome screen and guided capture options (URL, RSS feed, markdown folder, Apple Notes, MCP) shown on the dashboard when no atoms or briefings exist yet
+- Add Capacitor Android app so the React frontend can run on Android devices alongside the existing iOS build
+- Fix atom list layout overflow on mobile — titles now truncate properly and the source pill moves inline with tags on small screens
+- Improve onboarding wizard by marking required steps and removing the redundant Skip button
+- Fix OpenRouter connection test to use the free `/key` endpoint instead of burning credits on a chat completion
+
 ## v1.22.5 — 2026-04-16
 
 - Add canvas hover emphasis that dims non-neighboring nodes and edges with an animated fade, making a hovered node's connections visually pop
