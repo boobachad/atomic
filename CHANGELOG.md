@@ -2,6 +2,10 @@
 
 All notable changes to Atomic are documented here.
 
+## v1.23.3 — 2026-04-18
+
+- Improve diagnostic logging when auto-tagging is silently skipped due to missing API key, disabled setting, or no auto-tag targets configured
+
 ## v1.23.2 — 2026-04-18
 
 - Fix OpenRouter onboarding flow failing on Docker/reverse-proxy deployments by moving the OAuth callback page out of the `/oauth/` path

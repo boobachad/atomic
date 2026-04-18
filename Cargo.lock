@@ -553,7 +553,7 @@ dependencies = [
 
 [[package]]
 name = "atomic"
-version = "1.23.2"
+version = "1.23.3"
 dependencies = [
  "atomic-core",
  "base64 0.22.1",
