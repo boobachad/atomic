@@ -487,6 +487,7 @@ async fn process_tagging_only_inner(
         .unwrap_or(true);
 
     if !auto_tagging_enabled {
+        tracing::info!(atom_id = %atom_id, "Auto-tagging disabled in settings; marking atom as skipped");
         storage.set_tagging_status_sync(atom_id, "skipped", None).await
             .map_err(|e| e.to_string())?;
         return Ok((Vec::new(), Vec::new()));
@@ -498,6 +499,7 @@ async fn process_tagging_only_inner(
     if provider_config.provider_type == ProviderType::OpenRouter
         && provider_config.openrouter_api_key.is_none()
     {
+        tracing::warn!(atom_id = %atom_id, "OpenRouter selected but no API key configured; skipping tagging");
         storage.set_tagging_status_sync(atom_id, "skipped", None).await
             .map_err(|e| e.to_string())?;
         return Ok((Vec::new(), Vec::new()));
@@ -539,7 +541,7 @@ async fn process_tagging_only_inner(
     // No auto-tag targets configured — skip tagging entirely.
     // The user has either unflagged all defaults during onboarding or hasn't created any.
     if tag_tree_json == "(no existing tags)" {
-        tracing::debug!(atom_id = %atom_id, "No auto-tag targets configured; skipping tagging");
+        tracing::info!(atom_id = %atom_id, "No tags flagged as auto-tag targets; skipping tagging (check Settings → Tagging)");
         storage.set_tagging_status_sync(atom_id, "skipped", None).await
             .map_err(|e| e.to_string())?;
         return Ok((Vec::new(), Vec::new()));
