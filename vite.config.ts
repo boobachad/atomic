@@ -31,9 +31,20 @@ export default defineConfig({
               // fall back to index.html for every navigation so deep-links
               // like /atoms/:id work when the server is a static host.
               navigateFallback: '/index.html',
-              // API and WS calls must NEVER be intercepted. Skip anything that
-              // looks like a server endpoint the app talks to.
-              navigateFallbackDenylist: [/^\/api\//, /^\/health/, /^\/ws/],
+              // Server endpoints must NEVER be intercepted and rewritten to
+              // index.html. /oauth/ and /.well-known/ are hit by top-level
+              // browser navigations (MCP remote-auth flow from claude.ai),
+              // so without this denylist the SPA shell takes over the URL
+              // and the user lands on the dashboard with OAuth params in
+              // the querystring instead of the consent page.
+              navigateFallbackDenylist: [
+                /^\/api\//,
+                /^\/health/,
+                /^\/ws/,
+                /^\/oauth\//,
+                /^\/\.well-known\//,
+                /^\/mcp(\/|$)/,
+              ],
               runtimeCaching: [
                 {
                   // Google Fonts stylesheets — cache for a day.
