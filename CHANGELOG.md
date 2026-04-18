@@ -2,6 +2,11 @@
 
 All notable changes to Atomic are documented here.
 
+## v1.23.2 — 2026-04-18
+
+- Fix OpenRouter onboarding flow failing on Docker/reverse-proxy deployments by moving the OAuth callback page out of the `/oauth/` path
+- Fix MCP remote-auth consent screen (used by claude.ai) being incorrectly intercepted by the service worker, which caused users to land on the dashboard instead of the authorization page
+
 ## v1.23.1 — 2026-04-17
 
 - Add collapsible and draggable popovers on the canvas — atom previews can now be collapsed to just the title bar, dragged freely around the viewport, and dismissed with a close button
