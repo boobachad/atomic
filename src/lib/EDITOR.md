@@ -63,6 +63,24 @@ lines this becomes noticeable; the next escalation would be
 segment-based rendering (several small CM instances stitched together,
 à la Notion).
 
+**Version lock-in**. The patch file name (`@codemirror+view+6.38.8.patch`)
+is tied to an exact version. `@codemirror/view` is a transitive dep
+pulled in via `@codemirror/lang-markdown` and `@uiw/react-codemirror`,
+so normal semver resolution would happily pick up a minor bump that
+invalidates the patch's line-number context. Two safeguards in
+`package.json`:
+
+- `overrides: { "@codemirror/view": "6.38.8" }` forces the resolver
+  to pin the exact version regardless of transitive ranges.
+- `postinstall` runs `patch-package --error-on-fail` so an install
+  that can't apply the patch halts loudly instead of silently leaving
+  virtualisation enabled (which would bring back every heightmap
+  drift bug documented in this file).
+
+When you intentionally upgrade CM: `npm install @codemirror/view@X.Y.Z`,
+update `overrides`, regenerate the patch (`npx patch-package @codemirror/view`),
+and rename the file.
+
 ---
 
 ## Decorations: two layers

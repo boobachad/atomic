@@ -4,7 +4,7 @@
   "version": "1.23.3",
   "type": "module",
   "scripts": {
-    "postinstall": "patch-package",
+    "postinstall": "patch-package --error-on-fail",
     "dev": "vite",
     "dev:web": "VITE_BUILD_TARGET=web vite",
     "build": "tsc && vite build",
@@ -53,6 +53,9 @@
     "stress:wikipedia": "node scripts/stress-test-wikipedia.js",
     "check:layout": "node scripts/check-layout.mjs",
     "editor-harness": "node scripts/harness/run.mjs"
+  },
+  "overrides": {
+    "@codemirror/view": "6.38.8"
   },
   "dependencies": {
     "@capacitor/android": "^8.3.1",
