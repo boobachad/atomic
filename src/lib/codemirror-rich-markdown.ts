@@ -168,20 +168,44 @@ function isInsideCodeBlock(view: EditorView, pos: number): boolean {
   return false;
 }
 
+// Markdown block nodes (ListItem, BulletList, Paragraph, etc.) often
+// carry a `to` that sits at the START of the next line — i.e. just past
+// the trailing newline. Naively calling `doc.lineAt(node.to).number`
+// then returns a line that is NOT actually part of the node, and
+// decoration ranges leak onto it (e.g. after exiting a list the next
+// paragraph picks up `cm-md-li`). Walk back one char so `lineAt`
+// always resolves to the last line that really contains node content.
+function lastLineOf(doc: { line(n: number): { from: number }; lineAt(pos: number): { number: number } }, node: { from: number; to: number }): number {
+  const end = Math.max(node.from, node.to - 1);
+  return doc.lineAt(end).number;
+}
+
 function buildDecorations(view: EditorView): DecorationSet {
   const decos: Range<Decoration>[] = [];
   const cursorLines = activeLines(view);
   const doc = view.state.doc;
   const docEnd = doc.length;
 
-  // Blank lines (outside fenced code) collapse to zero height. Margin
-  // collapsing around them is handled by the `cm-md-blank > br { display: none }`
-  // rule in the CSS.
+  // Blank lines collapse to zero height for CSS margin-collapse to work
+  // between adjacent paragraphs, but we deliberately only collapse the
+  // LAST blank in any run. Earlier blanks in the run stay full-height so
+  // the user can type `Enter` multiple times to add real vertical space
+  // — otherwise two blanks look identical to one (since the blank lines
+  // are invisible and the surrounding paragraph margins just collapse).
+  //
+  // Rule: a blank line gets `cm-md-blank` only if the next line exists
+  // and is NOT also blank. Cursor-active blanks and blanks inside code
+  // fences are left alone too.
   let pos = 0;
   while (pos <= docEnd) {
     const line = doc.lineAt(pos);
     if (line.length === 0 && !cursorLines.has(line.number) && !isInsideCodeBlock(view, line.from)) {
-      decos.push(blankLineDeco.range(line.from));
+      const nextStart = line.to + 1;
+      const nextIsBlank =
+        nextStart <= docEnd && doc.lineAt(nextStart).length === 0;
+      if (!nextIsBlank) {
+        decos.push(blankLineDeco.range(line.from));
+      }
     }
     if (line.to + 1 <= pos) break;
     pos = line.to + 1;
@@ -245,7 +269,8 @@ function buildDecorations(view: EditorView): DecorationSet {
           first.to === node.to;
         if (!insideList) {
           const startLine = doc.lineAt(node.from);
-          const endLine = doc.lineAt(node.to);
+          const endLineNum = lastLineOf(doc, node);
+          const endLine = doc.line(endLineNum);
           if (isImageOnly) {
             decos.push(imageParagraphStartDeco.range(startLine.from));
             decos.push(imageParagraphEndDeco.range(endLine.from));
@@ -266,7 +291,8 @@ function buildDecorations(view: EditorView): DecorationSet {
           }
         }
         const startLine = doc.lineAt(node.from);
-        const endLine = doc.lineAt(node.to);
+        const endLineNum = lastLineOf(doc, node);
+        const endLine = doc.line(endLineNum);
         decos.push((nested ? nestedListStartDeco : listStartLineDeco).range(startLine.from));
         if (endLine.number !== startLine.number) {
           decos.push((nested ? nestedListEndDeco : listEndLineDeco).range(endLine.from));
@@ -276,7 +302,7 @@ function buildDecorations(view: EditorView): DecorationSet {
 
       if (name === 'ListItem') {
         const startLine = doc.lineAt(node.from).number;
-        const endLine = doc.lineAt(node.to).number;
+        const endLine = lastLineOf(doc, node);
         for (let ln = startLine; ln <= endLine; ln++) {
           decos.push(listItemLineDeco.range(doc.line(ln).from));
         }

@@ -577,6 +577,17 @@ function AtomReaderContent({
     requestAnimationFrame(tryFocus);
   }, [isEditing, cursorOffset]);
 
+  // Dev: expose the editor view for e2e harness scripts.
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const update = () => {
+      (window as any).__cmView = editorRef.current?.view ?? null;
+    };
+    update();
+    const id = setInterval(update, 200);
+    return () => clearInterval(id);
+  }, [isEditing]);
+
   const stopEditingRef = useRef(stopEditing);
   stopEditingRef.current = stopEditing;
 
