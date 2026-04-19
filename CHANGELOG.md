@@ -2,6 +2,12 @@
 
 All notable changes to Atomic are documented here.
 
+## v1.24.0 — 2026-04-19
+
+- Add Obsidian-style live-preview markdown editor — edit mode now renders headings, links, emphasis, images, and lists as formatted text; clicking a line reveals its raw markdown for editing, with scroll position preserved across view/edit toggles
+- Fix click-to-move-cursor and click-drag text selection in the editor, which previously landed on wrong positions in long documents
+- Fix blank lines not appearing when pressing Enter multiple times, and fix list exit so typing after leaving a list is no longer styled as a list item
+
 ## v1.23.3 — 2026-04-18
 
 - Improve diagnostic logging when auto-tagging is silently skipped due to missing API key, disabled setting, or no auto-tag targets configured
