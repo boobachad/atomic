@@ -11,10 +11,25 @@ const EDITOR_DEPENDENCY_MARKERS = [
   `${path.sep}node_modules${path.sep}@codemirror${path.sep}`,
   `${path.sep}node_modules${path.sep}@lezer${path.sep}`,
   `${path.sep}node_modules${path.sep}codemirror${path.sep}`,
-  `${path.sep}node_modules${path.sep}katex${path.sep}`,
   `${path.sep}node_modules${path.sep}crelt${path.sep}`,
   `${path.sep}node_modules${path.sep}w3c-keyname${path.sep}`,
 ]
+
+// CodeMirror language grammars (both `@codemirror/lang-*` and the `@lezer/*`
+// parser grammars they pull in) are loaded on demand via
+// `@codemirror/language-data`. Rollup splits dynamic imports into their own
+// chunks by default, but our `editor` manualChunk rule was greedy enough to
+// swallow them — which made "on demand" a lie and bloated the editor chunk.
+// Exclude them from the editor chunk so each grammar stays as its own lazy
+// chunk that loads only when a user picks that language in a code block.
+const LEZER_CORE_PACKAGES = new Set(['common', 'lr', 'highlight'])
+function isLazyGrammarModule(id: string): boolean {
+  if (id.includes(`${path.sep}node_modules${path.sep}@codemirror${path.sep}lang-`)) {
+    return true
+  }
+  const lezerMatch = id.match(/[\\/]node_modules[\\/]@lezer[\\/]([^\\/]+)[\\/]/)
+  return lezerMatch !== null && !LEZER_CORE_PACKAGES.has(lezerMatch[1])
+}
 
 export default defineConfig({
   plugins: [
@@ -123,6 +138,7 @@ export default defineConfig({
     rollupOptions: {
       output: {
         manualChunks(id) {
+          if (isLazyGrammarModule(id)) return
           if (EDITOR_DEPENDENCY_MARKERS.some((marker) => id.includes(marker))) {
             return 'editor'
           }

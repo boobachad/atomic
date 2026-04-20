@@ -1,8 +1,7 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type MutableRefObject } from 'react';
+import { useCallback, useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type MutableRefObject } from 'react';
 import { createPortal } from 'react-dom';
 import { Bold, ChevronDown, ChevronUp, Code2, Italic, Link2, Search, X } from 'lucide-react';
-import { Crepe } from '@milkdown/crepe';
-import type { CrepeConfig } from '@milkdown/crepe';
+import type { CrepeBuilder } from '@milkdown/crepe/builder';
 import { commandsCtx, editorViewCtx, prosePluginsCtx } from '@milkdown/kit/core';
 import {
   emphasisSchema,
@@ -12,14 +11,24 @@ import {
   strongSchema,
   toggleEmphasisCommand,
   toggleInlineCodeCommand,
-  toggleLinkCommand,
   toggleStrongCommand,
 } from '@milkdown/kit/preset/commonmark';
 import { NodeSelection, TextSelection } from '@milkdown/prose/state';
 import { redo, undo } from '@milkdown/prose/history';
-import '@milkdown/crepe/theme/common/style.css';
+// Import only the Crepe CSS for features we actually use. The aggregated
+// `theme/common/style.css` pulls in `latex.css`, which in turn imports
+// `katex/dist/katex.min.css` — that's what emits the ~800 KB of KaTeX font
+// assets into the build output.
+import '@milkdown/crepe/theme/common/reset.css';
+import '@milkdown/crepe/theme/common/prosemirror.css';
+import '@milkdown/crepe/theme/common/block-edit.css';
+import '@milkdown/crepe/theme/common/code-mirror.css';
+import '@milkdown/crepe/theme/common/image-block.css';
+import '@milkdown/crepe/theme/common/list-item.css';
+import '@milkdown/crepe/theme/common/placeholder.css';
+import '@milkdown/crepe/theme/common/table.css';
 import '../../styles/crepe-atomic-theme.css';
-import { withAtomicImageConfig } from '../../editor/milkdown/crepe-config';
+import { buildAtomicCrepe } from '../../editor/milkdown/crepe-config';
 import {
   createAtomicEditorSearchPlugin,
   getAtomicEditorSearchState,
@@ -193,14 +202,12 @@ function AtomicSearchPanel({
 
 function AtomicSelectionToolbar({
   state,
-  showLinkAction,
   onToggleBold,
   onToggleItalic,
   onToggleCode,
   onToggleLink,
 }: {
   state: SelectionToolbarState;
-  showLinkAction: boolean;
   onToggleBold: () => void;
   onToggleItalic: () => void;
   onToggleCode: () => void;
@@ -212,9 +219,7 @@ function AtomicSelectionToolbar({
     { key: 'bold', active: state.bold, icon: Bold, label: 'Bold', onClick: onToggleBold },
     { key: 'italic', active: state.italic, icon: Italic, label: 'Italic', onClick: onToggleItalic },
     { key: 'code', active: state.code, icon: Code2, label: 'Inline code', onClick: onToggleCode },
-    ...(showLinkAction
-      ? [{ key: 'link', active: state.link, icon: Link2, label: 'Link', onClick: onToggleLink }]
-      : []),
+    { key: 'link', active: state.link, icon: Link2, label: 'Link', onClick: onToggleLink },
   ] as const;
 
   return (
@@ -326,7 +331,6 @@ type AtomicMilkdownEditorInnerProps = {
   documentId?: string;
   markdownSource: string;
   initialSearchText?: string | null;
-  crepeConfig?: CrepeConfig;
   blurEditorOnMount?: boolean;
   onMarkdownChange?: (markdown: string) => void;
   editorHandleRef?: MutableRefObject<AtomicMilkdownEditorHandle | null>;
@@ -348,7 +352,6 @@ export function AtomicMilkdownEditor({
   markdownSource,
   documentId,
   initialSearchText,
-  crepeConfig,
   blurEditorOnMount = false,
   onMarkdownChange,
   editorHandleRef,
@@ -356,7 +359,7 @@ export function AtomicMilkdownEditor({
   const LINK_ICON_HIT_AREA_PX = 16;
   const rootRef = useRef<HTMLDivElement | null>(null);
   const mountRef = useRef<HTMLDivElement | null>(null);
-  const crepeRef = useRef<Crepe | null>(null);
+  const crepeRef = useRef<CrepeBuilder | null>(null);
   const isReadyRef = useRef(false);
   const hasUserEditRef = useRef(false);
   const lastEmittedMarkdownRef = useRef(markdownSource);
@@ -377,13 +380,7 @@ export function AtomicMilkdownEditor({
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const lastAppliedInitialSearchRef = useRef<string | null>(initialSearchText?.trim() ?? null);
 
-  const effectiveCrepeConfig = useMemo(() => withAtomicImageConfig(crepeConfig), [crepeConfig]);
   const editorIdentity = documentId ?? markdownSource;
-  const useAtomicToolbar = crepeConfig?.features?.[Crepe.Feature.Toolbar] === false;
-  const showLinkAction =
-    useAtomicToolbar || crepeConfig?.features?.[Crepe.Feature.LinkTooltip] !== false;
-  const useAtomicLinkPopover =
-    useAtomicToolbar && crepeConfig?.features?.[Crepe.Feature.LinkTooltip] === false;
 
   useEffect(() => {
     lastEmittedMarkdownRef.current = markdownSource;
@@ -394,7 +391,7 @@ export function AtomicMilkdownEditor({
     onMarkdownChangeRef.current = onMarkdownChange;
   }, [onMarkdownChange]);
 
-  const runEditorAction = useCallback(<T,>(runner: (crepe: Crepe) => T): T | null => {
+  const runEditorAction = useCallback(<T,>(runner: (crepe: CrepeBuilder) => T): T | null => {
     const crepe = crepeRef.current;
     if (!crepe || !isReadyRef.current) {
       return null;
@@ -506,10 +503,9 @@ export function AtomicMilkdownEditor({
     }
 
     let cancelled = false;
-    const crepe = new Crepe({
+    const crepe = buildAtomicCrepe({
       root: mount,
       defaultValue: markdownSource,
-      ...effectiveCrepeConfig,
     });
     crepe.editor.config((ctx) => {
       ctx.update(prosePluginsCtx, (plugins) => [...plugins, createAtomicEditorSearchPlugin()]);
@@ -627,7 +623,7 @@ export function AtomicMilkdownEditor({
       crepeRef.current = null;
       void crepe.destroy();
     };
-  }, [blurEditorOnMount, editorIdentity, effectiveCrepeConfig, initialSearchText, syncSearch]);
+  }, [blurEditorOnMount, editorIdentity, initialSearchText, syncSearch]);
 
   useEffect(() => {
     if (!searchPanel.open) return;
@@ -751,13 +747,6 @@ export function AtomicMilkdownEditor({
   }, [isReady]);
 
   useEffect(() => {
-    if (!useAtomicToolbar) {
-      setSelectionToolbar(HIDDEN_SELECTION_TOOLBAR);
-      setLinkPopover(HIDDEN_LINK_POPOVER);
-      setImagePopover(HIDDEN_IMAGE_POPOVER);
-      return;
-    }
-
     const element = rootRef.current;
     if (!element || !isReady) return;
 
@@ -826,14 +815,9 @@ export function AtomicMilkdownEditor({
       window.removeEventListener('resize', scheduleUpdate);
       element.removeEventListener('scroll', scheduleUpdate, true);
     };
-  }, [isReady, runEditorAction, useAtomicToolbar]);
+  }, [isReady, runEditorAction]);
 
   useEffect(() => {
-    if (!useAtomicToolbar) {
-      setImagePopover(HIDDEN_IMAGE_POPOVER);
-      return;
-    }
-
     const element = rootRef.current;
     if (!element || !isReady) return;
 
@@ -888,11 +872,9 @@ export function AtomicMilkdownEditor({
       window.removeEventListener('resize', scheduleUpdate);
       element.removeEventListener('scroll', scheduleUpdate, true);
     };
-  }, [isReady, runEditorAction, useAtomicToolbar]);
+  }, [isReady, runEditorAction]);
 
   useEffect(() => {
-    if (!useAtomicToolbar || !useAtomicLinkPopover) return;
-
     const element = rootRef.current;
     if (!element || !isReady) return;
 
@@ -1022,10 +1004,10 @@ export function AtomicMilkdownEditor({
       document.removeEventListener('pointerdown', handleDocumentPointerDown);
       document.removeEventListener('keydown', handleEscape);
     };
-  }, [LINK_ICON_HIT_AREA_PX, isReady, linkPopover.visible, runEditorAction, useAtomicLinkPopover, useAtomicToolbar]);
+  }, [LINK_ICON_HIT_AREA_PX, isReady, linkPopover.visible, runEditorAction]);
 
   const runMarkCommand = useCallback(
-    (runner: (crepe: Crepe) => void) => {
+    (runner: (crepe: CrepeBuilder) => void) => {
       markUserEdit();
       const didRun = runEditorAction((crepe) => {
         runner(crepe);
@@ -1067,15 +1049,6 @@ export function AtomicMilkdownEditor({
   }, [runMarkCommand]);
 
   const handleToggleLink = useCallback(() => {
-    if (!useAtomicLinkPopover) {
-      runMarkCommand((crepe) => {
-        crepe.editor.action((ctx) => {
-          ctx.get(commandsCtx).call(toggleLinkCommand.key);
-        });
-      });
-      return;
-    }
-
     const selection = window.getSelection();
     if (!selection || selection.rangeCount === 0) return;
     const rangeRect = selection.getRangeAt(0).getBoundingClientRect();
@@ -1140,7 +1113,7 @@ export function AtomicMilkdownEditor({
       to: info.to,
       hasExistingLink: info.hasExistingLink,
     });
-  }, [runEditorAction, runMarkCommand, useAtomicLinkPopover]);
+  }, [runEditorAction]);
 
   const applyLinkState = useCallback(
     (draft: LinkPopoverState) => {
@@ -1266,7 +1239,6 @@ export function AtomicMilkdownEditor({
       <div ref={mountRef} />
       <AtomicSelectionToolbar
         state={selectionToolbar}
-        showLinkAction={showLinkAction}
         onToggleBold={handleToggleBold}
         onToggleItalic={handleToggleItalic}
         onToggleCode={handleToggleCode}

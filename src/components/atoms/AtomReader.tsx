@@ -13,7 +13,6 @@ import { useInlineEditor } from '../../hooks';
 import { formatDate } from '../../lib/date';
 import { getTransport } from '../../lib/transport';
 import { readerEditorActions } from '../../lib/reader-editor-bridge';
-import { ATOMIC_CREPE_BASE_CONFIG } from '../../editor/milkdown/crepe-config';
 import type { AtomicMilkdownEditorHandle } from '../editor/AtomicMilkdownEditor';
 
 const AtomicMilkdownEditor = lazy(async () => {
@@ -272,7 +271,6 @@ function AtomReaderContent({
                 documentId={atom.id}
                 markdownSource={editContent}
                 initialSearchText={highlightText}
-                crepeConfig={ATOMIC_CREPE_BASE_CONFIG}
                 blurEditorOnMount={!initialEditing}
                 onMarkdownChange={setEditContent}
                 editorHandleRef={editorHandleRef}
