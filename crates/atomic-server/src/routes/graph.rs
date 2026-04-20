@@ -14,10 +14,7 @@ pub struct EdgesQuery {
 }
 
 #[utoipa::path(get, path = "/api/graph/edges", params(EdgesQuery), responses((status = 200, description = "Semantic edges", body = Vec<atomic_core::SemanticEdge>)), tag = "graph")]
-pub async fn get_semantic_edges(
-    db: Db,
-    query: web::Query<EdgesQuery>,
-) -> HttpResponse {
+pub async fn get_semantic_edges(db: Db, query: web::Query<EdgesQuery>) -> HttpResponse {
     let min_similarity = query.min_similarity.unwrap_or(0.5);
     ok_or_error(db.0.get_semantic_edges(min_similarity).await)
 }
@@ -40,7 +37,10 @@ pub async fn get_atom_neighborhood(
     let atom_id = path.into_inner();
     let depth = query.depth.unwrap_or(1);
     let min_similarity = query.min_similarity.unwrap_or(0.5);
-    ok_or_error(db.0.get_atom_neighborhood(&atom_id, depth, min_similarity).await)
+    ok_or_error(
+        db.0.get_atom_neighborhood(&atom_id, depth, min_similarity)
+            .await,
+    )
 }
 
 /// Queue a full rebuild of the semantic-edge graph.

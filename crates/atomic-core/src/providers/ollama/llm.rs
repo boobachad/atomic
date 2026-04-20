@@ -232,10 +232,12 @@ pub async fn complete(
 
     let chat_response: ChatResponse = response.json().await?;
 
-    let tool_calls = chat_response
-        .message
-        .tool_calls
-        .map(|tcs| tcs.iter().enumerate().map(|(i, tc)| convert_tool_call(tc, i)).collect());
+    let tool_calls = chat_response.message.tool_calls.map(|tcs| {
+        tcs.iter()
+            .enumerate()
+            .map(|(i, tc)| convert_tool_call(tc, i))
+            .collect()
+    });
 
     Ok(CompletionResponse {
         content: chat_response.message.content,
@@ -308,10 +310,12 @@ pub async fn complete_with_tools(
 
     let chat_response: ChatResponse = response.json().await?;
 
-    let tool_calls = chat_response
-        .message
-        .tool_calls
-        .map(|tcs| tcs.iter().enumerate().map(|(i, tc)| convert_tool_call(tc, i)).collect());
+    let tool_calls = chat_response.message.tool_calls.map(|tcs| {
+        tcs.iter()
+            .enumerate()
+            .map(|(i, tc)| convert_tool_call(tc, i))
+            .collect()
+    });
 
     Ok(CompletionResponse {
         content: chat_response.message.content,
@@ -422,7 +426,8 @@ pub async fn complete_streaming_with_tools(
                         });
 
                         // Emit tool call arguments
-                        let args = serde_json::to_string(&tc.function.arguments).unwrap_or_default();
+                        let args =
+                            serde_json::to_string(&tc.function.arguments).unwrap_or_default();
                         on_delta(StreamDelta::ToolCallArguments {
                             index: tool_calls.len() + i,
                             arguments: args,

@@ -4,12 +4,12 @@
 //! the default SQLite implementation. Alternative backends (e.g., Postgres)
 //! can be added by implementing the `Storage` supertrait.
 
-pub mod traits;
-pub mod sqlite;
 pub mod postgres;
+pub mod sqlite;
+pub mod traits;
 
-pub use traits::*;
 pub use sqlite::SqliteStorage;
+pub use traits::*;
 
 #[cfg(feature = "postgres")]
 pub use postgres::PostgresStorage;
@@ -59,7 +59,9 @@ impl StorageBackend {
     }
 
     /// Get pipeline status (embedding counts + failed atoms).
-    pub(crate) async fn get_pipeline_status(&self) -> Result<crate::models::PipelineStatus, AtomicCoreError> {
+    pub(crate) async fn get_pipeline_status(
+        &self,
+    ) -> Result<crate::models::PipelineStatus, AtomicCoreError> {
         match self {
             StorageBackend::Sqlite(s) => {
                 let s = s.clone();
@@ -94,7 +96,8 @@ impl StorageBackend {
             }
             #[cfg(feature = "postgres")]
             StorageBackend::Postgres(s) => {
-                <PostgresStorage as ClusterStore>::get_canvas_level(s, parent_id, children_hint).await
+                <PostgresStorage as ClusterStore>::get_canvas_level(s, parent_id, children_hint)
+                    .await
             }
         }
     }
@@ -164,28 +167,38 @@ pub(crate) trait ReborrowArg<'a> {
 
 impl SpawnArg for &str {
     type Owned = String;
-    fn into_spawn_arg(self) -> String { self.to_string() }
+    fn into_spawn_arg(self) -> String {
+        self.to_string()
+    }
 }
 
 impl<T: Clone + Send + Sync + 'static> SpawnArg for &[T] {
     type Owned = Vec<T>;
-    fn into_spawn_arg(self) -> Vec<T> { self.to_vec() }
+    fn into_spawn_arg(self) -> Vec<T> {
+        self.to_vec()
+    }
 }
 
 // Blanket for `&Struct` where Struct is sized (structs, not str/[T]).
 impl<T: Clone + Send + Sync + 'static> SpawnArg for &T {
     type Owned = T;
-    fn into_spawn_arg(self) -> T { self.clone() }
+    fn into_spawn_arg(self) -> T {
+        self.clone()
+    }
 }
 
 impl SpawnArg for Option<&str> {
     type Owned = Option<String>;
-    fn into_spawn_arg(self) -> Option<String> { self.map(|s| s.to_string()) }
+    fn into_spawn_arg(self) -> Option<String> {
+        self.map(|s| s.to_string())
+    }
 }
 
 impl<T: Clone + Send + Sync + 'static> SpawnArg for Option<&[T]> {
     type Owned = Option<Vec<T>>;
-    fn into_spawn_arg(self) -> Option<Vec<T>> { self.map(|s| s.to_vec()) }
+    fn into_spawn_arg(self) -> Option<Vec<T>> {
+        self.map(|s| s.to_vec())
+    }
 }
 
 // Copy scalars pass through.
@@ -205,22 +218,30 @@ impl_spawn_arg_copy!(i32, usize, f32, bool, Option<i32>, Option<bool>);
 
 impl<'a> ReborrowArg<'a> for String {
     type Out = &'a str;
-    fn reborrow_arg(&'a self) -> &'a str { self.as_str() }
+    fn reborrow_arg(&'a self) -> &'a str {
+        self.as_str()
+    }
 }
 
 impl<'a, T: 'a> ReborrowArg<'a> for Vec<T> {
     type Out = &'a [T];
-    fn reborrow_arg(&'a self) -> &'a [T] { self.as_slice() }
+    fn reborrow_arg(&'a self) -> &'a [T] {
+        self.as_slice()
+    }
 }
 
 impl<'a> ReborrowArg<'a> for Option<String> {
     type Out = Option<&'a str>;
-    fn reborrow_arg(&'a self) -> Option<&'a str> { self.as_deref() }
+    fn reborrow_arg(&'a self) -> Option<&'a str> {
+        self.as_deref()
+    }
 }
 
 impl<'a, T: 'a> ReborrowArg<'a> for Option<Vec<T>> {
     type Out = Option<&'a [T]>;
-    fn reborrow_arg(&'a self) -> Option<&'a [T]> { self.as_deref() }
+    fn reborrow_arg(&'a self) -> Option<&'a [T]> {
+        self.as_deref()
+    }
 }
 
 macro_rules! impl_reborrow_copy {

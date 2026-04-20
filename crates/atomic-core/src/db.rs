@@ -446,9 +446,8 @@ impl Database {
                     .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
                     .collect::<Result<Vec<_>, _>>()?;
 
-                let mut update_stmt = conn.prepare(
-                    "UPDATE atoms SET title = ?1, snippet = ?2 WHERE id = ?3",
-                )?;
+                let mut update_stmt =
+                    conn.prepare("UPDATE atoms SET title = ?1, snippet = ?2 WHERE id = ?3")?;
                 for (id, content) in &atoms {
                     let (title, snippet) = crate::extract_title_and_snippet(content, 300);
                     update_stmt.execute(rusqlite::params![title, snippet, id])?;
@@ -733,8 +732,7 @@ impl Database {
             )
             .unwrap_or_default();
 
-        if vec_tags_sql.is_empty()
-            || !vec_tags_sql.contains(&format!("float[{}]", vec_chunks_dim))
+        if vec_tags_sql.is_empty() || !vec_tags_sql.contains(&format!("float[{}]", vec_chunks_dim))
         {
             conn.execute("DROP TABLE IF EXISTS vec_tags", []).ok();
             conn.execute("DELETE FROM tag_embeddings", []).ok();
@@ -882,16 +880,10 @@ pub fn recreate_vec_chunks_with_dimension(
     conn.execute(&create_sql, [])?;
 
     // Reset ONLY embedding status to pending
-    conn.execute(
-        "UPDATE atoms SET embedding_status = 'pending'",
-        [],
-    )?;
+    conn.execute("UPDATE atoms SET embedding_status = 'pending'", [])?;
 
     // Set tagging_status to 'skipped' - existing tags are preserved
-    conn.execute(
-        "UPDATE atoms SET tagging_status = 'skipped'",
-        [],
-    )?;
+    conn.execute("UPDATE atoms SET tagging_status = 'skipped'", [])?;
 
     // Clear all existing chunk data
     conn.execute("DELETE FROM atom_chunks", [])?;
@@ -930,7 +922,11 @@ mod tests {
         // Verify we got a valid database
         let conn = db.conn.lock().unwrap();
         let count: i32 = conn
-            .query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table'", [], |row| row.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table'",
+                [],
+                |row| row.get(0),
+            )
             .unwrap();
 
         // Should have at least our core tables (16 regular + 2 virtual)

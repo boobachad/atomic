@@ -43,7 +43,6 @@ pub struct CreateAtomParams {
     /// Optional source URL where this content originated
     #[serde(default)]
     pub source_url: Option<String>,
-
 }
 
 /// Input parameters for update_atom tool

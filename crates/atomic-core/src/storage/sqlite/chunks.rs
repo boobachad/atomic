@@ -14,9 +14,8 @@ impl SqliteStorage {
         limit: i32,
     ) -> StorageResult<Vec<(String, String)>> {
         let conn = self.db.read_conn()?;
-        let mut stmt = conn.prepare(
-            "SELECT id, content FROM atoms WHERE embedding_status = 'pending' LIMIT ?1",
-        )?;
+        let mut stmt = conn
+            .prepare("SELECT id, content FROM atoms WHERE embedding_status = 'pending' LIMIT ?1")?;
         let results = stmt
             .query_map([limit], |row| Ok((row.get(0)?, row.get(1)?)))?
             .collect::<Result<Vec<_>, _>>()?;
@@ -56,7 +55,9 @@ impl SqliteStorage {
             .conn
             .lock()
             .map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
-        let placeholders = atom_ids.iter().enumerate()
+        let placeholders = atom_ids
+            .iter()
+            .enumerate()
             .map(|(i, _)| format!("?{}", i + 3))
             .collect::<Vec<_>>()
             .join(",");
@@ -64,13 +65,17 @@ impl SqliteStorage {
             "UPDATE atoms SET embedding_status = ?1, embedding_error = ?2 WHERE id IN ({})",
             placeholders
         );
-        let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::with_capacity(2 + atom_ids.len());
+        let mut params: Vec<Box<dyn rusqlite::types::ToSql>> =
+            Vec::with_capacity(2 + atom_ids.len());
         params.push(Box::new(status.to_string()));
         params.push(Box::new(error.map(|e| e.to_string())));
         for id in atom_ids {
             params.push(Box::new(id.clone()));
         }
-        conn.execute(&sql, rusqlite::params_from_iter(params.iter().map(|p| p.as_ref())))?;
+        conn.execute(
+            &sql,
+            rusqlite::params_from_iter(params.iter().map(|p| p.as_ref())),
+        )?;
         Ok(())
     }
 
@@ -120,7 +125,8 @@ impl SqliteStorage {
             .conn
             .lock()
             .map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
-        let mut tx = conn.transaction()
+        let mut tx = conn
+            .transaction()
             .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
 
         let mut succeeded = Vec::new();
@@ -129,7 +135,8 @@ impl SqliteStorage {
             // (after DELETE but during INSERTs), the SAVEPOINT rollback
             // restores the atom's prior chunk/FTS state instead of
             // committing a partial write.
-            let sp = tx.savepoint()
+            let sp = tx
+                .savepoint()
                 .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
             match Self::save_chunks_for_atom(&sp, atom_id, chunks) {
                 Ok(()) => {
@@ -307,12 +314,13 @@ impl SqliteStorage {
             "SELECT source_atom_id, target_atom_id, similarity_score
              FROM semantic_edges
              WHERE similarity_score >= ?1
-             ORDER BY similarity_score DESC"
+             ORDER BY similarity_score DESC",
         )?;
-        let edges = stmt.query_map([min_similarity], |row| {
-            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
-        })?
-        .collect::<Result<Vec<_>, _>>()?;
+        let edges = stmt
+            .query_map([min_similarity], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
         Ok(edges)
     }
 
@@ -468,7 +476,9 @@ impl SqliteStorage {
              RETURNING id, content",
         )?;
         let results = stmt
-            .query_map((limit, max_updated_at), |row| Ok((row.get(0)?, row.get(1)?)))?
+            .query_map((limit, max_updated_at), |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(results)
     }
@@ -511,7 +521,8 @@ impl SqliteStorage {
             "UPDATE atoms SET edges_status = ?1 WHERE id IN ({})",
             placeholders
         );
-        let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::with_capacity(1 + atom_ids.len());
+        let mut params: Vec<Box<dyn rusqlite::types::ToSql>> =
+            Vec::with_capacity(1 + atom_ids.len());
         params.push(Box::new(status.to_string()));
         for id in atom_ids {
             params.push(Box::new(id.clone()));
@@ -544,7 +555,8 @@ impl SqliteStorage {
             .lock()
             .map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
 
-        let tx = conn.transaction()
+        let tx = conn
+            .transaction()
             .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
 
         for atom_id in atom_ids {
@@ -603,10 +615,12 @@ impl SqliteStorage {
                 .conn
                 .lock()
                 .map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
-            let tx = conn.transaction()
+            let tx = conn
+                .transaction()
                 .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
             for atom_id in chunk {
-                match embedding::compute_semantic_edges_for_atom(&tx, atom_id, threshold, max_edges) {
+                match embedding::compute_semantic_edges_for_atom(&tx, atom_id, threshold, max_edges)
+                {
                     Ok(count) => total_edges += count,
                     Err(e) => {
                         tracing::warn!(atom_id = %atom_id, error = %e, "Failed to compute edges for atom");
@@ -649,8 +663,7 @@ impl SqliteStorage {
 
     pub(crate) fn check_vector_extension_sync(&self) -> StorageResult<String> {
         let conn = self.db.read_conn()?;
-        let version: String =
-            conn.query_row("SELECT vec_version()", [], |row| row.get(0))?;
+        let version: String = conn.query_row("SELECT vec_version()", [], |row| row.get(0))?;
         Ok(version)
     }
 
@@ -672,7 +685,10 @@ impl SqliteStorage {
         Ok(results)
     }
 
-    pub(crate) fn claim_pending_tagging_due_sync(&self, max_updated_at: &str) -> StorageResult<Vec<String>> {
+    pub(crate) fn claim_pending_tagging_due_sync(
+        &self,
+        max_updated_at: &str,
+    ) -> StorageResult<Vec<String>> {
         let conn = self
             .db
             .conn
@@ -870,10 +886,7 @@ impl ChunkStore for SqliteStorage {
         self.rebuild_semantic_edges_sync()
     }
 
-    async fn get_semantic_edges(
-        &self,
-        min_similarity: f32,
-    ) -> StorageResult<Vec<SemanticEdge>> {
+    async fn get_semantic_edges(&self, min_similarity: f32) -> StorageResult<Vec<SemanticEdge>> {
         self.get_semantic_edges_sync(min_similarity)
     }
 
@@ -900,11 +913,7 @@ impl ChunkStore for SqliteStorage {
         self.get_connection_counts_sync(min_similarity)
     }
 
-    async fn save_tag_centroid(
-        &self,
-        tag_id: &str,
-        embedding: &[f32],
-    ) -> StorageResult<()> {
+    async fn save_tag_centroid(&self, tag_id: &str, embedding: &[f32]) -> StorageResult<()> {
         self.save_tag_centroid_sync(tag_id, embedding)
     }
 
@@ -973,11 +982,7 @@ impl ChunkStore for SqliteStorage {
         self.claim_pending_edges_sync(limit)
     }
 
-    async fn set_edges_status_batch(
-        &self,
-        atom_ids: &[String],
-        status: &str,
-    ) -> StorageResult<()> {
+    async fn set_edges_status_batch(&self, atom_ids: &[String], status: &str) -> StorageResult<()> {
         self.set_edges_status_batch_sync(atom_ids, status)
     }
 

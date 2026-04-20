@@ -4,10 +4,14 @@
 //! retrieves atoms, and generates responses with citations.
 //! Uses a callback-based event system (same pattern as EmbeddingEvent).
 
-use crate::models::{ChatCitation, ChatMessage, ChatMessageWithContext, ChatToolCall, SemanticSearchResult};
 use crate::chunking::count_tokens;
+use crate::models::{
+    ChatCitation, ChatMessage, ChatMessageWithContext, ChatToolCall, SemanticSearchResult,
+};
 use crate::providers::traits::LlmConfig;
-use crate::providers::types::{GenerationParams, Message, MessageRole, StreamDelta, ToolDefinition};
+use crate::providers::types::{
+    GenerationParams, Message, MessageRole, StreamDelta, ToolDefinition,
+};
 use crate::providers::{create_streaming_llm_provider, ProviderConfig, ProviderType};
 use crate::search::{SearchMode, SearchOptions};
 use crate::storage::StorageBackend;
@@ -211,35 +215,48 @@ async fn execute_search_atoms(
             .with_threshold(0.3)
             .with_scope(scope_tag_ids.to_vec())
             .with_since_days(since_days);
-        return crate::search::search_atoms_with_settings(&sqlite.db, options, external_settings).await;
+        return crate::search::search_atoms_with_settings(&sqlite.db, options, external_settings)
+            .await;
     }
 
     // Postgres path: use storage dispatch methods
     let settings = match external_settings {
         Some(s) => s,
-        None => storage.get_all_settings_sync().await.map_err(|e| e.to_string())?,
+        None => storage
+            .get_all_settings_sync()
+            .await
+            .map_err(|e| e.to_string())?,
     };
     let config = ProviderConfig::from_settings(&settings);
     let tag_id = scope_tag_ids.first().map(|s| s.as_str());
 
     // Generate query embedding
-    let provider = crate::providers::get_embedding_provider(&config)
-        .map_err(|e| e.to_string())?;
+    let provider = crate::providers::get_embedding_provider(&config).map_err(|e| e.to_string())?;
     let embed_config = crate::providers::EmbeddingConfig::new(config.embedding_model());
-    let embeddings = provider.embed_batch(&[query.to_string()], &embed_config)
-        .await.map_err(|e| e.to_string())?;
+    let embeddings = provider
+        .embed_batch(&[query.to_string()], &embed_config)
+        .await
+        .map_err(|e| e.to_string())?;
 
     let cutoff = since_days.map(crate::search::since_days_cutoff);
     let cutoff_ref = cutoff.as_deref();
 
-    let keyword = storage.keyword_search_sync(query, limit * 2, tag_id, cutoff_ref).await
+    let keyword = storage
+        .keyword_search_sync(query, limit * 2, tag_id, cutoff_ref)
+        .await
         .map_err(|e| e.to_string())?;
     let semantic = if !embeddings.is_empty() && !embeddings[0].is_empty() {
-        storage.vector_search_sync(&embeddings[0], limit * 2, 0.3, tag_id, cutoff_ref).await
+        storage
+            .vector_search_sync(&embeddings[0], limit * 2, 0.3, tag_id, cutoff_ref)
+            .await
             .map_err(|e| e.to_string())?
-    } else { vec![] };
+    } else {
+        vec![]
+    };
 
-    Ok(crate::search::merge_search_results_rrf(semantic, keyword, limit))
+    Ok(crate::search::merge_search_results_rrf(
+        semantic, keyword, limit,
+    ))
 }
 
 /// Default line limit for a single `get_atom` call. Chosen to keep context
@@ -374,7 +391,11 @@ fn group_messages(messages: &[Message], message_tokens: &[usize]) -> Vec<Message
                 tokens += message_tokens[i];
                 i += 1;
             }
-            groups.push(MessageGroup { start, end: i, tokens });
+            groups.push(MessageGroup {
+                start,
+                end: i,
+                tokens,
+            });
         } else {
             groups.push(MessageGroup {
                 start: i,
@@ -392,7 +413,10 @@ fn group_messages(messages: &[Message], message_tokens: &[usize]) -> Vec<Message
 /// then includes as many recent groups as fit in the remaining budget.
 /// Never splits assistant+tool-result pairs to maintain API validity.
 /// Reserves ~30% of context for the assistant's response and tool results.
-fn truncate_messages_to_context(messages: Vec<Message>, context_length: Option<usize>) -> Vec<Message> {
+fn truncate_messages_to_context(
+    messages: Vec<Message>,
+    context_length: Option<usize>,
+) -> Vec<Message> {
     let max_tokens = match context_length {
         Some(ctx_len) => (ctx_len as f64 * 0.7) as usize,
         None => return messages,
@@ -448,7 +472,9 @@ fn truncate_messages_to_context(messages: Vec<Message>, context_length: Option<u
 // ==================== Helper: Convert stored messages to provider format ====================
 
 /// Convert ChatMessage models from storage into provider Message format for the API.
-fn chat_messages_to_provider_messages(messages: Vec<crate::models::ChatMessageWithContext>) -> Vec<Message> {
+fn chat_messages_to_provider_messages(
+    messages: Vec<crate::models::ChatMessageWithContext>,
+) -> Vec<Message> {
     messages
         .into_iter()
         .map(|m| {
@@ -572,11 +598,21 @@ where
                     "search_atoms" => {
                         let query = tool_args["query"].as_str().unwrap_or("");
                         let limit = tool_args["limit"].as_i64().unwrap_or(5) as i32;
-                        let since_days = tool_args.get("since_days")
+                        let since_days = tool_args
+                            .get("since_days")
                             .and_then(|v| v.as_f64())
                             .map(|v| v as i32)
                             .filter(|d| *d > 0);
-                        match execute_search_atoms(&storage, query, limit, since_days, &ctx.scope_tag_ids, external_settings.clone()).await {
+                        match execute_search_atoms(
+                            &storage,
+                            query,
+                            limit,
+                            since_days,
+                            &ctx.scope_tag_ids,
+                            external_settings.clone(),
+                        )
+                        .await
+                        {
                             Ok(results) => {
                                 let count = results.len() as i32;
                                 for result in results.iter() {
@@ -739,10 +775,10 @@ where
     // Resolve settings (from registry if provided, otherwise from storage)
     let settings_map = match external_settings {
         Some(s) => s,
-        None => {
-            storage.get_all_settings_sync().await
-                .map_err(|e| e.to_string())?
-        }
+        None => storage
+            .get_all_settings_sync()
+            .await
+            .map_err(|e| e.to_string())?,
     };
 
     // Get provider config and model from settings
@@ -770,17 +806,25 @@ where
     };
 
     // Save user message
-    storage.save_message_sync(conversation_id, "user", content).await
+    storage
+        .save_message_sync(conversation_id, "user", content)
+        .await
         .map_err(|e| e.to_string())?;
 
     // Get conversation context
-    let scope_tag_ids = storage.get_scope_tag_ids_sync(conversation_id).await
+    let scope_tag_ids = storage
+        .get_scope_tag_ids_sync(conversation_id)
+        .await
         .map_err(|e| e.to_string())?;
-    let scope_description = storage.get_scope_description_sync(&scope_tag_ids).await
+    let scope_description = storage
+        .get_scope_description_sync(&scope_tag_ids)
+        .await
         .map_err(|e| e.to_string())?;
 
     // Get conversation messages via get_conversation_sync and convert to provider format
-    let conversation = storage.get_conversation_sync(conversation_id).await
+    let conversation = storage
+        .get_conversation_sync(conversation_id)
+        .await
         .map_err(|e| e.to_string())?;
     let messages = match conversation {
         Some(conv) => chat_messages_to_provider_messages(conv.messages),
@@ -792,7 +836,10 @@ where
     api_messages.extend(messages);
 
     // Truncate to fit context window for providers with limited context
-    let api_messages = truncate_messages_to_context(api_messages, provider_config.context_length_for_model(&model));
+    let api_messages = truncate_messages_to_context(
+        api_messages,
+        provider_config.context_length_for_model(&model),
+    );
 
     // Create agent context
     let ctx = AgentContext {
@@ -804,12 +851,22 @@ where
     };
 
     // Run agent loop (storage is Clone, so no separate connection needed)
-    let mut result =
-        run_agent_loop(&on_event, storage.clone(), provider_config, model, ctx, Some(settings_map), None).await?;
+    let mut result = run_agent_loop(
+        &on_event,
+        storage.clone(),
+        provider_config,
+        model,
+        ctx,
+        Some(settings_map),
+        None,
+    )
+    .await?;
 
     // Save assistant message
     {
-        let saved_msg = storage.save_message_sync(conversation_id, "assistant", &result.message.content).await
+        let saved_msg = storage
+            .save_message_sync(conversation_id, "assistant", &result.message.content)
+            .await
             .map_err(|e| e.to_string())?;
 
         result.message.id = saved_msg.id.clone();
@@ -818,13 +875,17 @@ where
         for tool_call in &mut result.tool_calls {
             tool_call.message_id = saved_msg.id.clone();
         }
-        storage.save_tool_calls_sync(&saved_msg.id, &result.tool_calls).await
+        storage
+            .save_tool_calls_sync(&saved_msg.id, &result.tool_calls)
+            .await
             .map_err(|e| e.to_string())?;
 
         for citation in &mut result.citations {
             citation.message_id = saved_msg.id.clone();
         }
-        storage.save_citations_sync(&saved_msg.id, &result.citations).await
+        storage
+            .save_citations_sync(&saved_msg.id, &result.citations)
+            .await
             .map_err(|e| e.to_string())?;
     }
 
@@ -852,10 +913,10 @@ where
     // Resolve settings (from registry if provided, otherwise from storage)
     let settings_map = match external_settings {
         Some(s) => s,
-        None => {
-            storage.get_all_settings_sync().await
-                .map_err(|e| e.to_string())?
-        }
+        None => storage
+            .get_all_settings_sync()
+            .await
+            .map_err(|e| e.to_string())?,
     };
 
     // Get provider config and model from settings
@@ -883,17 +944,25 @@ where
     };
 
     // Save user message
-    storage.save_message_sync(conversation_id, "user", content).await
+    storage
+        .save_message_sync(conversation_id, "user", content)
+        .await
         .map_err(|e| e.to_string())?;
 
     // Get conversation context
-    let scope_tag_ids = storage.get_scope_tag_ids_sync(conversation_id).await
+    let scope_tag_ids = storage
+        .get_scope_tag_ids_sync(conversation_id)
+        .await
         .map_err(|e| e.to_string())?;
-    let scope_description = storage.get_scope_description_sync(&scope_tag_ids).await
+    let scope_description = storage
+        .get_scope_description_sync(&scope_tag_ids)
+        .await
         .map_err(|e| e.to_string())?;
 
     // Get conversation messages via get_conversation_sync and convert to provider format
-    let conversation = storage.get_conversation_sync(conversation_id).await
+    let conversation = storage
+        .get_conversation_sync(conversation_id)
+        .await
         .map_err(|e| e.to_string())?;
     let messages = match conversation {
         Some(conv) => chat_messages_to_provider_messages(conv.messages),
@@ -909,7 +978,10 @@ where
     api_messages.extend(messages);
 
     // Truncate to fit context window for providers with limited context
-    let api_messages = truncate_messages_to_context(api_messages, provider_config.context_length_for_model(&model));
+    let api_messages = truncate_messages_to_context(
+        api_messages,
+        provider_config.context_length_for_model(&model),
+    );
 
     // Create agent context
     let ctx = AgentContext {
@@ -921,12 +993,22 @@ where
     };
 
     // Run agent loop with canvas context
-    let mut result =
-        run_agent_loop(&on_event, storage.clone(), provider_config, model, ctx, Some(settings_map), canvas_context.as_ref()).await?;
+    let mut result = run_agent_loop(
+        &on_event,
+        storage.clone(),
+        provider_config,
+        model,
+        ctx,
+        Some(settings_map),
+        canvas_context.as_ref(),
+    )
+    .await?;
 
     // Save assistant message
     {
-        let saved_msg = storage.save_message_sync(conversation_id, "assistant", &result.message.content).await
+        let saved_msg = storage
+            .save_message_sync(conversation_id, "assistant", &result.message.content)
+            .await
             .map_err(|e| e.to_string())?;
 
         result.message.id = saved_msg.id.clone();
@@ -935,13 +1017,17 @@ where
         for tool_call in &mut result.tool_calls {
             tool_call.message_id = saved_msg.id.clone();
         }
-        storage.save_tool_calls_sync(&saved_msg.id, &result.tool_calls).await
+        storage
+            .save_tool_calls_sync(&saved_msg.id, &result.tool_calls)
+            .await
             .map_err(|e| e.to_string())?;
 
         for citation in &mut result.citations {
             citation.message_id = saved_msg.id.clone();
         }
-        storage.save_citations_sync(&saved_msg.id, &result.citations).await
+        storage
+            .save_citations_sync(&saved_msg.id, &result.citations)
+            .await
             .map_err(|e| e.to_string())?;
     }
 

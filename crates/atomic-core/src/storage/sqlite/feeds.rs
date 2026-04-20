@@ -171,10 +171,7 @@ impl SqliteStorage {
             )
             .unwrap_or(false);
         if !exists {
-            return Err(AtomicCoreError::NotFound(format!(
-                "Feed not found: {}",
-                id
-            )));
+            return Err(AtomicCoreError::NotFound(format!("Feed not found: {}", id)));
         }
 
         if let Some(t) = title {
@@ -220,10 +217,7 @@ impl SqliteStorage {
             .map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
         let changes = conn.execute("DELETE FROM feeds WHERE id = ?1", [id])?;
         if changes == 0 {
-            return Err(AtomicCoreError::NotFound(format!(
-                "Feed not found: {}",
-                id
-            )));
+            return Err(AtomicCoreError::NotFound(format!("Feed not found: {}", id)));
         }
         Ok(())
     }
@@ -293,11 +287,7 @@ impl SqliteStorage {
             .collect())
     }
 
-    pub(crate) fn mark_feed_polled_sync(
-        &self,
-        id: &str,
-        error: Option<&str>,
-    ) -> StorageResult<()> {
+    pub(crate) fn mark_feed_polled_sync(&self, id: &str, error: Option<&str>) -> StorageResult<()> {
         let conn = self
             .db
             .conn
@@ -323,11 +313,7 @@ impl SqliteStorage {
         Ok(())
     }
 
-    pub(crate) fn claim_feed_item_sync(
-        &self,
-        feed_id: &str,
-        guid: &str,
-    ) -> StorageResult<bool> {
+    pub(crate) fn claim_feed_item_sync(&self, feed_id: &str, guid: &str) -> StorageResult<bool> {
         let conn = self
             .db
             .conn
@@ -445,19 +431,11 @@ impl FeedStore for SqliteStorage {
         self.get_due_feeds_sync()
     }
 
-    async fn mark_feed_polled(
-        &self,
-        id: &str,
-        error: Option<&str>,
-    ) -> StorageResult<()> {
+    async fn mark_feed_polled(&self, id: &str, error: Option<&str>) -> StorageResult<()> {
         self.mark_feed_polled_sync(id, error)
     }
 
-    async fn claim_feed_item(
-        &self,
-        feed_id: &str,
-        guid: &str,
-    ) -> StorageResult<bool> {
+    async fn claim_feed_item(&self, feed_id: &str, guid: &str) -> StorageResult<bool> {
         self.claim_feed_item_sync(feed_id, guid)
     }
 

@@ -102,7 +102,11 @@ pub struct ResolvedContent {
 
 /// Fetch a URL, check readability, and extract article content as markdown.
 /// Does NOT touch the database. Emits events via the callback.
-pub async fn resolve_url<F>(url: &str, request_id: &str, on_event: &F) -> Result<ResolvedContent, String>
+pub async fn resolve_url<F>(
+    url: &str,
+    request_id: &str,
+    on_event: &F,
+) -> Result<ResolvedContent, String>
 where
     F: Fn(IngestionEvent),
 {

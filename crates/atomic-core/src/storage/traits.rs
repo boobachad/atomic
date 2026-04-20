@@ -9,9 +9,9 @@
 
 use async_trait::async_trait;
 
-use crate::models::AtomCluster;
 use crate::compaction::{CompactionResult, TagMerge};
 use crate::error::AtomicCoreError;
+use crate::models::AtomCluster;
 use crate::models::*;
 use crate::{CreateAtomRequest, ListAtomsParams, UpdateAtomRequest};
 
@@ -111,11 +111,17 @@ pub trait AtomStore: Send + Sync {
     async fn get_atom_content(&self, atom_id: &str) -> StorageResult<Option<String>>;
 
     /// Get content for multiple atoms in a single query.
-    async fn get_atom_contents_batch(&self, atom_ids: &[String]) -> StorageResult<Vec<(String, String)>>;
+    async fn get_atom_contents_batch(
+        &self,
+        atom_ids: &[String],
+    ) -> StorageResult<Vec<(String, String)>>;
 
     /// Check which source URLs already exist in the database.
     /// Returns the set of URLs that are already present.
-    async fn check_existing_source_urls(&self, urls: &[String]) -> StorageResult<std::collections::HashSet<String>>;
+    async fn check_existing_source_urls(
+        &self,
+        urls: &[String],
+    ) -> StorageResult<std::collections::HashSet<String>>;
 
     /// Check if a specific source URL already exists.
     async fn source_url_exists(&self, url: &str) -> StorageResult<bool>;
@@ -136,13 +142,17 @@ pub trait AtomStore: Send + Sync {
     async fn get_top_k_canvas_edges(&self, top_k: usize) -> StorageResult<Vec<CanvasEdgeData>>;
 
     /// Get all atom-to-tag-id mappings in batch.
-    async fn get_all_atom_tag_ids(&self) -> StorageResult<std::collections::HashMap<String, Vec<String>>>;
+    async fn get_all_atom_tag_ids(
+        &self,
+    ) -> StorageResult<std::collections::HashMap<String, Vec<String>>>;
 
     /// Get atom metadata for canvas display (title, primary tag, tag count) by position.
     async fn get_canvas_atom_metadata(&self) -> StorageResult<Vec<CanvasAtomPosition>>;
 
     /// Lightweight canvas metadata: (atom_id, title, primary_tag_name, tag_count, source_url).
-    async fn get_canvas_atom_metadata_light(&self) -> StorageResult<Vec<(String, String, Option<String>, i32, Option<String>)>>;
+    async fn get_canvas_atom_metadata_light(
+        &self,
+    ) -> StorageResult<Vec<(String, String, Option<String>, i32, Option<String>)>>;
 }
 
 // ==================== Tag Storage ====================
@@ -166,19 +176,11 @@ pub trait TagStore: Send + Sync {
     ) -> StorageResult<PaginatedTagChildren>;
 
     /// Create a new tag.
-    async fn create_tag(
-        &self,
-        name: &str,
-        parent_id: Option<&str>,
-    ) -> StorageResult<Tag>;
+    async fn create_tag(&self, name: &str, parent_id: Option<&str>) -> StorageResult<Tag>;
 
     /// Update a tag's name and/or parent.
-    async fn update_tag(
-        &self,
-        id: &str,
-        name: &str,
-        parent_id: Option<&str>,
-    ) -> StorageResult<Tag>;
+    async fn update_tag(&self, id: &str, name: &str, parent_id: Option<&str>)
+        -> StorageResult<Tag>;
 
     /// Delete a tag. If recursive, also deletes child tags.
     async fn delete_tag(&self, id: &str, recursive: bool) -> StorageResult<()>;
@@ -195,20 +197,13 @@ pub trait TagStore: Send + Sync {
     ) -> StorageResult<Vec<Tag>>;
 
     /// Get tags semantically related to a given tag (via centroid similarity).
-    async fn get_related_tags(
-        &self,
-        tag_id: &str,
-        limit: usize,
-    ) -> StorageResult<Vec<RelatedTag>>;
+    async fn get_related_tags(&self, tag_id: &str, limit: usize) -> StorageResult<Vec<RelatedTag>>;
 
     /// Read all tags formatted for compaction LLM input.
     async fn get_tags_for_compaction(&self) -> StorageResult<String>;
 
     /// Apply tag merge operations (merge source tags into targets).
-    async fn apply_tag_merges(
-        &self,
-        merges: &[TagMerge],
-    ) -> StorageResult<CompactionResult>;
+    async fn apply_tag_merges(&self, merges: &[TagMerge]) -> StorageResult<CompactionResult>;
 
     /// Get or create a tag by name, optionally under a parent name.
     /// Returns the tag ID.
@@ -219,39 +214,23 @@ pub trait TagStore: Send + Sync {
     ) -> StorageResult<String>;
 
     /// Link tags to an atom (ignores duplicates).
-    async fn link_tags_to_atom(
-        &self,
-        atom_id: &str,
-        tag_ids: &[String],
-    ) -> StorageResult<()>;
+    async fn link_tags_to_atom(&self, atom_id: &str, tag_ids: &[String]) -> StorageResult<()>;
 
     /// Get the tag tree formatted as JSON for LLM tag extraction.
     async fn get_tag_tree_for_llm(&self) -> StorageResult<String>;
 
     /// Compute tag centroid embeddings for a batch of tags from their atoms' embeddings.
-    async fn compute_tag_centroids_batch(
-        &self,
-        tag_ids: &[String],
-    ) -> StorageResult<()>;
+    async fn compute_tag_centroids_batch(&self, tag_ids: &[String]) -> StorageResult<()>;
 
     /// Clean up orphaned parent tags (parents with no children and no atoms).
-    async fn cleanup_orphaned_parents(
-        &self,
-        tag_id: &str,
-    ) -> StorageResult<()>;
+    async fn cleanup_orphaned_parents(&self, tag_id: &str) -> StorageResult<()>;
 
     /// Get all tag IDs in a hierarchy (the tag itself + all descendants).
     /// Uses a recursive traversal of the tag parent_id tree.
-    async fn get_tag_hierarchy(
-        &self,
-        tag_id: &str,
-    ) -> StorageResult<Vec<String>>;
+    async fn get_tag_hierarchy(&self, tag_id: &str) -> StorageResult<Vec<String>>;
 
     /// Count distinct atoms that have any of the given tags.
-    async fn count_atoms_with_tags(
-        &self,
-        tag_ids: &[String],
-    ) -> StorageResult<i32>;
+    async fn count_atoms_with_tags(&self, tag_ids: &[String]) -> StorageResult<i32>;
 }
 
 // ==================== Chunk/Embedding Storage ====================
@@ -305,7 +284,11 @@ pub trait ChunkStore: Send + Sync {
     ) -> StorageResult<Vec<String>> {
         let mut succeeded = Vec::new();
         for (atom_id, chunks) in atoms {
-            if self.save_chunks_and_embeddings(atom_id, chunks).await.is_ok() {
+            if self
+                .save_chunks_and_embeddings(atom_id, chunks)
+                .await
+                .is_ok()
+            {
                 succeeded.push(atom_id.clone());
             }
         }
@@ -325,10 +308,7 @@ pub trait ChunkStore: Send + Sync {
     async fn rebuild_semantic_edges(&self) -> StorageResult<i32>;
 
     /// Get semantic edges above a similarity threshold.
-    async fn get_semantic_edges(
-        &self,
-        min_similarity: f32,
-    ) -> StorageResult<Vec<SemanticEdge>>;
+    async fn get_semantic_edges(&self, min_similarity: f32) -> StorageResult<Vec<SemanticEdge>>;
 
     /// Lightweight edge triples (source, target, score) sorted by score DESC.
     async fn get_semantic_edges_raw(
@@ -337,7 +317,8 @@ pub trait ChunkStore: Send + Sync {
     ) -> StorageResult<Vec<(String, String, f32)>> {
         // Default: extract from full edges
         let edges = self.get_semantic_edges(min_similarity).await?;
-        Ok(edges.into_iter()
+        Ok(edges
+            .into_iter()
             .map(|e| (e.source_atom_id, e.target_atom_id, e.similarity_score))
             .collect())
     }
@@ -357,11 +338,7 @@ pub trait ChunkStore: Send + Sync {
     ) -> StorageResult<std::collections::HashMap<String, i32>>;
 
     /// Save tag centroid embedding.
-    async fn save_tag_centroid(
-        &self,
-        tag_id: &str,
-        embedding: &[f32],
-    ) -> StorageResult<()>;
+    async fn save_tag_centroid(&self, tag_id: &str, embedding: &[f32]) -> StorageResult<()>;
 
     /// Recompute all tag centroid embeddings from their atoms' embeddings.
     async fn recompute_all_tag_embeddings(&self) -> StorageResult<i32>;
@@ -402,7 +379,9 @@ pub trait ChunkStore: Send + Sync {
         // Default implementation: process one at a time
         let mut total = 0;
         for atom_id in atom_ids {
-            total += self.compute_semantic_edges_for_atom(atom_id, threshold, max_edges).await?;
+            total += self
+                .compute_semantic_edges_for_atom(atom_id, threshold, max_edges)
+                .await?;
         }
         Ok(total)
     }
@@ -439,11 +418,7 @@ pub trait ChunkStore: Send + Sync {
     async fn claim_pending_edges(&self, limit: i32) -> StorageResult<Vec<String>>;
 
     /// Mark edges_status for a batch of atoms.
-    async fn set_edges_status_batch(
-        &self,
-        atom_ids: &[String],
-        status: &str,
-    ) -> StorageResult<()>;
+    async fn set_edges_status_batch(&self, atom_ids: &[String], status: &str) -> StorageResult<()>;
 
     /// Count atoms with pending edge computation.
     async fn count_pending_edges(&self) -> StorageResult<i32>;
@@ -588,16 +563,10 @@ pub trait ChatStore: Send + Sync {
     ) -> StorageResult<()>;
 
     /// Get the tag IDs that scope a conversation.
-    async fn get_scope_tag_ids(
-        &self,
-        conversation_id: &str,
-    ) -> StorageResult<Vec<String>>;
+    async fn get_scope_tag_ids(&self, conversation_id: &str) -> StorageResult<Vec<String>>;
 
     /// Get a human-readable scope description for the system prompt.
-    async fn get_scope_description(
-        &self,
-        tag_ids: &[String],
-    ) -> StorageResult<String>;
+    async fn get_scope_description(&self, tag_ids: &[String]) -> StorageResult<String>;
 }
 
 // ==================== Wiki Storage ====================
@@ -606,16 +575,10 @@ pub trait ChatStore: Send + Sync {
 #[async_trait]
 pub trait WikiStore: Send + Sync {
     /// Get a wiki article with its citations for a tag.
-    async fn get_wiki(
-        &self,
-        tag_id: &str,
-    ) -> StorageResult<Option<WikiArticleWithCitations>>;
+    async fn get_wiki(&self, tag_id: &str) -> StorageResult<Option<WikiArticleWithCitations>>;
 
     /// Get wiki article status (exists, atom count, etc.).
-    async fn get_wiki_status(
-        &self,
-        tag_id: &str,
-    ) -> StorageResult<WikiArticleStatus>;
+    async fn get_wiki_status(&self, tag_id: &str) -> StorageResult<WikiArticleStatus>;
 
     /// Save or update a wiki article with citations.
     async fn save_wiki(
@@ -639,31 +602,21 @@ pub trait WikiStore: Send + Sync {
     async fn delete_wiki(&self, tag_id: &str) -> StorageResult<()>;
 
     /// Get cross-reference links from a wiki article to other wiki articles.
-    async fn get_wiki_links(
-        &self,
-        tag_id: &str,
-    ) -> StorageResult<Vec<WikiLink>>;
+    async fn get_wiki_links(&self, tag_id: &str) -> StorageResult<Vec<WikiLink>>;
 
     /// List all versions of a wiki article.
-    async fn list_wiki_versions(
-        &self,
-        tag_id: &str,
-    ) -> StorageResult<Vec<WikiVersionSummary>>;
+    async fn list_wiki_versions(&self, tag_id: &str) -> StorageResult<Vec<WikiVersionSummary>>;
 
     /// Get a specific wiki article version.
-    async fn get_wiki_version(
-        &self,
-        version_id: &str,
-    ) -> StorageResult<Option<WikiArticleVersion>>;
+    async fn get_wiki_version(&self, version_id: &str)
+        -> StorageResult<Option<WikiArticleVersion>>;
 
     /// Get all wiki articles (summaries for list view).
     async fn get_all_wiki_articles(&self) -> StorageResult<Vec<WikiArticleSummary>>;
 
     /// Get tags that would benefit from having wiki articles.
-    async fn get_suggested_wiki_articles(
-        &self,
-        limit: i32,
-    ) -> StorageResult<Vec<SuggestedArticle>>;
+    async fn get_suggested_wiki_articles(&self, limit: i32)
+        -> StorageResult<Vec<SuggestedArticle>>;
 
     /// Select chunks for wiki article generation, ranked by centroid similarity.
     ///
@@ -731,10 +684,7 @@ pub trait BriefingStore: Send + Sync {
     ) -> StorageResult<Option<crate::briefing::BriefingWithCitations>>;
 
     /// List recent briefings (without citations) for a lightweight history view.
-    async fn list_briefings(
-        &self,
-        limit: i32,
-    ) -> StorageResult<Vec<crate::briefing::Briefing>>;
+    async fn list_briefings(&self, limit: i32) -> StorageResult<Vec<crate::briefing::Briefing>>;
 
     /// Delete a briefing by id. Briefing citations cascade.
     async fn delete_briefing(&self, id: &str) -> StorageResult<()>;
@@ -778,18 +728,10 @@ pub trait FeedStore: Send + Sync {
     async fn get_due_feeds(&self) -> StorageResult<Vec<Feed>>;
 
     /// Record that a feed was polled (update timestamp and error).
-    async fn mark_feed_polled(
-        &self,
-        id: &str,
-        error: Option<&str>,
-    ) -> StorageResult<()>;
+    async fn mark_feed_polled(&self, id: &str, error: Option<&str>) -> StorageResult<()>;
 
     /// Atomically claim a feed item GUID. Returns true if this call claimed it.
-    async fn claim_feed_item(
-        &self,
-        feed_id: &str,
-        guid: &str,
-    ) -> StorageResult<bool>;
+    async fn claim_feed_item(&self, feed_id: &str, guid: &str) -> StorageResult<bool>;
 
     /// Mark a claimed feed item as successfully ingested with its atom_id.
     async fn complete_feed_item(
@@ -895,7 +837,9 @@ pub trait TokenStore: Send + Sync {
     async fn migrate_legacy_token(&self) -> StorageResult<bool>;
 
     /// Ensure at least one token exists. Creates a "default" token if none exist.
-    async fn ensure_default_token(&self) -> StorageResult<Option<(crate::tokens::ApiTokenInfo, String)>>;
+    async fn ensure_default_token(
+        &self,
+    ) -> StorageResult<Option<(crate::tokens::ApiTokenInfo, String)>>;
 }
 
 // ==================== Database Management Storage ====================

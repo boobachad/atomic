@@ -334,10 +334,7 @@ pub fn read_all_tags(conn: &Connection) -> Result<String, String> {
 }
 
 /// Apply merge operations to the database
-pub fn apply_merge_operations(
-    conn: &Connection,
-    merges: &[TagMerge],
-) -> (i32, i32, Vec<String>) {
+pub fn apply_merge_operations(conn: &Connection, merges: &[TagMerge]) -> (i32, i32, Vec<String>) {
     apply_merges(conn, merges)
 }
 
@@ -368,8 +365,7 @@ mod tests {
 
     #[test]
     fn lint_merge_schema_is_portable() {
-        lint_schema(&merge_schema())
-            .expect("merge_schema must be portable across providers");
+        lint_schema(&merge_schema()).expect("merge_schema must be portable across providers");
     }
 
     fn insert_tag(conn: &Connection, id: &str, name: &str, parent_id: Option<&str>) {
@@ -441,11 +437,9 @@ mod tests {
 
         // Verify loser tag is deleted
         let loser_exists: bool = conn
-            .query_row(
-                "SELECT 1 FROM tags WHERE name = 'ReactJS'",
-                [],
-                |_| Ok(true),
-            )
+            .query_row("SELECT 1 FROM tags WHERE name = 'ReactJS'", [], |_| {
+                Ok(true)
+            })
             .unwrap_or(false);
         assert!(!loser_exists, "Loser tag should be deleted");
 
@@ -484,11 +478,7 @@ mod tests {
 
         // Verify both tags still exist
         let parent_exists: bool = conn
-            .query_row(
-                "SELECT 1 FROM tags WHERE name = 'Topics'",
-                [],
-                |_| Ok(true),
-            )
+            .query_row("SELECT 1 FROM tags WHERE name = 'Topics'", [], |_| Ok(true))
             .unwrap_or(false);
         assert!(parent_exists, "Parent tag should still exist");
     }

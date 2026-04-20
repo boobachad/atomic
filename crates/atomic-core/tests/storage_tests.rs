@@ -11,11 +11,11 @@
 //! Note: Postgres tests must run serially (they share one DB):
 //!   cargo test -p atomic-core --test storage_tests --features postgres -- postgres_tests --test-threads=1
 
-use atomic_core::storage::SqliteStorage;
-use atomic_core::storage::traits::*;
-use atomic_core::{CreateAtomRequest, UpdateAtomRequest, ListAtomsParams};
-use atomic_core::models::*;
 use atomic_core::db::Database;
+use atomic_core::models::*;
+use atomic_core::storage::traits::*;
+use atomic_core::storage::SqliteStorage;
+use atomic_core::{CreateAtomRequest, ListAtomsParams, UpdateAtomRequest};
 use std::sync::Arc;
 use tempfile::TempDir;
 
@@ -34,7 +34,9 @@ async fn postgres_storage() -> Option<atomic_core::storage::PostgresStorage> {
         Ok(url) => url,
         Err(_) => return None,
     };
-    let storage = atomic_core::storage::PostgresStorage::connect(&url, "test").await.unwrap();
+    let storage = atomic_core::storage::PostgresStorage::connect(&url, "test")
+        .await
+        .unwrap();
     storage.initialize().await.unwrap();
 
     // Truncate data tables for a clean test (preserve schema)
@@ -45,7 +47,7 @@ async fn postgres_storage() -> Option<atomic_core::storage::PostgresStorage> {
          conversations, conversation_tags, chat_messages, chat_tool_calls, chat_citations, \
          feeds, feed_tags, feed_items, settings, \
          briefing_citations, briefings, oauth_codes, oauth_clients, api_tokens \
-         CASCADE"
+         CASCADE",
     )
     .execute(storage.pool())
     .await
@@ -184,7 +186,10 @@ async fn test_create_and_get_tags(storage: &dyn TagStore) {
     assert_eq!(tag.name, "Test Tag");
     assert!(tag.parent_id.is_none());
 
-    let child = storage.create_tag("Child Tag", Some(&tag.id)).await.unwrap();
+    let child = storage
+        .create_tag("Child Tag", Some(&tag.id))
+        .await
+        .unwrap();
     assert_eq!(child.parent_id.as_deref(), Some(tag.id.as_str()));
 
     // get_all_tags returns a tree — flatten to count
@@ -216,26 +221,45 @@ async fn test_create_conversation(storage: &dyn ChatStore) {
     let conv = storage.create_conversation(&[], None).await.unwrap();
     assert!(!conv.conversation.id.is_empty());
 
-    let fetched = storage.get_conversation(&conv.conversation.id).await.unwrap();
+    let fetched = storage
+        .get_conversation(&conv.conversation.id)
+        .await
+        .unwrap();
     assert!(fetched.is_some());
 }
 
 async fn test_save_and_get_messages(storage: &dyn ChatStore) {
-    let conv = storage.create_conversation(&[], Some("Test Chat")).await.unwrap();
+    let conv = storage
+        .create_conversation(&[], Some("Test Chat"))
+        .await
+        .unwrap();
 
-    let msg = storage.save_message(&conv.conversation.id, "user", "Hello!").await.unwrap();
+    let msg = storage
+        .save_message(&conv.conversation.id, "user", "Hello!")
+        .await
+        .unwrap();
     assert_eq!(msg.role, "user");
     assert_eq!(msg.content, "Hello!");
 
-    let full = storage.get_conversation(&conv.conversation.id).await.unwrap().unwrap();
+    let full = storage
+        .get_conversation(&conv.conversation.id)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(full.messages.len(), 1);
 }
 
 async fn test_delete_conversation(storage: &dyn ChatStore) {
     let conv = storage.create_conversation(&[], None).await.unwrap();
-    storage.delete_conversation(&conv.conversation.id).await.unwrap();
+    storage
+        .delete_conversation(&conv.conversation.id)
+        .await
+        .unwrap();
 
-    let fetched = storage.get_conversation(&conv.conversation.id).await.unwrap();
+    let fetched = storage
+        .get_conversation(&conv.conversation.id)
+        .await
+        .unwrap();
     assert!(fetched.is_none());
 }
 
@@ -252,7 +276,10 @@ async fn test_save_and_get_wiki(tag_store: &dyn TagStore, wiki_store: &dyn WikiS
 
     let fetched = wiki_store.get_wiki(&tag.id).await.unwrap();
     assert!(fetched.is_some());
-    assert_eq!(fetched.unwrap().article.content, "# Wiki Article\n\nContent here.");
+    assert_eq!(
+        fetched.unwrap().article.content,
+        "# Wiki Article\n\nContent here."
+    );
 }
 
 async fn test_delete_wiki(tag_store: &dyn TagStore, wiki_store: &dyn WikiStore) {
@@ -367,7 +394,10 @@ mod postgres_tests {
             #[tokio::test]
             async fn $name() {
                 let Some(ref s) = postgres_storage().await else {
-                    eprintln!("Skipping {} (ATOMIC_TEST_DATABASE_URL not set)", stringify!($name));
+                    eprintln!(
+                        "Skipping {} (ATOMIC_TEST_DATABASE_URL not set)",
+                        stringify!($name)
+                    );
                     return;
                 };
                 $body(s).await;

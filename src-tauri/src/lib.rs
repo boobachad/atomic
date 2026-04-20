@@ -28,16 +28,16 @@ struct SidecarState {
 }
 
 #[tauri::command]
-fn get_local_server_config(
-    config: tauri::State<'_, LocalServerConfig>,
-) -> LocalServerConfig {
+fn get_local_server_config(config: tauri::State<'_, LocalServerConfig>) -> LocalServerConfig {
     config.inner().clone()
 }
 
 #[tauri::command]
 fn get_mcp_bridge_path() -> Result<String, String> {
     let exe_path = std::env::current_exe().map_err(|e| e.to_string())?;
-    let exe_dir = exe_path.parent().ok_or("Cannot determine executable directory")?;
+    let exe_dir = exe_path
+        .parent()
+        .ok_or("Cannot determine executable directory")?;
     #[cfg(windows)]
     let bridge_path = exe_dir.join("atomic-mcp-bridge.exe");
     #[cfg(not(windows))]
@@ -55,7 +55,9 @@ fn kill_stale_sidecar(app_data_dir: &std::path::Path) {
             tracing::info!(pid, "Found stale sidecar PID file, killing process");
             #[cfg(unix)]
             {
-                let _ = std::process::Command::new("kill").arg(pid.to_string()).output();
+                let _ = std::process::Command::new("kill")
+                    .arg(pid.to_string())
+                    .output();
             }
             #[cfg(windows)]
             {
@@ -103,8 +105,7 @@ fn ensure_local_token(app_data_dir: &std::path::Path) -> String {
         .create_api_token("desktop")
         .expect("Failed to create API token");
 
-    std::fs::write(&token_file, &raw_token)
-        .expect("Failed to write local server token file");
+    std::fs::write(&token_file, &raw_token).expect("Failed to write local server token file");
 
     raw_token
 }

@@ -314,10 +314,7 @@ pub fn event_collector() -> (
 /// Wait until both `EmbeddingComplete` and a terminal tagging event
 /// (`TaggingComplete` / `TaggingSkipped` / `TaggingFailed`) have fired for
 /// `atom_id`. Returns the captured events so tests can assert on payloads.
-pub async fn await_pipeline(
-    rx: &mut EventRx,
-    atom_id: &str,
-) -> Vec<atomic_core::EmbeddingEvent> {
+pub async fn await_pipeline(rx: &mut EventRx, atom_id: &str) -> Vec<atomic_core::EmbeddingEvent> {
     use atomic_core::EmbeddingEvent;
 
     let mut captured = Vec::new();

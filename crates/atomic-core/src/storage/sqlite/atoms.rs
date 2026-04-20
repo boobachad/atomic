@@ -208,10 +208,7 @@ impl SqliteStorage {
                     tagging_error: None,
                 };
 
-                atoms_with_tags.push(AtomWithTags {
-                    atom,
-                    tags: vec![],
-                });
+                atoms_with_tags.push(AtomWithTags { atom, tags: vec![] });
             }
 
             conn.execute_batch("COMMIT")?;
@@ -220,7 +217,10 @@ impl SqliteStorage {
             let atom_ids: Vec<String> = atoms_with_tags.iter().map(|a| a.atom.id.clone()).collect();
             let tag_map = get_atom_tags_map_for_ids(&conn, &atom_ids)?;
             for atom_with_tags in &mut atoms_with_tags {
-                atom_with_tags.tags = tag_map.get(&atom_with_tags.atom.id).cloned().unwrap_or_default();
+                atom_with_tags.tags = tag_map
+                    .get(&atom_with_tags.atom.id)
+                    .cloned()
+                    .unwrap_or_default();
             }
         }
 
@@ -271,7 +271,9 @@ impl SqliteStorage {
                     true
                 } else {
                     let existing: Option<String> = conn
-                        .query_row("SELECT content FROM atoms WHERE id = ?1", [id], |row| row.get(0))
+                        .query_row("SELECT content FROM atoms WHERE id = ?1", [id], |row| {
+                            row.get(0)
+                        })
                         .optional()?;
                     existing.as_deref() != Some(request.content.as_str())
                 };
@@ -411,10 +413,7 @@ impl SqliteStorage {
         Ok(())
     }
 
-    pub(crate) fn get_atoms_by_tag_impl(
-        &self,
-        tag_id: &str,
-    ) -> StorageResult<Vec<AtomWithTags>> {
+    pub(crate) fn get_atoms_by_tag_impl(&self, tag_id: &str) -> StorageResult<Vec<AtomWithTags>> {
         let conn = self.db.read_conn()?;
 
         let mut stmt = conn.prepare(&format!(
@@ -459,8 +458,8 @@ impl SqliteStorage {
         let use_cursor = params.cursor.is_some() && params.cursor_id.is_some();
 
         // Determine if non-tag filters are active (source filters bypass atom_count shortcut)
-        let has_extra_filters = !matches!(params.source_filter, SourceFilter::All)
-            || params.source_value.is_some();
+        let has_extra_filters =
+            !matches!(params.source_filter, SourceFilter::All) || params.source_value.is_some();
 
         // --- Build ORDER BY ---
         let sort_col = match params.sort_by {
@@ -687,10 +686,10 @@ impl SqliteStorage {
             .last()
             .map(|last| {
                 let cursor_val = match params.sort_by {
-                    SortField::Updated => last.7.clone(),  // updated_at
-                    SortField::Created => last.6.clone(),  // created_at
+                    SortField::Updated => last.7.clone(), // updated_at
+                    SortField::Created => last.6.clone(), // created_at
                     SortField::Published => last.5.clone().unwrap_or_else(|| last.6.clone()), // COALESCE(published_at, created_at)
-                    SortField::Title => last.1.clone(),    // title
+                    SortField::Title => last.1.clone(), // title
                 };
                 (Some(cursor_val), Some(last.0.clone()))
             })
@@ -801,10 +800,7 @@ impl SqliteStorage {
         Ok(positions)
     }
 
-    pub(crate) fn save_atom_positions_impl(
-        &self,
-        positions: &[AtomPosition],
-    ) -> StorageResult<()> {
+    pub(crate) fn save_atom_positions_impl(&self, positions: &[AtomPosition]) -> StorageResult<()> {
         let conn = self
             .db
             .conn
@@ -834,7 +830,10 @@ impl SqliteStorage {
     }
 
     /// Get distinct tag IDs for a batch of atoms in a single query.
-    pub(crate) fn get_tag_ids_for_atoms_batch_impl(&self, atom_ids: &[String]) -> StorageResult<Vec<String>> {
+    pub(crate) fn get_tag_ids_for_atoms_batch_impl(
+        &self,
+        atom_ids: &[String],
+    ) -> StorageResult<Vec<String>> {
         if atom_ids.is_empty() {
             return Ok(Vec::new());
         }
@@ -846,7 +845,9 @@ impl SqliteStorage {
         );
         let mut stmt = conn.prepare(&sql)?;
         let ids = stmt
-            .query_map(rusqlite::params_from_iter(atom_ids.iter()), |row| row.get(0))?
+            .query_map(rusqlite::params_from_iter(atom_ids.iter()), |row| {
+                row.get(0)
+            })?
             .collect::<Result<Vec<String>, _>>()?;
         Ok(ids)
     }
@@ -864,18 +865,23 @@ impl SqliteStorage {
         }
     }
 
-    pub(crate) fn get_atom_contents_batch_impl(&self, atom_ids: &[String]) -> StorageResult<Vec<(String, String)>> {
+    pub(crate) fn get_atom_contents_batch_impl(
+        &self,
+        atom_ids: &[String],
+    ) -> StorageResult<Vec<(String, String)>> {
         if atom_ids.is_empty() {
             return Ok(vec![]);
         }
         let conn = self.db.read_conn()?;
         let placeholders: String = atom_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-        let query = format!("SELECT id, content FROM atoms WHERE id IN ({})", placeholders);
+        let query = format!(
+            "SELECT id, content FROM atoms WHERE id IN ({})",
+            placeholders
+        );
         let mut stmt = conn.prepare(&query)?;
-        let rows = stmt.query_map(
-            rusqlite::params_from_iter(atom_ids.iter()),
-            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
-        )?;
+        let rows = stmt.query_map(rusqlite::params_from_iter(atom_ids.iter()), |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
         let mut results = Vec::with_capacity(atom_ids.len());
         for row in rows {
             results.push(row?);
@@ -883,9 +889,7 @@ impl SqliteStorage {
         Ok(results)
     }
 
-    pub(crate) fn get_atoms_with_embeddings_impl(
-        &self,
-    ) -> StorageResult<Vec<AtomWithEmbedding>> {
+    pub(crate) fn get_atoms_with_embeddings_impl(&self) -> StorageResult<Vec<AtomWithEmbedding>> {
         let conn = self.db.read_conn()?;
 
         let mut stmt = conn.prepare(&format!(
@@ -931,10 +935,9 @@ impl SqliteStorage {
             placeholders
         );
         let mut stmt = conn.prepare(&query)?;
-        let rows = stmt.query_map(
-            rusqlite::params_from_iter(urls.iter()),
-            |row| row.get::<_, String>(0),
-        )?;
+        let rows = stmt.query_map(rusqlite::params_from_iter(urls.iter()), |row| {
+            row.get::<_, String>(0)
+        })?;
         let mut result = HashSet::new();
         for row in rows {
             result.insert(row?);
@@ -954,7 +957,10 @@ impl SqliteStorage {
         Ok(exists)
     }
 
-    pub(crate) fn get_atom_by_source_url_sync(&self, url: &str) -> StorageResult<Option<AtomWithTags>> {
+    pub(crate) fn get_atom_by_source_url_sync(
+        &self,
+        url: &str,
+    ) -> StorageResult<Option<AtomWithTags>> {
         let conn = self.db.read_conn()?;
 
         let atom_result = conn.query_row(
@@ -991,20 +997,24 @@ impl SqliteStorage {
         Ok(map.into_iter().collect())
     }
 
-    pub(crate) fn get_top_k_canvas_edges_sync(&self, top_k: usize) -> StorageResult<Vec<CanvasEdgeData>> {
+    pub(crate) fn get_top_k_canvas_edges_sync(
+        &self,
+        top_k: usize,
+    ) -> StorageResult<Vec<CanvasEdgeData>> {
         let conn = self.db.read_conn()?;
         let mut stmt = conn.prepare(
             "SELECT source_atom_id, target_atom_id, similarity_score
              FROM semantic_edges
              WHERE similarity_score >= 0.5
-             ORDER BY similarity_score DESC"
+             ORDER BY similarity_score DESC",
         )?;
 
-        let all_edges: Vec<(String, String, f32)> = stmt.query_map([], |row| {
-            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
-        })?.collect::<Result<Vec<_>, _>>()?;
+        let all_edges: Vec<(String, String, f32)> = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+            .collect::<Result<Vec<_>, _>>()?;
 
-        let mut per_atom: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        let mut per_atom: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
         let mut kept: Vec<(String, String, f32)> = Vec::new();
 
         for (src, tgt, score) in all_edges {
@@ -1022,19 +1032,23 @@ impl SqliteStorage {
         let max_w = kept.iter().map(|(_, _, w)| *w).fold(f32::MIN, f32::max);
         let range = (max_w - min_w).max(0.001);
 
-        Ok(kept.into_iter().map(|(src, tgt, score)| {
-            CanvasEdgeData {
+        Ok(kept
+            .into_iter()
+            .map(|(src, tgt, score)| CanvasEdgeData {
                 source: src,
                 target: tgt,
                 weight: (score - min_w) / range,
-            }
-        }).collect())
+            })
+            .collect())
     }
 
-    pub(crate) fn get_all_atom_tag_ids_sync(&self) -> StorageResult<std::collections::HashMap<String, Vec<String>>> {
+    pub(crate) fn get_all_atom_tag_ids_sync(
+        &self,
+    ) -> StorageResult<std::collections::HashMap<String, Vec<String>>> {
         let conn = self.db.read_conn()?;
         let mut stmt = conn.prepare("SELECT atom_id, tag_id FROM atom_tags")?;
-        let mut map: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+        let mut map: std::collections::HashMap<String, Vec<String>> =
+            std::collections::HashMap::new();
         let rows = stmt.query_map([], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })?;
@@ -1065,16 +1079,17 @@ impl SqliteStorage {
              GROUP BY a.id, a.title, a.source_url"
         )?;
 
-        let rows = stmt.query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, Option<String>>(2)?,
-                row.get::<_, i32>(3)?,
-                row.get::<_, Option<String>>(4)?,
-            ))
-        })?
-        .collect::<Result<Vec<_>, _>>()?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, i32>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
 
         Ok(rows)
     }
@@ -1090,21 +1105,22 @@ impl SqliteStorage {
              JOIN atoms a ON ap.atom_id = a.id"
         )?;
 
-        let atoms = stmt.query_map([], |row| {
-            let content: String = row.get(3)?;
-            let (title, _) = extract_title_and_snippet(&content, 60);
-            Ok(CanvasAtomPosition {
-                atom_id: row.get(0)?,
-                x: row.get(1)?,
-                y: row.get(2)?,
-                title,
-                primary_tag: row.get(4)?,
-                tag_count: row.get(5)?,
-                tag_ids: vec![],
-                source_url: None,
-            })
-        })?
-        .collect::<Result<Vec<_>, _>>()?;
+        let atoms = stmt
+            .query_map([], |row| {
+                let content: String = row.get(3)?;
+                let (title, _) = extract_title_and_snippet(&content, 60);
+                Ok(CanvasAtomPosition {
+                    atom_id: row.get(0)?,
+                    x: row.get(1)?,
+                    y: row.get(2)?,
+                    title,
+                    primary_tag: row.get(4)?,
+                    tag_count: row.get(5)?,
+                    tag_ids: vec![],
+                    source_url: None,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
 
         Ok(atoms)
     }
@@ -1202,7 +1218,10 @@ impl AtomStore for SqliteStorage {
         self.get_atom_content_impl(atom_id)
     }
 
-    async fn get_atom_contents_batch(&self, atom_ids: &[String]) -> StorageResult<Vec<(String, String)>> {
+    async fn get_atom_contents_batch(
+        &self,
+        atom_ids: &[String],
+    ) -> StorageResult<Vec<(String, String)>> {
         self.get_atom_contents_batch_impl(atom_ids)
     }
 
@@ -1230,7 +1249,9 @@ impl AtomStore for SqliteStorage {
         self.get_top_k_canvas_edges_sync(top_k)
     }
 
-    async fn get_all_atom_tag_ids(&self) -> StorageResult<std::collections::HashMap<String, Vec<String>>> {
+    async fn get_all_atom_tag_ids(
+        &self,
+    ) -> StorageResult<std::collections::HashMap<String, Vec<String>>> {
         self.get_all_atom_tag_ids_sync()
     }
 
@@ -1238,7 +1259,9 @@ impl AtomStore for SqliteStorage {
         self.get_canvas_atom_metadata_sync()
     }
 
-    async fn get_canvas_atom_metadata_light(&self) -> StorageResult<Vec<(String, String, Option<String>, i32, Option<String>)>> {
+    async fn get_canvas_atom_metadata_light(
+        &self,
+    ) -> StorageResult<Vec<(String, String, Option<String>, i32, Option<String>)>> {
         self.get_canvas_atom_metadata_light_sync()
     }
 }

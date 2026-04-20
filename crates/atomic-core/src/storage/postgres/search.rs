@@ -23,12 +23,22 @@ impl PostgresStorage {
             });
         }
 
-        let atoms = self.keyword_search(query_trimmed, section_limit, None, None).await?;
-        let wiki = pg_keyword_search_wiki(&self.pool, query_trimmed, section_limit, &self.db_id).await?;
-        let chats = pg_keyword_search_chats(&self.pool, query_trimmed, section_limit, &self.db_id).await?;
-        let tags = pg_keyword_search_tags(&self.pool, query_trimmed, section_limit, &self.db_id).await?;
+        let atoms = self
+            .keyword_search(query_trimmed, section_limit, None, None)
+            .await?;
+        let wiki =
+            pg_keyword_search_wiki(&self.pool, query_trimmed, section_limit, &self.db_id).await?;
+        let chats =
+            pg_keyword_search_chats(&self.pool, query_trimmed, section_limit, &self.db_id).await?;
+        let tags =
+            pg_keyword_search_tags(&self.pool, query_trimmed, section_limit, &self.db_id).await?;
 
-        Ok(GlobalSearchResponse { atoms, wiki, chats, tags })
+        Ok(GlobalSearchResponse {
+            atoms,
+            wiki,
+            chats,
+            tags,
+        })
     }
 }
 
@@ -90,10 +100,17 @@ impl SearchStore for PostgresStorage {
 
         // Scope filtering by tag if specified
         let scope_atom_ids: std::collections::HashSet<String> = if let Some(tid) = tag_id {
-            let candidate_atom_ids: Vec<&str> =
-                filtered.iter().map(|(_, aid, _, _, _)| aid.as_str()).collect();
-            pg_batch_atoms_with_scope_tags(&self.pool, &candidate_atom_ids, &[tid.to_string()], &self.db_id)
-                .await?
+            let candidate_atom_ids: Vec<&str> = filtered
+                .iter()
+                .map(|(_, aid, _, _, _)| aid.as_str())
+                .collect();
+            pg_batch_atoms_with_scope_tags(
+                &self.pool,
+                &candidate_atom_ids,
+                &[tid.to_string()],
+                &self.db_id,
+            )
+            .await?
         } else {
             std::collections::HashSet::new()
         };
@@ -202,9 +219,13 @@ impl SearchStore for PostgresStorage {
         let filtered = if let Some(tid) = tag_id {
             let candidate_atom_ids: Vec<&str> =
                 rows.iter().map(|(_, aid, _, _, _)| aid.as_str()).collect();
-            let matching =
-                pg_batch_atoms_with_scope_tags(&self.pool, &candidate_atom_ids, &[tid.to_string()], &self.db_id)
-                    .await?;
+            let matching = pg_batch_atoms_with_scope_tags(
+                &self.pool,
+                &candidate_atom_ids,
+                &[tid.to_string()],
+                &self.db_id,
+            )
+            .await?;
             rows.into_iter()
                 .filter(|(_, aid, _, _, _)| matching.contains(aid.as_str()))
                 .collect()
@@ -316,9 +337,13 @@ impl SearchStore for PostgresStorage {
         } else {
             let candidate_atom_ids: Vec<&str> =
                 rows.iter().map(|(_, aid, _, _, _)| aid.as_str()).collect();
-            let matching =
-                pg_batch_atoms_with_scope_tags(&self.pool, &candidate_atom_ids, scope_tag_ids, &self.db_id)
-                    .await?;
+            let matching = pg_batch_atoms_with_scope_tags(
+                &self.pool,
+                &candidate_atom_ids,
+                scope_tag_ids,
+                &self.db_id,
+            )
+            .await?;
             rows.into_iter()
                 .filter(|(_, aid, _, _, _)| matching.contains(aid.as_str()))
                 .collect()
@@ -327,15 +352,15 @@ impl SearchStore for PostgresStorage {
         Ok(filtered
             .into_iter()
             .take(limit as usize)
-            .map(|(chunk_id, atom_id, content, chunk_index, rank)| {
-                ChunkSearchResult {
+            .map(
+                |(chunk_id, atom_id, content, chunk_index, rank)| ChunkSearchResult {
                     chunk_id,
                     atom_id,
                     content,
                     chunk_index,
                     score: rank.clamp(0.0, 1.0),
-                }
-            })
+                },
+            )
             .collect())
     }
 
@@ -387,9 +412,7 @@ impl SearchStore for PostgresStorage {
 
         let filtered: Vec<(String, String, String, i32, f32)> = rows
             .into_iter()
-            .map(|(id, aid, content, idx, distance)| {
-                (id, aid, content, idx, 1.0 - distance as f32)
-            })
+            .map(|(id, aid, content, idx, distance)| (id, aid, content, idx, 1.0 - distance as f32))
             .filter(|(_, _, _, _, similarity)| *similarity >= threshold)
             .collect();
 
@@ -397,11 +420,17 @@ impl SearchStore for PostgresStorage {
         let scoped = if scope_tag_ids.is_empty() {
             filtered
         } else {
-            let candidate_atom_ids: Vec<&str> =
-                filtered.iter().map(|(_, aid, _, _, _)| aid.as_str()).collect();
-            let matching =
-                pg_batch_atoms_with_scope_tags(&self.pool, &candidate_atom_ids, scope_tag_ids, &self.db_id)
-                    .await?;
+            let candidate_atom_ids: Vec<&str> = filtered
+                .iter()
+                .map(|(_, aid, _, _, _)| aid.as_str())
+                .collect();
+            let matching = pg_batch_atoms_with_scope_tags(
+                &self.pool,
+                &candidate_atom_ids,
+                scope_tag_ids,
+                &self.db_id,
+            )
+            .await?;
             filtered
                 .into_iter()
                 .filter(|(_, aid, _, _, _)| matching.contains(aid.as_str()))
@@ -411,15 +440,15 @@ impl SearchStore for PostgresStorage {
         Ok(scoped
             .into_iter()
             .take(limit as usize)
-            .map(|(chunk_id, atom_id, content, chunk_index, score)| {
-                ChunkSearchResult {
+            .map(
+                |(chunk_id, atom_id, content, chunk_index, score)| ChunkSearchResult {
                     chunk_id,
                     atom_id,
                     content,
                     chunk_index,
                     score,
-                }
-            })
+                },
+            )
             .collect())
     }
 
@@ -648,9 +677,7 @@ async fn pg_batch_atoms_with_scope_tags(
     .bind(db_id)
     .fetch_all(pool)
     .await
-    .map_err(|e| {
-        AtomicCoreError::Search(format!("Failed to check scope tags: {}", e))
-    })?;
+    .map_err(|e| AtomicCoreError::Search(format!("Failed to check scope tags: {}", e)))?;
 
     Ok(rows.into_iter().map(|(id,)| id).collect())
 }
@@ -692,15 +719,19 @@ async fn pg_keyword_search_wiki(
 
     Ok(rows
         .into_iter()
-        .map(|(id, tag_id, tag_name, content, updated_at, atom_count, score)| GlobalWikiSearchResult {
-            id,
-            tag_id,
-            tag_name,
-            content_snippet: pg_snippet(&content, 180),
-            updated_at,
-            atom_count,
-            score: score.clamp(0.0, 1.0),
-        })
+        .map(
+            |(id, tag_id, tag_name, content, updated_at, atom_count, score)| {
+                GlobalWikiSearchResult {
+                    id,
+                    tag_id,
+                    tag_name,
+                    content_snippet: pg_snippet(&content, 180),
+                    updated_at,
+                    atom_count,
+                    score: score.clamp(0.0, 1.0),
+                }
+            },
+        )
         .collect())
 }
 
@@ -783,17 +814,19 @@ async fn pg_keyword_search_chats(
 
     Ok(rows
         .into_iter()
-        .map(|(id, title, updated_at, message_count, matching_message_content, score)| {
-            GlobalChatSearchResult {
-                id: id.clone(),
-                title,
-                updated_at,
-                message_count: message_count as i32,
-                tags: tag_map.get(&id).cloned().unwrap_or_default(),
-                matching_message_content: pg_snippet(&matching_message_content, 180),
-                score: score.clamp(0.0, 1.0),
-            }
-        })
+        .map(
+            |(id, title, updated_at, message_count, matching_message_content, score)| {
+                GlobalChatSearchResult {
+                    id: id.clone(),
+                    title,
+                    updated_at,
+                    message_count: message_count as i32,
+                    tags: tag_map.get(&id).cloned().unwrap_or_default(),
+                    matching_message_content: pg_snippet(&matching_message_content, 180),
+                    score: score.clamp(0.0, 1.0),
+                }
+            },
+        )
         .collect())
 }
 
@@ -881,7 +914,9 @@ async fn pg_batch_fetch_conversation_tags(
     .bind(db_id)
     .fetch_all(pool)
     .await
-    .map_err(|e| AtomicCoreError::Search(format!("Failed to batch fetch conversation tags: {}", e)))?;
+    .map_err(|e| {
+        AtomicCoreError::Search(format!("Failed to batch fetch conversation tags: {}", e))
+    })?;
 
     let mut map: HashMap<String, Vec<Tag>> = HashMap::new();
     for (conversation_id, id, name, parent_id, created_at, is_autotag_target) in rows {

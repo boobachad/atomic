@@ -72,7 +72,8 @@ pub fn get_tag_tree_cached(conn: &Connection, db_path: &str) -> Result<String, S
     // Check cache — must match both TTL and database path
     if let Ok(cache) = TAG_TREE_CACHE.lock() {
         if let Some(ref entry) = *cache {
-            if entry.db_path == db_path && now.duration_since(entry.fetched_at) < TAG_TREE_CACHE_TTL {
+            if entry.db_path == db_path && now.duration_since(entry.fetched_at) < TAG_TREE_CACHE_TTL
+            {
                 return Ok(entry.tree_json.clone());
             }
         }
@@ -241,7 +242,8 @@ fn max_tagging_chars(provider_config: &ProviderConfig, tag_tree_json: &str, mode
         Some(ctx_len) => {
             // Reserve tokens for: system prompt (~500), tag tree, response (~500)
             let tag_tree_tokens = tag_tree_json.len() / CHARS_PER_TOKEN;
-            let available_tokens = ctx_len.saturating_sub(TAGGING_OVERHEAD_TOKENS + tag_tree_tokens);
+            let available_tokens =
+                ctx_len.saturating_sub(TAGGING_OVERHEAD_TOKENS + tag_tree_tokens);
             // Convert to chars, with a minimum floor
             (available_tokens * CHARS_PER_TOKEN).max(500)
         }
@@ -388,7 +390,11 @@ pub fn get_tag_tree_for_llm(conn: &Connection) -> Result<String, String> {
         // Add children with tree formatting
         for (j, child_name) in children.iter().enumerate() {
             let is_last_child = j == children.len() - 1;
-            let connector = if is_last_child { "└── " } else { "├── " };
+            let connector = if is_last_child {
+                "└── "
+            } else {
+                "├── "
+            };
             result.push_str(connector);
             result.push_str(child_name);
             result.push('\n');
@@ -404,7 +410,11 @@ pub fn get_tag_tree_for_llm(conn: &Connection) -> Result<String, String> {
 }
 
 /// Link tags to an atom (append to existing tags)
-pub fn link_tags_to_atom(conn: &Connection, atom_id: &str, tag_ids: &[String]) -> Result<(), String> {
+pub fn link_tags_to_atom(
+    conn: &Connection,
+    atom_id: &str,
+    tag_ids: &[String],
+) -> Result<(), String> {
     for tag_id in tag_ids {
         // Use INSERT OR IGNORE to avoid duplicates
         conn.execute(
@@ -949,13 +959,18 @@ mod tests {
         // Parent should still exist because the function only cleans up ancestors
         // of the passed-in tag, and child no longer has a parent
         let parent_exists: bool = conn
-            .query_row("SELECT 1 FROM tags WHERE id = ?1", [&parent_id], |_| Ok(true))
+            .query_row("SELECT 1 FROM tags WHERE id = ?1", [&parent_id], |_| {
+                Ok(true)
+            })
             .unwrap_or(false);
 
         // Actually, the parent wasn't cleaned up because we moved child to NULL parent
         // before calling cleanup. The function needs child to still reference parent.
         // Let's verify the function handles this gracefully (doesn't crash)
-        assert!(parent_exists, "Parent still exists (cleanup couldn't find parent via child)");
+        assert!(
+            parent_exists,
+            "Parent still exists (cleanup couldn't find parent via child)"
+        );
     }
 
     #[test]
@@ -990,8 +1005,13 @@ mod tests {
         cleanup_orphaned_parents(&conn, &child1_id).unwrap();
 
         let parent_exists: bool = conn
-            .query_row("SELECT 1 FROM tags WHERE id = ?1", [&parent_id], |_| Ok(true))
+            .query_row("SELECT 1 FROM tags WHERE id = ?1", [&parent_id], |_| {
+                Ok(true)
+            })
             .unwrap_or(false);
-        assert!(parent_exists, "Parent should NOT be deleted when it has other children");
+        assert!(
+            parent_exists,
+            "Parent should NOT be deleted when it has other children"
+        );
     }
 }

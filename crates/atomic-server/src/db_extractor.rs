@@ -17,14 +17,12 @@ impl FromRequest for Db {
     fn from_request(req: &HttpRequest, _payload: &mut actix_web::dev::Payload) -> Self::Future {
         let req = req.clone();
         Box::pin(async move {
-            let state = req
-                .app_data::<web::Data<AppState>>()
-                .ok_or_else(|| actix_web::error::ErrorInternalServerError("AppState not configured"))?;
-            state
-                .resolve_core(&req)
-                .await
-                .map(Db)
-                .map_err(|e| actix_web::error::ErrorBadRequest(format!("Database not found: {}", e)))
+            let state = req.app_data::<web::Data<AppState>>().ok_or_else(|| {
+                actix_web::error::ErrorInternalServerError("AppState not configured")
+            })?;
+            state.resolve_core(&req).await.map(Db).map_err(|e| {
+                actix_web::error::ErrorBadRequest(format!("Database not found: {}", e))
+            })
         })
     }
 }

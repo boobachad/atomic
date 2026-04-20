@@ -7,6 +7,7 @@ use crate::models::*;
 use crate::search;
 use crate::storage::traits::*;
 use async_trait::async_trait;
+use rusqlite::OptionalExtension;
 
 /// Sync helper methods for search operations.
 impl SqliteStorage {
@@ -122,10 +123,8 @@ impl SqliteStorage {
         let filtered = if scope_tag_ids.is_empty() {
             raw_results
         } else {
-            let candidate_atom_ids: Vec<&str> =
-                raw_results.iter().map(|r| r.1.as_str()).collect();
-            let matching =
-                batch_atoms_with_scope_tags(&conn, &candidate_atom_ids, &scope_tag_ids)?;
+            let candidate_atom_ids: Vec<&str> = raw_results.iter().map(|r| r.1.as_str()).collect();
+            let matching = batch_atoms_with_scope_tags(&conn, &candidate_atom_ids, &scope_tag_ids)?;
             raw_results
                 .into_iter()
                 .filter(|r| matching.contains(r.1.as_str()))
@@ -203,10 +202,8 @@ impl SqliteStorage {
         let filtered = if scope_tag_ids.is_empty() {
             raw_results
         } else {
-            let candidate_atom_ids: Vec<&str> =
-                raw_results.iter().map(|r| r.1.as_str()).collect();
-            let matching =
-                batch_atoms_with_scope_tags(&conn, &candidate_atom_ids, scope_tag_ids)?;
+            let candidate_atom_ids: Vec<&str> = raw_results.iter().map(|r| r.1.as_str()).collect();
+            let matching = batch_atoms_with_scope_tags(&conn, &candidate_atom_ids, scope_tag_ids)?;
             raw_results
                 .into_iter()
                 .filter(|r| matching.contains(r.1.as_str()))
@@ -216,15 +213,15 @@ impl SqliteStorage {
         let results: Vec<ChunkSearchResult> = filtered
             .into_iter()
             .take(limit as usize)
-            .map(|(chunk_id, atom_id, content, chunk_index, bm25_score)| {
-                ChunkSearchResult {
+            .map(
+                |(chunk_id, atom_id, content, chunk_index, bm25_score)| ChunkSearchResult {
                     chunk_id,
                     atom_id,
                     content,
                     chunk_index,
                     score: normalize_bm25_score(bm25_score),
-                }
-            })
+                },
+            )
             .collect();
 
         Ok(results)
@@ -382,11 +379,9 @@ impl SearchStore for SqliteStorage {
     ) -> StorageResult<Vec<SimilarAtomResult>> {
         let storage = self.clone();
         let atom_id = atom_id.to_string();
-        tokio::task::spawn_blocking(move || {
-            storage.find_similar_sync(&atom_id, limit, threshold)
-        })
-        .await
-        .map_err(|e| AtomicCoreError::Lock(e.to_string()))?
+        tokio::task::spawn_blocking(move || storage.find_similar_sync(&atom_id, limit, threshold))
+            .await
+            .map_err(|e| AtomicCoreError::Lock(e.to_string()))?
     }
 
     async fn keyword_search_chunks(
@@ -469,10 +464,15 @@ fn fts_search_with_cutoff(
             )
             .map_err(|e| AtomicCoreError::Search(format!("Failed to prepare FTS query: {}", e)))?;
         let rows: Vec<_> = stmt
-            .query_map(rusqlite::params![escaped_query, cutoff, fetch_limit], row_map)
+            .query_map(
+                rusqlite::params![escaped_query, cutoff, fetch_limit],
+                row_map,
+            )
             .map_err(|e| AtomicCoreError::Search(format!("Failed to query FTS: {}", e)))?
             .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| AtomicCoreError::Search(format!("Failed to collect FTS results: {}", e)))?;
+            .map_err(|e| {
+                AtomicCoreError::Search(format!("Failed to collect FTS results: {}", e))
+            })?;
         Ok(rows)
     } else {
         let mut stmt = conn
@@ -488,7 +488,9 @@ fn fts_search_with_cutoff(
             .query_map(rusqlite::params![escaped_query, fetch_limit], row_map)
             .map_err(|e| AtomicCoreError::Search(format!("Failed to query FTS: {}", e)))?
             .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| AtomicCoreError::Search(format!("Failed to collect FTS results: {}", e)))?;
+            .map_err(|e| {
+                AtomicCoreError::Search(format!("Failed to collect FTS results: {}", e))
+            })?;
         Ok(rows)
     }
 }
@@ -528,10 +530,15 @@ fn vec_knn_with_cutoff(
             )
             .map_err(|e| AtomicCoreError::Search(format!("Failed to prepare vec query: {}", e)))?;
         let rows: Vec<_> = stmt
-            .query_map(rusqlite::params![query_blob, knn_limit, cutoff, fetch_limit], row_map)
+            .query_map(
+                rusqlite::params![query_blob, knn_limit, cutoff, fetch_limit],
+                row_map,
+            )
             .map_err(|e| AtomicCoreError::Search(format!("Failed to query similar chunks: {}", e)))?
             .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| AtomicCoreError::Search(format!("Failed to collect similar chunks: {}", e)))?;
+            .map_err(|e| {
+                AtomicCoreError::Search(format!("Failed to collect similar chunks: {}", e))
+            })?;
         Ok(rows)
     } else {
         let mut stmt = conn
@@ -547,7 +554,9 @@ fn vec_knn_with_cutoff(
             .query_map(rusqlite::params![query_blob, fetch_limit], row_map)
             .map_err(|e| AtomicCoreError::Search(format!("Failed to query similar chunks: {}", e)))?
             .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| AtomicCoreError::Search(format!("Failed to collect similar chunks: {}", e)))?;
+            .map_err(|e| {
+                AtomicCoreError::Search(format!("Failed to collect similar chunks: {}", e))
+            })?;
         Ok(rows)
     }
 }
@@ -609,16 +618,19 @@ fn keyword_search_wiki(
         return Ok(Vec::new());
     }
 
-    let tag_ids: Vec<String> = rows.iter().map(|(_, tag_id, _, _, _)| tag_id.clone()).collect();
+    let tag_ids: Vec<String> = rows
+        .iter()
+        .map(|(_, tag_id, _, _, _)| tag_id.clone())
+        .collect();
     let mut atom_counts = HashMap::new();
     let placeholders = tag_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
     let query = format!(
         "SELECT tag_id, atom_count FROM wiki_articles WHERE tag_id IN ({})",
         placeholders
     );
-    let mut count_stmt = conn
-        .prepare(&query)
-        .map_err(|e| AtomicCoreError::Search(format!("Failed to prepare wiki count query: {}", e)))?;
+    let mut count_stmt = conn.prepare(&query).map_err(|e| {
+        AtomicCoreError::Search(format!("Failed to prepare wiki count query: {}", e))
+    })?;
     let count_rows = count_stmt
         .query_map(rusqlite::params_from_iter(tag_ids.iter()), |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, i32>(1)?))
@@ -631,13 +643,22 @@ fn keyword_search_wiki(
 
     let mut updated_stmt = conn
         .prepare("SELECT updated_at FROM wiki_articles WHERE id = ?1")
-        .map_err(|e| AtomicCoreError::Search(format!("Failed to prepare wiki updated_at query: {}", e)))?;
+        .map_err(|e| {
+            AtomicCoreError::Search(format!("Failed to prepare wiki updated_at query: {}", e))
+        })?;
 
     let mut results = Vec::with_capacity(rows.len());
     for (id, tag_id, tag_name, content, score) in rows {
-        let updated_at: String = updated_stmt
+        let updated_at: Option<String> = updated_stmt
             .query_row([&id], |row| row.get(0))
-            .map_err(|e| AtomicCoreError::Search(format!("Failed to load wiki updated_at: {}", e)))?;
+            .optional()
+            .map_err(|e| {
+                AtomicCoreError::Search(format!("Failed to load wiki updated_at: {}", e))
+            })?;
+        let Some(updated_at) = updated_at else {
+            tracing::warn!(wiki_article_id = %id, tag_id = %tag_id, "Skipping stale wiki FTS row without backing article");
+            continue;
+        };
         results.push(GlobalWikiSearchResult {
             id,
             tag_id: tag_id.clone(),
@@ -681,7 +702,9 @@ fn keyword_search_chats(
     for row in msg_rows {
         let (conversation_id, content, score) =
             row.map_err(|e| AtomicCoreError::Search(e.to_string()))?;
-        let entry = conversation_best.entry(conversation_id).or_insert((score, content.clone()));
+        let entry = conversation_best
+            .entry(conversation_id)
+            .or_insert((score, content.clone()));
         if score > entry.0 {
             *entry = (score, content);
         }
@@ -695,7 +718,9 @@ fn keyword_search_chats(
              WHERE is_archived = 0 AND title IS NOT NULL AND lower(title) LIKE ?1
              LIMIT ?2",
         )
-        .map_err(|e| AtomicCoreError::Search(format!("Failed to prepare chat title query: {}", e)))?;
+        .map_err(|e| {
+            AtomicCoreError::Search(format!("Failed to prepare chat title query: {}", e))
+        })?;
     let title_rows = title_stmt
         .query_map(rusqlite::params![title_pattern, limit], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
@@ -703,9 +728,19 @@ fn keyword_search_chats(
         .map_err(|e| AtomicCoreError::Search(format!("Failed to query chat titles: {}", e)))?;
     for row in title_rows {
         let (conversation_id, title) = row.map_err(|e| AtomicCoreError::Search(e.to_string()))?;
-        let score = if title.to_lowercase().starts_with(trimmed_query) { 0.98 } else { 0.9 };
-        let snippet_text = if title.is_empty() { String::new() } else { title };
-        let entry = conversation_best.entry(conversation_id).or_insert((score, snippet_text.clone()));
+        let score = if title.to_lowercase().starts_with(trimmed_query) {
+            0.98
+        } else {
+            0.9
+        };
+        let snippet_text = if title.is_empty() {
+            String::new()
+        } else {
+            title
+        };
+        let entry = conversation_best
+            .entry(conversation_id)
+            .or_insert((score, snippet_text.clone()));
         if score > entry.0 {
             *entry = (score, snippet_text);
         }
@@ -734,7 +769,10 @@ fn keyword_search_chats(
                 title: title.clone(),
                 updated_at: updated_at.clone(),
                 message_count: *message_count,
-                tags: conversation_tags.get(&conversation_id).cloned().unwrap_or_default(),
+                tags: conversation_tags
+                    .get(&conversation_id)
+                    .cloned()
+                    .unwrap_or_default(),
                 matching_message_content: snippet(&matching_text, 180),
                 score,
             });
@@ -757,7 +795,9 @@ fn keyword_search_tags(
              WHERE lower(name) LIKE ?1
              ORDER BY atom_count DESC, name ASC",
         )
-        .map_err(|e| AtomicCoreError::Search(format!("Failed to prepare tag search query: {}", e)))?;
+        .map_err(|e| {
+            AtomicCoreError::Search(format!("Failed to prepare tag search query: {}", e))
+        })?;
     let rows = stmt
         .query_map([pattern], |row| {
             Ok((
@@ -844,7 +884,10 @@ fn batch_fetch_atoms(
         .prepare(&query)
         .map_err(|e| AtomicCoreError::Search(e.to_string()))?;
     let rows = stmt
-        .query_map(rusqlite::params_from_iter(atom_ids.iter()), crate::atom_from_row)
+        .query_map(
+            rusqlite::params_from_iter(atom_ids.iter()),
+            crate::atom_from_row,
+        )
         .map_err(|e| AtomicCoreError::Search(e.to_string()))?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| AtomicCoreError::Search(e.to_string()))?;
@@ -900,7 +943,11 @@ fn batch_fetch_conversation_meta(
     if conversation_ids.is_empty() {
         return Ok(HashMap::new());
     }
-    let placeholders = conversation_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+    let placeholders = conversation_ids
+        .iter()
+        .map(|_| "?")
+        .collect::<Vec<_>>()
+        .join(",");
     let query = format!(
         "SELECT c.id, c.title, c.updated_at, COUNT(m.id) AS message_count
          FROM conversations c
@@ -938,7 +985,11 @@ fn batch_fetch_conversation_tags(
     if conversation_ids.is_empty() {
         return Ok(HashMap::new());
     }
-    let placeholders = conversation_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+    let placeholders = conversation_ids
+        .iter()
+        .map(|_| "?")
+        .collect::<Vec<_>>()
+        .join(",");
     let query = format!(
         "SELECT ct.conversation_id, t.id, t.name, t.parent_id, t.created_at, t.is_autotag_target
          FROM conversation_tags ct
@@ -1049,9 +1100,7 @@ fn batch_atoms_with_scope_tags(
         .query_map(rusqlite::params_from_iter(params), |row| {
             row.get::<_, String>(0)
         })
-        .map_err(|e| {
-            AtomicCoreError::Search(format!("Failed to execute scope query: {}", e))
-        })?;
+        .map_err(|e| AtomicCoreError::Search(format!("Failed to execute scope query: {}", e)))?;
 
     let mut matching = std::collections::HashSet::new();
     for row in rows {

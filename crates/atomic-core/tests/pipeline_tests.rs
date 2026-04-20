@@ -12,8 +12,7 @@ mod support;
 
 use atomic_core::{AtomicCore, CreateAtomRequest, UpdateAtomRequest};
 use support::{
-    await_pipeline, event_collector, setup_core, Backend, MockAiServer,
-    EDGE_SIMILARITY_THRESHOLD,
+    await_pipeline, event_collector, setup_core, Backend, MockAiServer, EDGE_SIMILARITY_THRESHOLD,
 };
 
 #[tokio::test]
@@ -55,8 +54,16 @@ async fn run_full_pipeline(backend: Backend) {
     .await;
 
     // --- Embedding phase: status flipped to complete on both atoms ---
-    let fetched_a = core.get_atom(&atom_a).await.unwrap().expect("atom_a persisted");
-    let fetched_b = core.get_atom(&atom_b).await.unwrap().expect("atom_b persisted");
+    let fetched_a = core
+        .get_atom(&atom_a)
+        .await
+        .unwrap()
+        .expect("atom_a persisted");
+    let fetched_b = core
+        .get_atom(&atom_b)
+        .await
+        .unwrap()
+        .expect("atom_b persisted");
     assert_eq!(
         fetched_a.atom.embedding_status, "complete",
         "atom_a embedding should be complete"
@@ -337,7 +344,10 @@ async fn run_delete_cascade(backend: Backend) {
     core.delete_atom(&a).await.expect("delete_atom");
 
     // Atom row gone; other atoms untouched.
-    assert!(core.get_atom(&a).await.unwrap().is_none(), "a should be gone");
+    assert!(
+        core.get_atom(&a).await.unwrap().is_none(),
+        "a should be gone"
+    );
     assert!(
         core.get_atom(&b).await.unwrap().is_some(),
         "b should survive deletion of a"

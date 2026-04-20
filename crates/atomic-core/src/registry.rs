@@ -269,7 +269,17 @@ impl Registry {
                 let mut stmt = data_conn.prepare(
                     "SELECT code_hash, client_id, code_challenge, code_challenge_method, redirect_uri, created_at, expires_at, used, token_id FROM oauth_codes",
                 )?;
-                let rows: Vec<(String, String, String, String, String, String, String, i32, Option<String>)> = stmt
+                let rows: Vec<(
+                    String,
+                    String,
+                    String,
+                    String,
+                    String,
+                    String,
+                    String,
+                    i32,
+                    Option<String>,
+                )> = stmt
                     .query_map([], |row| {
                         Ok((
                             row.get(0)?,
@@ -314,7 +324,10 @@ impl Registry {
 
     /// List all registered databases.
     pub fn list_databases(&self) -> Result<Vec<DatabaseInfo>, AtomicCoreError> {
-        let conn = self.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
         let mut stmt = conn.prepare(
             "SELECT id, name, is_default, created_at, last_opened_at FROM databases ORDER BY is_default DESC, created_at ASC",
         )?;
@@ -333,8 +346,14 @@ impl Registry {
     }
 
     /// Find a database by name (case-insensitive). Returns the first match.
-    pub fn find_database_by_name(&self, name: &str) -> Result<Option<DatabaseInfo>, AtomicCoreError> {
-        let conn = self.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+    pub fn find_database_by_name(
+        &self,
+        name: &str,
+    ) -> Result<Option<DatabaseInfo>, AtomicCoreError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
         match conn.query_row(
             "SELECT id, name, is_default, created_at, last_opened_at FROM databases WHERE name = ?1 COLLATE NOCASE LIMIT 1",
             [name],
@@ -357,7 +376,10 @@ impl Registry {
     /// Create a new database entry. Returns the new database info.
     /// The actual SQLite file is created when the DatabaseManager opens it.
     pub fn create_database(&self, name: &str) -> Result<DatabaseInfo, AtomicCoreError> {
-        let conn = self.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
         let id = Uuid::new_v4().to_string();
         let now = Utc::now().to_rfc3339();
         conn.execute(
@@ -375,7 +397,10 @@ impl Registry {
 
     /// Rename a database.
     pub fn rename_database(&self, id: &str, name: &str) -> Result<(), AtomicCoreError> {
-        let conn = self.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
         let updated = conn.execute(
             "UPDATE databases SET name = ?1 WHERE id = ?2",
             rusqlite::params![name, id],
@@ -389,7 +414,10 @@ impl Registry {
     /// Delete a database entry. Cannot delete the default database.
     /// Does NOT delete the .db file — the caller (DatabaseManager) handles that.
     pub fn delete_database(&self, id: &str) -> Result<(), AtomicCoreError> {
-        let conn = self.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
 
         let is_default: bool = conn
             .query_row(
@@ -412,15 +440,14 @@ impl Registry {
     /// Set a database as the default, clearing the flag from the previous default.
     /// Cannot set a non-existent database as default.
     pub fn set_default_database(&self, id: &str) -> Result<(), AtomicCoreError> {
-        let conn = self.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
 
         // Verify the database exists
         let exists: bool = conn
-            .query_row(
-                "SELECT 1 FROM databases WHERE id = ?1",
-                [id],
-                |_| Ok(true),
-            )
+            .query_row("SELECT 1 FROM databases WHERE id = ?1", [id], |_| Ok(true))
             .unwrap_or(false);
 
         if !exists {
@@ -428,26 +455,25 @@ impl Registry {
         }
 
         let tx = conn.unchecked_transaction()?;
-        tx.execute("UPDATE databases SET is_default = 0 WHERE is_default = 1", [])?;
         tx.execute(
-            "UPDATE databases SET is_default = 1 WHERE id = ?1",
-            [id],
+            "UPDATE databases SET is_default = 0 WHERE is_default = 1",
+            [],
         )?;
+        tx.execute("UPDATE databases SET is_default = 1 WHERE id = ?1", [id])?;
         tx.commit()?;
         Ok(())
     }
 
     /// Get the ID of the default database.
     pub fn get_default_database_id(&self) -> Result<String, AtomicCoreError> {
-        let conn = self.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
-        conn.query_row(
-            "SELECT id FROM databases WHERE is_default = 1",
-            [],
-            |row| row.get(0),
-        )
-        .map_err(|_| {
-            AtomicCoreError::Configuration("No default database configured".to_string())
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+        conn.query_row("SELECT id FROM databases WHERE is_default = 1", [], |row| {
+            row.get(0)
         })
+        .map_err(|_| AtomicCoreError::Configuration("No default database configured".to_string()))
     }
 
     /// Get the file path for a database by ID.
@@ -457,7 +483,10 @@ impl Registry {
 
     /// Update the last_opened_at timestamp for a database.
     pub fn touch_database(&self, id: &str) -> Result<(), AtomicCoreError> {
-        let conn = self.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
         let now = Utc::now().to_rfc3339();
         conn.execute(
             "UPDATE databases SET last_opened_at = ?1 WHERE id = ?2",
@@ -481,36 +510,48 @@ impl Registry {
 
     /// Get all settings.
     pub fn get_all_settings(&self) -> Result<HashMap<String, String>, AtomicCoreError> {
-        let conn = self.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
         crate::settings::get_all_settings(&conn)
     }
 
     /// Get a single setting by key.
     pub fn get_setting(&self, key: &str) -> Result<String, AtomicCoreError> {
-        let conn = self.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
         crate::settings::get_setting(&conn, key)
     }
 
     /// Set a setting (upsert).
     pub fn set_setting(&self, key: &str, value: &str) -> Result<(), AtomicCoreError> {
-        let conn = self.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
         crate::settings::set_setting(&conn, key, value)
     }
 
     // ==================== API Tokens (shared across databases) ====================
 
     /// Create a new named API token.
-    pub fn create_api_token(
-        &self,
-        name: &str,
-    ) -> Result<(ApiTokenInfo, String), AtomicCoreError> {
-        let conn = self.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+    pub fn create_api_token(&self, name: &str) -> Result<(ApiTokenInfo, String), AtomicCoreError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
         tokens::create_token(&conn, name)
     }
 
     /// List all API tokens (metadata only).
     pub fn list_api_tokens(&self) -> Result<Vec<ApiTokenInfo>, AtomicCoreError> {
-        let conn = self.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
         tokens::list_tokens(&conn)
     }
 
@@ -519,33 +560,46 @@ impl Registry {
         &self,
         raw_token: &str,
     ) -> Result<Option<ApiTokenInfo>, AtomicCoreError> {
-        let conn = self.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
         tokens::verify_token(&conn, raw_token)
     }
 
     /// Revoke an API token by ID.
     pub fn revoke_api_token(&self, id: &str) -> Result<(), AtomicCoreError> {
-        let conn = self.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
         tokens::revoke_token(&conn, id)
     }
 
     /// Update last_used_at for a token.
     pub fn update_token_last_used(&self, id: &str) -> Result<(), AtomicCoreError> {
-        let conn = self.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
         tokens::update_last_used(&conn, id)
     }
 
     /// Migrate legacy server_auth_token.
     pub fn migrate_legacy_token(&self) -> Result<bool, AtomicCoreError> {
-        let conn = self.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
         tokens::migrate_legacy_token(&conn)
     }
 
     /// Ensure at least one token exists.
-    pub fn ensure_default_token(
-        &self,
-    ) -> Result<Option<(ApiTokenInfo, String)>, AtomicCoreError> {
-        let conn = self.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+    pub fn ensure_default_token(&self) -> Result<Option<(ApiTokenInfo, String)>, AtomicCoreError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
         tokens::ensure_default_token(&conn)
     }
 
@@ -558,7 +612,10 @@ impl Registry {
         client_secret_hash: &str,
         redirect_uris_json: &str,
     ) -> Result<String, AtomicCoreError> {
-        let conn = self.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
         let id = Uuid::new_v4().to_string();
         let client_id = Uuid::new_v4().to_string();
         let now = Utc::now().to_rfc3339();
@@ -571,8 +628,14 @@ impl Registry {
     }
 
     /// Get the client_name for an OAuth client by client_id.
-    pub fn get_oauth_client_name(&self, client_id: &str) -> Result<Option<String>, AtomicCoreError> {
-        let conn = self.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+    pub fn get_oauth_client_name(
+        &self,
+        client_id: &str,
+    ) -> Result<Option<String>, AtomicCoreError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
         match conn.query_row(
             "SELECT client_name FROM oauth_clients WHERE client_id = ?1",
             [client_id],
@@ -585,8 +648,14 @@ impl Registry {
     }
 
     /// Get the redirect_uris JSON for an OAuth client by client_id.
-    pub fn get_oauth_client_redirect_uris(&self, client_id: &str) -> Result<Option<String>, AtomicCoreError> {
-        let conn = self.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+    pub fn get_oauth_client_redirect_uris(
+        &self,
+        client_id: &str,
+    ) -> Result<Option<String>, AtomicCoreError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
         match conn.query_row(
             "SELECT redirect_uris FROM oauth_clients WHERE client_id = ?1",
             [client_id],
@@ -599,8 +668,14 @@ impl Registry {
     }
 
     /// Get the client_secret_hash for an OAuth client by client_id.
-    pub fn get_oauth_client_secret_hash(&self, client_id: &str) -> Result<Option<String>, AtomicCoreError> {
-        let conn = self.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+    pub fn get_oauth_client_secret_hash(
+        &self,
+        client_id: &str,
+    ) -> Result<Option<String>, AtomicCoreError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
         match conn.query_row(
             "SELECT client_secret_hash FROM oauth_clients WHERE client_id = ?1",
             [client_id],
@@ -623,7 +698,10 @@ impl Registry {
         created_at: &str,
         expires_at: &str,
     ) -> Result<(), AtomicCoreError> {
-        let conn = self.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
         conn.execute(
             "INSERT INTO oauth_codes (code_hash, client_id, code_challenge, code_challenge_method, redirect_uri, created_at, expires_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
@@ -634,8 +712,14 @@ impl Registry {
 
     /// Look up an OAuth authorization code by its hash.
     /// Returns (client_id, code_challenge, expires_at, used).
-    pub fn lookup_oauth_code(&self, code_hash: &str) -> Result<Option<OAuthCodeInfo>, AtomicCoreError> {
-        let conn = self.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+    pub fn lookup_oauth_code(
+        &self,
+        code_hash: &str,
+    ) -> Result<Option<OAuthCodeInfo>, AtomicCoreError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
         match conn.query_row(
             "SELECT client_id, code_challenge, expires_at, used FROM oauth_codes WHERE code_hash = ?1",
             [code_hash],
@@ -653,8 +737,15 @@ impl Registry {
     }
 
     /// Mark an OAuth authorization code as used and optionally record the token_id.
-    pub fn mark_oauth_code_used(&self, code_hash: &str, token_id: Option<&str>) -> Result<(), AtomicCoreError> {
-        let conn = self.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+    pub fn mark_oauth_code_used(
+        &self,
+        code_hash: &str,
+        token_id: Option<&str>,
+    ) -> Result<(), AtomicCoreError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
         conn.execute(
             "UPDATE oauth_codes SET used = 1 WHERE code_hash = ?1",
             [code_hash],

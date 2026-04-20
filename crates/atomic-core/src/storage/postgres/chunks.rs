@@ -52,19 +52,18 @@ impl ChunkStore for PostgresStorage {
         status: &str,
         error: Option<&str>,
     ) -> StorageResult<()> {
-        sqlx::query("UPDATE atoms SET tagging_status = $2, tagging_error = $3 WHERE id = $1 AND db_id = $4")
-            .bind(atom_id)
-            .bind(status)
-            .bind(error)
-            .bind(&self.db_id)
-            .execute(&self.pool)
-            .await
-            .map_err(|e| {
-                AtomicCoreError::DatabaseOperation(format!(
-                    "Failed to set tagging status: {}",
-                    e
-                ))
-            })?;
+        sqlx::query(
+            "UPDATE atoms SET tagging_status = $2, tagging_error = $3 WHERE id = $1 AND db_id = $4",
+        )
+        .bind(atom_id)
+        .bind(status)
+        .bind(error)
+        .bind(&self.db_id)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| {
+            AtomicCoreError::DatabaseOperation(format!("Failed to set tagging status: {}", e))
+        })?;
         Ok(())
     }
 
@@ -169,7 +168,9 @@ impl ChunkStore for PostgresStorage {
             ))
         })?;
 
-        Ok((embedding_result.rows_affected() + tagging_result.rows_affected() + edges_result.rows_affected()) as i32)
+        Ok((embedding_result.rows_affected()
+            + tagging_result.rows_affected()
+            + edges_result.rows_affected()) as i32)
     }
 
     async fn reset_failed_embeddings(&self) -> StorageResult<i32> {
@@ -213,7 +214,10 @@ impl ChunkStore for PostgresStorage {
         .fetch_all(&self.pool)
         .await
         .map_err(|e| {
-            AtomicCoreError::DatabaseOperation(format!("Failed to get atoms with embeddings: {}", e))
+            AtomicCoreError::DatabaseOperation(format!(
+                "Failed to get atoms with embeddings: {}",
+                e
+            ))
         })?;
 
         let atom_ids: Vec<String> = atom_ids.into_iter().map(|(id,)| id).collect();
@@ -263,34 +267,43 @@ impl ChunkStore for PostgresStorage {
         Ok(total_edges)
     }
 
-    async fn get_semantic_edges(
-        &self,
-        min_similarity: f32,
-    ) -> StorageResult<Vec<SemanticEdge>> {
-        let rows: Vec<(String, String, String, f32, Option<i32>, Option<i32>, String)> =
-            sqlx::query_as(
-                "SELECT id, source_atom_id, target_atom_id, similarity_score,
+    async fn get_semantic_edges(&self, min_similarity: f32) -> StorageResult<Vec<SemanticEdge>> {
+        let rows: Vec<(
+            String,
+            String,
+            String,
+            f32,
+            Option<i32>,
+            Option<i32>,
+            String,
+        )> = sqlx::query_as(
+            "SELECT id, source_atom_id, target_atom_id, similarity_score,
                         source_chunk_index, target_chunk_index, created_at
                  FROM semantic_edges
                  WHERE similarity_score >= $1 AND db_id = $2
                  ORDER BY similarity_score DESC
                  LIMIT 10000",
-            )
-            .bind(min_similarity)
-            .bind(&self.db_id)
-            .fetch_all(&self.pool)
-            .await
-            .map_err(|e| {
-                AtomicCoreError::DatabaseOperation(format!(
-                    "Failed to get semantic edges: {}",
-                    e
-                ))
-            })?;
+        )
+        .bind(min_similarity)
+        .bind(&self.db_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| {
+            AtomicCoreError::DatabaseOperation(format!("Failed to get semantic edges: {}", e))
+        })?;
 
         Ok(rows
             .into_iter()
             .map(
-                |(id, source_atom_id, target_atom_id, similarity_score, source_chunk_index, target_chunk_index, created_at)| {
+                |(
+                    id,
+                    source_atom_id,
+                    target_atom_id,
+                    similarity_score,
+                    source_chunk_index,
+                    target_chunk_index,
+                    created_at,
+                )| {
                     SemanticEdge {
                         id,
                         source_atom_id,
@@ -349,10 +362,7 @@ impl ChunkStore for PostgresStorage {
                 .fetch_all(&self.pool)
                 .await
                 .map_err(|e| {
-                    AtomicCoreError::DatabaseOperation(format!(
-                        "Failed to get center tags: {}",
-                        e
-                    ))
+                    AtomicCoreError::DatabaseOperation(format!("Failed to get center tags: {}", e))
                 })?;
 
         let center_tag_ids: Vec<String> = center_tags.into_iter().map(|(id,)| id).collect();
@@ -374,10 +384,7 @@ impl ChunkStore for PostgresStorage {
             .fetch_all(&self.pool)
             .await
             .map_err(|e| {
-                AtomicCoreError::DatabaseOperation(format!(
-                    "Failed to get tag neighbors: {}",
-                    e
-                ))
+                AtomicCoreError::DatabaseOperation(format!("Failed to get tag neighbors: {}", e))
             })?;
 
             for (other_id, _) in &tag_neighbors {
@@ -541,10 +548,7 @@ impl ChunkStore for PostgresStorage {
         .fetch_all(&self.pool)
         .await
         .map_err(|e| {
-            AtomicCoreError::DatabaseOperation(format!(
-                "Failed to fetch neighborhood edges: {}",
-                e
-            ))
+            AtomicCoreError::DatabaseOperation(format!("Failed to fetch neighborhood edges: {}", e))
         })?;
 
         let semantic_edges: HashMap<(String, String), f32> = semantic_edges_rows
@@ -566,10 +570,7 @@ impl ChunkStore for PostgresStorage {
         .fetch_all(&self.pool)
         .await
         .map_err(|e| {
-            AtomicCoreError::DatabaseOperation(format!(
-                "Failed to fetch shared tags: {}",
-                e
-            ))
+            AtomicCoreError::DatabaseOperation(format!("Failed to fetch shared tags: {}", e))
         })?;
 
         let shared_tags_map: HashMap<(String, String), i32> = shared_tag_rows
@@ -658,11 +659,7 @@ impl ChunkStore for PostgresStorage {
             .collect())
     }
 
-    async fn save_tag_centroid(
-        &self,
-        tag_id: &str,
-        embedding: &[f32],
-    ) -> StorageResult<()> {
+    async fn save_tag_centroid(&self, tag_id: &str, embedding: &[f32]) -> StorageResult<()> {
         let pg_embedding = Vector::from(embedding.to_vec());
 
         sqlx::query(
@@ -676,10 +673,7 @@ impl ChunkStore for PostgresStorage {
         .execute(&self.pool)
         .await
         .map_err(|e| {
-            AtomicCoreError::DatabaseOperation(format!(
-                "Failed to save tag centroid: {}",
-                e
-            ))
+            AtomicCoreError::DatabaseOperation(format!("Failed to save tag centroid: {}", e))
         })?;
 
         Ok(())
@@ -697,10 +691,7 @@ impl ChunkStore for PostgresStorage {
         .fetch_all(&self.pool)
         .await
         .map_err(|e| {
-            AtomicCoreError::DatabaseOperation(format!(
-                "Failed to get tags with embeddings: {}",
-                e
-            ))
+            AtomicCoreError::DatabaseOperation(format!("Failed to get tags with embeddings: {}", e))
         })?;
 
         let tag_ids: Vec<String> = tag_ids.into_iter().map(|(id,)| id).collect();
@@ -724,10 +715,7 @@ impl ChunkStore for PostgresStorage {
             .fetch_all(&self.pool)
             .await
             .map_err(|e| {
-                AtomicCoreError::DatabaseOperation(format!(
-                    "Failed to get tag descendants: {}",
-                    e
-                ))
+                AtomicCoreError::DatabaseOperation(format!("Failed to get tag descendants: {}", e))
             })?;
 
             let desc_ids: Vec<String> = descendant_ids.into_iter().map(|(id,)| id).collect();
@@ -755,10 +743,8 @@ impl ChunkStore for PostgresStorage {
             }
 
             // Compute centroid (average of all embeddings)
-            let embedding_vecs: Vec<Vec<f32>> = embeddings
-                .into_iter()
-                .map(|(v,)| v.to_vec())
-                .collect();
+            let embedding_vecs: Vec<Vec<f32>> =
+                embeddings.into_iter().map(|(v,)| v.to_vec()).collect();
 
             let dim = embedding_vecs[0].len();
             let mut centroid = vec![0.0f32; dim];
@@ -844,10 +830,7 @@ impl ChunkStore for PostgresStorage {
             .execute(&self.pool)
             .await
             .map_err(|e| {
-                AtomicCoreError::DatabaseOperation(format!(
-                    "Failed to delete chunks batch: {}",
-                    e
-                ))
+                AtomicCoreError::DatabaseOperation(format!("Failed to delete chunks batch: {}", e))
             })?;
         Ok(())
     }
@@ -859,7 +842,8 @@ impl ChunkStore for PostgresStorage {
         max_edges: i32,
     ) -> StorageResult<i32> {
         // Delegate to the private helper method
-        self.compute_semantic_edges_for_atom_impl(atom_id, threshold, max_edges).await
+        self.compute_semantic_edges_for_atom_impl(atom_id, threshold, max_edges)
+            .await
     }
 
     async fn rebuild_fts_index(&self) -> StorageResult<()> {
@@ -868,17 +852,16 @@ impl ChunkStore for PostgresStorage {
     }
 
     async fn check_vector_extension(&self) -> StorageResult<String> {
-        let version: (String,) = sqlx::query_as(
-            "SELECT extversion FROM pg_extension WHERE extname = 'vector'",
-        )
-        .fetch_one(&self.pool)
-        .await
-        .map_err(|e| {
-            AtomicCoreError::DatabaseOperation(format!(
-                "pgvector extension not found: {}",
-                e
-            ))
-        })?;
+        let version: (String,) =
+            sqlx::query_as("SELECT extversion FROM pg_extension WHERE extname = 'vector'")
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|e| {
+                    AtomicCoreError::DatabaseOperation(format!(
+                        "pgvector extension not found: {}",
+                        e
+                    ))
+                })?;
         Ok(format!("pgvector {}", version.0))
     }
 
@@ -937,9 +920,9 @@ impl ChunkStore for PostgresStorage {
         ))
         .execute(&self.pool)
         .await
-        .map_err(|e| AtomicCoreError::DatabaseOperation(format!(
-            "Failed to alter vector dimension: {}", e
-        )))?;
+        .map_err(|e| {
+            AtomicCoreError::DatabaseOperation(format!("Failed to alter vector dimension: {}", e))
+        })?;
 
         // Delete all chunks (global — old dimension data is invalid)
         sqlx::query("DELETE FROM atom_chunks")
@@ -1003,11 +986,7 @@ impl ChunkStore for PostgresStorage {
         Ok(rows.into_iter().map(|(id,)| id).collect())
     }
 
-    async fn set_edges_status_batch(
-        &self,
-        atom_ids: &[String],
-        status: &str,
-    ) -> StorageResult<()> {
+    async fn set_edges_status_batch(&self, atom_ids: &[String], status: &str) -> StorageResult<()> {
         for atom_id in atom_ids {
             sqlx::query("UPDATE atoms SET edges_status = $1 WHERE id = $2 AND db_id = $3")
                 .bind(status)
@@ -1056,26 +1035,27 @@ impl PostgresStorage {
         let complete = count_by_status("complete").await?;
         let failed_count = count_by_status("failed").await?;
 
-        let failed: Vec<FailedAtom> = sqlx::query_as::<_, (String, String, String, Option<String>, String)>(
-            "SELECT id, title, snippet, embedding_error, updated_at
+        let failed: Vec<FailedAtom> =
+            sqlx::query_as::<_, (String, String, String, Option<String>, String)>(
+                "SELECT id, title, snippet, embedding_error, updated_at
              FROM atoms
              WHERE embedding_status = 'failed' AND db_id = $1
              ORDER BY updated_at DESC
              LIMIT 100",
-        )
-        .bind(&self.db_id)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?
-        .into_iter()
-        .map(|(atom_id, title, snippet, error, updated_at)| FailedAtom {
-            atom_id,
-            title,
-            snippet,
-            error,
-            updated_at,
-        })
-        .collect();
+            )
+            .bind(&self.db_id)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?
+            .into_iter()
+            .map(|(atom_id, title, snippet, error, updated_at)| FailedAtom {
+                atom_id,
+                title,
+                snippet,
+                error,
+                updated_at,
+            })
+            .collect();
 
         let tagging_failed_count: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM atoms WHERE tagging_status = 'failed' AND db_id = $1",
@@ -1085,26 +1065,27 @@ impl PostgresStorage {
         .await
         .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
 
-        let tagging_failed: Vec<FailedAtom> = sqlx::query_as::<_, (String, String, String, Option<String>, String)>(
-            "SELECT id, title, snippet, tagging_error, updated_at
+        let tagging_failed: Vec<FailedAtom> =
+            sqlx::query_as::<_, (String, String, String, Option<String>, String)>(
+                "SELECT id, title, snippet, tagging_error, updated_at
              FROM atoms
              WHERE tagging_status = 'failed' AND db_id = $1
              ORDER BY updated_at DESC
              LIMIT 100",
-        )
-        .bind(&self.db_id)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?
-        .into_iter()
-        .map(|(atom_id, title, snippet, error, updated_at)| FailedAtom {
-            atom_id,
-            title,
-            snippet,
-            error,
-            updated_at,
-        })
-        .collect();
+            )
+            .bind(&self.db_id)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?
+            .into_iter()
+            .map(|(atom_id, title, snippet, error, updated_at)| FailedAtom {
+                atom_id,
+                title,
+                snippet,
+                error,
+                updated_at,
+            })
+            .collect();
 
         Ok(PipelineStatus {
             pending,
@@ -1153,10 +1134,7 @@ impl PostgresStorage {
         .fetch_all(&self.pool)
         .await
         .map_err(|e| {
-            AtomicCoreError::DatabaseOperation(format!(
-                "Failed to get source chunks: {}",
-                e
-            ))
+            AtomicCoreError::DatabaseOperation(format!("Failed to get source chunks: {}", e))
         })?;
 
         if source_chunks.is_empty() {
@@ -1182,10 +1160,7 @@ impl PostgresStorage {
             .fetch_all(&self.pool)
             .await
             .map_err(|e| {
-                AtomicCoreError::DatabaseOperation(format!(
-                    "Failed to find similar chunks: {}",
-                    e
-                ))
+                AtomicCoreError::DatabaseOperation(format!("Failed to find similar chunks: {}", e))
             })?;
 
             for (target_atom_id, target_chunk_index, distance) in similar {

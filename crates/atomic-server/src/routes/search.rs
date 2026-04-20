@@ -71,8 +71,7 @@ pub async fn search(db: Db, body: web::Json<SearchRequest>) -> HttpResponse {
 pub async fn global_search(db: Db, body: web::Json<GlobalSearchRequest>) -> HttpResponse {
     let req = body.into_inner();
     ok_or_error(
-        db.0
-            .search_global_keyword(&req.query, req.section_limit.unwrap_or(5))
+        db.0.search_global_keyword(&req.query, req.section_limit.unwrap_or(5))
             .await,
     )
 }

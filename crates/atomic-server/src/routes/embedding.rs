@@ -78,10 +78,7 @@ pub async fn get_pipeline_status(db: Db) -> HttpResponse {
 }
 
 #[utoipa::path(get, path = "/api/atoms/{id}/embedding-status", params(("id" = String, Path, description = "Atom ID")), responses((status = 200, description = "Embedding status"), (status = 404, description = "Atom not found", body = ApiErrorResponse)), tag = "embeddings")]
-pub async fn get_embedding_status(
-    db: Db,
-    path: web::Path<String>,
-) -> HttpResponse {
+pub async fn get_embedding_status(db: Db, path: web::Path<String>) -> HttpResponse {
     let atom_id = path.into_inner();
     match db.0.get_embedding_status(&atom_id).await {
         Ok(status) => HttpResponse::Ok().json(serde_json::json!({"status": status})),

@@ -21,7 +21,10 @@ pub async fn stats(state: web::Data<CloudState>) -> HttpResponse {
     let total = instances.len();
     let running = instances.iter().filter(|i| i.status == "running").count();
     let stopped = instances.iter().filter(|i| i.status == "stopped").count();
-    let provisioning = instances.iter().filter(|i| i.status == "provisioning").count();
+    let provisioning = instances
+        .iter()
+        .filter(|i| i.status == "provisioning")
+        .count();
 
     HttpResponse::Ok().json(serde_json::json!({
         "total_instances": total,

@@ -579,7 +579,8 @@ Status body.
     #[test]
     fn wire_shape_deserializes_from_flat_json_with_all_fields() {
         // Exactly the shape the LLM structured-output schema asks for.
-        let json = r#"{"op":"AppendToSection","heading":"Details","after_heading":"","content":"x [3]"}"#;
+        let json =
+            r#"{"op":"AppendToSection","heading":"Details","after_heading":"","content":"x [3]"}"#;
         let wire: WikiSectionOpWire = serde_json::from_str(json).unwrap();
         assert_eq!(wire.op, "AppendToSection");
         let op = wire.into_op().unwrap();

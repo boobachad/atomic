@@ -17,9 +17,11 @@ use sha2::{Digest, Sha256};
 pub async fn resource_metadata(state: web::Data<AppState>) -> HttpResponse {
     let public_url = match &state.public_url {
         Some(url) => url.trim_end_matches('/'),
-        None => return HttpResponse::NotFound().json(serde_json::json!({
-            "error": "OAuth not configured — start server with --public-url"
-        })),
+        None => {
+            return HttpResponse::NotFound().json(serde_json::json!({
+                "error": "OAuth not configured — start server with --public-url"
+            }))
+        }
     };
 
     HttpResponse::Ok().json(serde_json::json!({
@@ -33,9 +35,11 @@ pub async fn resource_metadata(state: web::Data<AppState>) -> HttpResponse {
 pub async fn metadata(state: web::Data<AppState>) -> HttpResponse {
     let public_url = match &state.public_url {
         Some(url) => url.trim_end_matches('/').to_string(),
-        None => return HttpResponse::NotFound().json(serde_json::json!({
-            "error": "OAuth not configured — start server with --public-url"
-        })),
+        None => {
+            return HttpResponse::NotFound().json(serde_json::json!({
+                "error": "OAuth not configured — start server with --public-url"
+            }))
+        }
     };
 
     HttpResponse::Ok().json(serde_json::json!({
@@ -108,16 +112,17 @@ pub async fn register(
 
     let core = match state.manager.active_core().await {
         Ok(c) => c,
-        Err(e) => return HttpResponse::InternalServerError().json(serde_json::json!({
-            "error": "server_error",
-            "error_description": e.to_string()
-        })),
+        Err(e) => {
+            return HttpResponse::InternalServerError().json(serde_json::json!({
+                "error": "server_error",
+                "error_description": e.to_string()
+            }))
+        }
     };
-    let client_id = match core.create_oauth_client(
-        &req.client_name,
-        &secret_hash,
-        &redirect_uris_json,
-    ).await {
+    let client_id = match core
+        .create_oauth_client(&req.client_name, &secret_hash, &redirect_uris_json)
+        .await
+    {
         Ok(id) => id,
         Err(e) => {
             return HttpResponse::InternalServerError().json(serde_json::json!({
@@ -162,7 +167,11 @@ pub async fn authorize_page(
     let q = query.into_inner();
 
     if q.response_type != "code" {
-        return redirect_with_error(&q.redirect_uri, "unsupported_response_type", q.state.as_deref());
+        return redirect_with_error(
+            &q.redirect_uri,
+            "unsupported_response_type",
+            q.state.as_deref(),
+        );
     }
 
     if q.code_challenge_method != "S256" {
@@ -176,7 +185,9 @@ pub async fn authorize_page(
     };
     let client_name: String = match core.get_oauth_client_name(&q.client_id).await {
         Ok(Some(name)) => name,
-        Ok(None) => return redirect_with_error(&q.redirect_uri, "invalid_request", q.state.as_deref()),
+        Ok(None) => {
+            return redirect_with_error(&q.redirect_uri, "invalid_request", q.state.as_deref())
+        }
         Err(_) => return HttpResponse::InternalServerError().body("Database error"),
     };
 
@@ -232,11 +243,14 @@ pub async fn authorize_approve(
     // Verify client_id exists and redirect_uri matches
     let redirect_uris_json: String = match core.get_oauth_client_redirect_uris(&f.client_id).await {
         Ok(Some(uris)) => uris,
-        Ok(None) => return redirect_with_error(&f.redirect_uri, "invalid_request", f.state.as_deref()),
+        Ok(None) => {
+            return redirect_with_error(&f.redirect_uri, "invalid_request", f.state.as_deref())
+        }
         Err(_) => return HttpResponse::InternalServerError().body("Database error"),
     };
 
-    let registered_uris: Vec<String> = serde_json::from_str(&redirect_uris_json).unwrap_or_default();
+    let registered_uris: Vec<String> =
+        serde_json::from_str(&redirect_uris_json).unwrap_or_default();
     if !registered_uris.contains(&f.redirect_uri) {
         return HttpResponse::BadRequest().body("redirect_uri does not match registered URIs");
     }
@@ -250,15 +264,18 @@ pub async fn authorize_approve(
     let now = chrono::Utc::now();
     let expires_at = now + chrono::Duration::minutes(5);
 
-    if let Err(e) = core.store_oauth_code(
-        &code_hash,
-        &f.client_id,
-        &f.code_challenge,
-        &f.code_challenge_method,
-        &f.redirect_uri,
-        &now.to_rfc3339(),
-        &expires_at.to_rfc3339(),
-    ).await {
+    if let Err(e) = core
+        .store_oauth_code(
+            &code_hash,
+            &f.client_id,
+            &f.code_challenge,
+            &f.code_challenge_method,
+            &f.redirect_uri,
+            &now.to_rfc3339(),
+            &expires_at.to_rfc3339(),
+        )
+        .await
+    {
         return HttpResponse::InternalServerError().json(serde_json::json!({
             "error": "server_error",
             "error_description": e.to_string()
@@ -290,10 +307,7 @@ pub struct TokenRequest {
 }
 
 /// `POST /oauth/token` — Exchange authorization code for access token
-pub async fn token(
-    state: web::Data<AppState>,
-    form: web::Form<TokenRequest>,
-) -> HttpResponse {
+pub async fn token(state: web::Data<AppState>, form: web::Form<TokenRequest>) -> HttpResponse {
     let req = form.into_inner();
 
     if req.grant_type != "authorization_code" {
@@ -304,53 +318,67 @@ pub async fn token(
 
     let code = match &req.code {
         Some(c) => c,
-        None => return HttpResponse::BadRequest().json(serde_json::json!({
-            "error": "invalid_request",
-            "error_description": "missing code"
-        })),
+        None => {
+            return HttpResponse::BadRequest().json(serde_json::json!({
+                "error": "invalid_request",
+                "error_description": "missing code"
+            }))
+        }
     };
 
     let client_id = match &req.client_id {
         Some(c) => c,
-        None => return HttpResponse::BadRequest().json(serde_json::json!({
-            "error": "invalid_request",
-            "error_description": "missing client_id"
-        })),
+        None => {
+            return HttpResponse::BadRequest().json(serde_json::json!({
+                "error": "invalid_request",
+                "error_description": "missing client_id"
+            }))
+        }
     };
 
     let client_secret = match &req.client_secret {
         Some(c) => c,
-        None => return HttpResponse::BadRequest().json(serde_json::json!({
-            "error": "invalid_request",
-            "error_description": "missing client_secret"
-        })),
+        None => {
+            return HttpResponse::BadRequest().json(serde_json::json!({
+                "error": "invalid_request",
+                "error_description": "missing client_secret"
+            }))
+        }
     };
 
     let code_verifier = match &req.code_verifier {
         Some(c) => c,
-        None => return HttpResponse::BadRequest().json(serde_json::json!({
-            "error": "invalid_request",
-            "error_description": "missing code_verifier"
-        })),
+        None => {
+            return HttpResponse::BadRequest().json(serde_json::json!({
+                "error": "invalid_request",
+                "error_description": "missing code_verifier"
+            }))
+        }
     };
 
     let core = match state.manager.active_core().await {
         Ok(c) => c,
-        Err(e) => return HttpResponse::InternalServerError().json(serde_json::json!({
-            "error": "server_error",
-            "error_description": e.to_string()
-        })),
+        Err(e) => {
+            return HttpResponse::InternalServerError().json(serde_json::json!({
+                "error": "server_error",
+                "error_description": e.to_string()
+            }))
+        }
     };
 
     // Verify client_id + client_secret
     let stored_hash: String = match core.get_oauth_client_secret_hash(client_id).await {
         Ok(Some(h)) => h,
-        Ok(None) => return HttpResponse::Unauthorized().json(serde_json::json!({
-            "error": "invalid_client"
-        })),
-        Err(_) => return HttpResponse::InternalServerError().json(serde_json::json!({
-            "error": "server_error"
-        })),
+        Ok(None) => {
+            return HttpResponse::Unauthorized().json(serde_json::json!({
+                "error": "invalid_client"
+            }))
+        }
+        Err(_) => {
+            return HttpResponse::InternalServerError().json(serde_json::json!({
+                "error": "server_error"
+            }))
+        }
     };
 
     let provided_hash = hex::encode(Sha256::digest(client_secret.as_bytes()));
@@ -365,13 +393,17 @@ pub async fn token(
 
     let code_info = match core.lookup_oauth_code(&code_hash).await {
         Ok(Some(info)) => info,
-        Ok(None) => return HttpResponse::BadRequest().json(serde_json::json!({
-            "error": "invalid_grant",
-            "error_description": "invalid authorization code"
-        })),
-        Err(_) => return HttpResponse::InternalServerError().json(serde_json::json!({
-            "error": "server_error"
-        })),
+        Ok(None) => {
+            return HttpResponse::BadRequest().json(serde_json::json!({
+                "error": "invalid_grant",
+                "error_description": "invalid authorization code"
+            }))
+        }
+        Err(_) => {
+            return HttpResponse::InternalServerError().json(serde_json::json!({
+                "error": "server_error"
+            }))
+        }
     };
 
     let stored_client_id = code_info.client_id;
@@ -420,16 +452,23 @@ pub async fn token(
         .unwrap_or_else(|| "OAuth Client".to_string());
 
     // Create a new Atomic API token
-    let (token_info, raw_token) = match core.create_api_token(&format!("OAuth: {}", client_name)).await {
+    let (token_info, raw_token) = match core
+        .create_api_token(&format!("OAuth: {}", client_name))
+        .await
+    {
         Ok(t) => t,
-        Err(e) => return HttpResponse::InternalServerError().json(serde_json::json!({
-            "error": "server_error",
-            "error_description": e.to_string()
-        })),
+        Err(e) => {
+            return HttpResponse::InternalServerError().json(serde_json::json!({
+                "error": "server_error",
+                "error_description": e.to_string()
+            }))
+        }
     };
 
     // Mark code as used and store token_id for auditing
-    let _ = core.mark_oauth_code_used(&code_hash, Some(&token_info.id)).await;
+    let _ = core
+        .mark_oauth_code_used(&code_hash, Some(&token_info.id))
+        .await;
 
     HttpResponse::Ok().json(serde_json::json!({
         "access_token": raw_token,
@@ -591,9 +630,7 @@ mod tests {
 
     fn test_state_with_oauth() -> web::Data<AppState> {
         let temp = tempfile::TempDir::new().unwrap();
-        let manager = std::sync::Arc::new(
-            atomic_core::DatabaseManager::new(temp.path()).unwrap()
-        );
+        let manager = std::sync::Arc::new(atomic_core::DatabaseManager::new(temp.path()).unwrap());
         let (event_tx, _) = broadcast::channel::<ServerEvent>(16);
         let state = web::Data::new(AppState {
             manager,
@@ -607,9 +644,7 @@ mod tests {
 
     fn test_state_without_oauth() -> web::Data<AppState> {
         let temp = tempfile::TempDir::new().unwrap();
-        let manager = std::sync::Arc::new(
-            atomic_core::DatabaseManager::new(temp.path()).unwrap()
-        );
+        let manager = std::sync::Arc::new(atomic_core::DatabaseManager::new(temp.path()).unwrap());
         let (event_tx, _) = broadcast::channel::<ServerEvent>(16);
         let state = web::Data::new(AppState {
             manager,
@@ -626,14 +661,10 @@ mod tests {
     #[actix_web::test]
     async fn test_resource_metadata_returns_resource() {
         let state = test_state_with_oauth();
-        let app = actix_test::init_service(
-            App::new()
-                .app_data(state.clone())
-                .route(
-                    "/.well-known/oauth-protected-resource",
-                    web::get().to(resource_metadata),
-                ),
-        )
+        let app = actix_test::init_service(App::new().app_data(state.clone()).route(
+            "/.well-known/oauth-protected-resource",
+            web::get().to(resource_metadata),
+        ))
         .await;
 
         let req = actix_test::TestRequest::get()
@@ -650,14 +681,10 @@ mod tests {
     #[actix_web::test]
     async fn test_resource_metadata_404_without_public_url() {
         let state = test_state_without_oauth();
-        let app = actix_test::init_service(
-            App::new()
-                .app_data(state.clone())
-                .route(
-                    "/.well-known/oauth-protected-resource",
-                    web::get().to(resource_metadata),
-                ),
-        )
+        let app = actix_test::init_service(App::new().app_data(state.clone()).route(
+            "/.well-known/oauth-protected-resource",
+            web::get().to(resource_metadata),
+        ))
         .await;
 
         let req = actix_test::TestRequest::get()
@@ -670,14 +697,10 @@ mod tests {
     #[actix_web::test]
     async fn test_auth_server_metadata_returns_endpoints() {
         let state = test_state_with_oauth();
-        let app = actix_test::init_service(
-            App::new()
-                .app_data(state.clone())
-                .route(
-                    "/.well-known/oauth-authorization-server",
-                    web::get().to(metadata),
-                ),
-        )
+        let app = actix_test::init_service(App::new().app_data(state.clone()).route(
+            "/.well-known/oauth-authorization-server",
+            web::get().to(metadata),
+        ))
         .await;
 
         let req = actix_test::TestRequest::get()
@@ -881,11 +904,17 @@ mod tests {
     async fn test_authorize_approve_success_redirects_with_code() {
         let state = test_state_with_oauth();
         let (client_id, _) = register_test_client(&state).await;
-        let (_, api_token) = state.manager.active_core().await.unwrap().create_api_token("test").await.unwrap();
+        let (_, api_token) = state
+            .manager
+            .active_core()
+            .await
+            .unwrap()
+            .create_api_token("test")
+            .await
+            .unwrap();
 
         let code_verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
-        let code_challenge =
-            URL_SAFE_NO_PAD.encode(Sha256::digest(code_verifier.as_bytes()));
+        let code_challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(code_verifier.as_bytes()));
 
         let app = actix_test::init_service(
             App::new()
@@ -965,12 +994,18 @@ mod tests {
     async fn test_full_oauth_flow() {
         let state = test_state_with_oauth();
         let (client_id, client_secret) = register_test_client(&state).await;
-        let (_, api_token) = state.manager.active_core().await.unwrap().create_api_token("test").await.unwrap();
+        let (_, api_token) = state
+            .manager
+            .active_core()
+            .await
+            .unwrap()
+            .create_api_token("test")
+            .await
+            .unwrap();
 
         // Step 1: Generate PKCE pair
         let code_verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
-        let code_challenge =
-            URL_SAFE_NO_PAD.encode(Sha256::digest(code_verifier.as_bytes()));
+        let code_challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(code_verifier.as_bytes()));
 
         // Step 2: Approve authorization (simulates form POST)
         let app = actix_test::init_service(
@@ -1020,7 +1055,14 @@ mod tests {
         assert!(access_token.starts_with("at_"));
 
         // Step 4: Verify the issued token works
-        let verified = state.manager.active_core().await.unwrap().verify_api_token(access_token).await.unwrap();
+        let verified = state
+            .manager
+            .active_core()
+            .await
+            .unwrap()
+            .verify_api_token(access_token)
+            .await
+            .unwrap();
         assert!(verified.is_some());
         let info = verified.unwrap();
         assert!(info.name.contains("OAuth: Test Client"));
@@ -1030,11 +1072,17 @@ mod tests {
     async fn test_code_cannot_be_reused() {
         let state = test_state_with_oauth();
         let (client_id, client_secret) = register_test_client(&state).await;
-        let (_, api_token) = state.manager.active_core().await.unwrap().create_api_token("test").await.unwrap();
+        let (_, api_token) = state
+            .manager
+            .active_core()
+            .await
+            .unwrap()
+            .create_api_token("test")
+            .await
+            .unwrap();
 
         let code_verifier = "test-verifier-string-for-pkce-flow";
-        let code_challenge =
-            URL_SAFE_NO_PAD.encode(Sha256::digest(code_verifier.as_bytes()));
+        let code_challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(code_verifier.as_bytes()));
 
         let app = actix_test::init_service(
             App::new()
@@ -1094,11 +1142,17 @@ mod tests {
     async fn test_wrong_pkce_verifier_rejected() {
         let state = test_state_with_oauth();
         let (client_id, client_secret) = register_test_client(&state).await;
-        let (_, api_token) = state.manager.active_core().await.unwrap().create_api_token("test").await.unwrap();
+        let (_, api_token) = state
+            .manager
+            .active_core()
+            .await
+            .unwrap()
+            .create_api_token("test")
+            .await
+            .unwrap();
 
         let code_verifier = "correct-verifier";
-        let code_challenge =
-            URL_SAFE_NO_PAD.encode(Sha256::digest(code_verifier.as_bytes()));
+        let code_challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(code_verifier.as_bytes()));
 
         let app = actix_test::init_service(
             App::new()
@@ -1151,9 +1205,6 @@ mod tests {
             html_escape("<script>alert('xss')</script>"),
             "&lt;script&gt;alert(&#39;xss&#39;)&lt;/script&gt;"
         );
-        assert_eq!(
-            html_escape("a&b\"c"),
-            "a&amp;b&quot;c"
-        );
+        assert_eq!(html_escape("a&b\"c"), "a&amp;b&quot;c");
     }
 }

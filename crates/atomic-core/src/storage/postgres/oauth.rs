@@ -108,12 +108,14 @@ impl PostgresStorage {
         .await
         .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
 
-        Ok(row.map(|(client_id, code_challenge, expires_at, used)| OAuthCodeInfo {
-            client_id,
-            code_challenge,
-            expires_at,
-            used: used != 0,
-        }))
+        Ok(row.map(
+            |(client_id, code_challenge, expires_at, used)| OAuthCodeInfo {
+                client_id,
+                code_challenge,
+                expires_at,
+                used: used != 0,
+            },
+        ))
     }
 
     pub(crate) async fn mark_oauth_code_used(
@@ -137,5 +139,4 @@ impl PostgresStorage {
         .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
         Ok(())
     }
-
 }

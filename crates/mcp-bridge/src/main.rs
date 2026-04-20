@@ -72,7 +72,10 @@ impl JsonRpcError {
         Self {
             jsonrpc: "2.0",
             id,
-            error: JsonRpcErrorData { code: -32603, message },
+            error: JsonRpcErrorData {
+                code: -32603,
+                message,
+            },
         }
     }
 }
@@ -101,10 +104,7 @@ fn send_error(id: serde_json::Value, message: String) {
 }
 
 /// Process SSE stream and output JSON-RPC messages to stdout
-async fn process_sse_stream(
-    response: reqwest::Response,
-    request_id: serde_json::Value,
-) {
+async fn process_sse_stream(response: reqwest::Response, request_id: serde_json::Value) {
     let mut stream = response.bytes_stream();
     let mut buffer = String::new();
 
@@ -171,7 +171,8 @@ async fn process_message(
 ) {
     // Parse the message to get ID and method
     let msg = serde_json::from_str::<JsonRpcMessage>(&line).ok();
-    let request_id = msg.as_ref()
+    let request_id = msg
+        .as_ref()
         .and_then(|m| m.id.clone())
         .unwrap_or(serde_json::Value::Null);
     let method = msg.as_ref().and_then(|m| m.method.clone());
@@ -207,7 +208,8 @@ async fn process_message(
 
     // Check for session ID in response headers (from initialize response)
     if method.as_deref() == Some("initialize") {
-        if let Some(new_session_id) = response.headers()
+        if let Some(new_session_id) = response
+            .headers()
             .get("mcp-session-id")
             .and_then(|v| v.to_str().ok())
         {
@@ -322,6 +324,13 @@ async fn main() {
 
     // Process messages from stdin
     while let Some(line) = rx.recv().await {
-        process_message(&client, &endpoint, session_id.clone(), auth_token.as_deref(), line).await;
+        process_message(
+            &client,
+            &endpoint,
+            session_id.clone(),
+            auth_token.as_deref(),
+            line,
+        )
+        .await;
     }
 }

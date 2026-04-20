@@ -15,8 +15,8 @@
 //! - `task.{task_id}.interval_minutes` integer minute count (stored as string)
 //! - `task.{task_id}.interval_hours`   integer hour count (stored as string)
 
-use crate::AtomicCore;
 use crate::error::AtomicCoreError;
+use crate::AtomicCore;
 use chrono::{DateTime, Utc};
 use std::collections::HashMap;
 use std::time::Duration;
@@ -73,7 +73,10 @@ pub async fn set_last_run(
 pub async fn is_enabled(core: &AtomicCore, task_id: &str, default: bool) -> bool {
     match per_db_settings(core).await {
         Ok(settings) => match settings.get(&key(task_id, "enabled")) {
-            Some(v) => !matches!(v.to_ascii_lowercase().as_str(), "false" | "0" | "no" | "off"),
+            Some(v) => !matches!(
+                v.to_ascii_lowercase().as_str(),
+                "false" | "0" | "no" | "off"
+            ),
             None => default,
         },
         Err(_) => default,

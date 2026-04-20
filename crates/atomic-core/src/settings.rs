@@ -45,11 +45,7 @@ pub fn migrate_settings(conn: &Connection) -> Result<(), AtomicCoreError> {
     for (key, default_value) in DEFAULT_SETTINGS {
         // Only set if the key doesn't exist
         let exists: bool = conn
-            .query_row(
-                "SELECT 1 FROM settings WHERE key = ?1",
-                [key],
-                |_| Ok(true),
-            )
+            .query_row("SELECT 1 FROM settings WHERE key = ?1", [key], |_| Ok(true))
             .unwrap_or(false);
 
         if !exists {
@@ -72,8 +68,7 @@ pub fn get_setting_or_default(conn: &Connection, key: &str) -> String {
 
 /// Get all settings as a HashMap
 pub fn get_all_settings(conn: &Connection) -> Result<HashMap<String, String>, AtomicCoreError> {
-    let mut stmt = conn
-        .prepare("SELECT key, value FROM settings")?;
+    let mut stmt = conn.prepare("SELECT key, value FROM settings")?;
 
     let settings = stmt
         .query_map([], |row| {
@@ -86,11 +81,9 @@ pub fn get_all_settings(conn: &Connection) -> Result<HashMap<String, String>, At
 
 /// Get a single setting by key
 pub fn get_setting(conn: &Connection, key: &str) -> Result<String, AtomicCoreError> {
-    conn.query_row(
-        "SELECT value FROM settings WHERE key = ?1",
-        [key],
-        |row| row.get(0),
-    )
+    conn.query_row("SELECT value FROM settings WHERE key = ?1", [key], |row| {
+        row.get(0)
+    })
     .map_err(|e| AtomicCoreError::Configuration(format!("Failed to get setting '{}': {}", key, e)))
 }
 
@@ -131,8 +124,14 @@ mod tests {
         let settings = get_all_settings(&conn).unwrap();
 
         // After migration, should have default settings
-        assert!(!settings.is_empty(), "Should have default settings after migration");
-        assert!(settings.contains_key("provider"), "Should have provider setting");
+        assert!(
+            !settings.is_empty(),
+            "Should have default settings after migration"
+        );
+        assert!(
+            settings.contains_key("provider"),
+            "Should have provider setting"
+        );
         assert_eq!(settings.get("provider").unwrap(), "openrouter");
     }
 

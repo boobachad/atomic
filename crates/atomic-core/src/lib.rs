@@ -30,8 +30,8 @@
 pub mod agent;
 pub mod briefing;
 pub mod canvas_level;
-pub mod chunking;
 pub mod chat;
+pub mod chunking;
 pub mod clustering;
 pub mod compaction;
 pub mod db;
@@ -39,35 +39,35 @@ pub mod embedding;
 pub mod error;
 pub mod executor;
 pub mod extraction;
-pub mod ingest;
 pub mod import;
+pub mod ingest;
 pub mod manager;
 pub mod models;
+pub mod pipeline_task;
 pub mod projection;
 pub mod providers;
-pub mod pipeline_task;
 pub mod registry;
 pub mod scheduler;
 pub mod search;
-pub mod storage;
 pub mod settings;
+pub mod storage;
 pub mod tokens;
 pub mod wiki;
 
 // Re-exports for convenience
-pub use agent::{ChatEvent, CanvasContext, CanvasClusterSummary};
+pub use agent::{CanvasClusterSummary, CanvasContext, ChatEvent};
 pub use briefing::{Briefing, BriefingCitation, BriefingWithCitations};
 pub use db::Database;
 pub use embedding::EmbeddingEvent;
 pub use error::AtomicCoreError;
+pub use import::{ImportProgress, ImportResult};
+pub use ingest::{FeedPollResult, IngestionEvent, IngestionRequest, IngestionResult};
+pub use manager::DatabaseManager;
 pub use models::*;
 pub use providers::{ProviderConfig, ProviderType};
+pub use registry::{DatabaseInfo, OAuthCodeInfo, Registry};
 pub use search::{SearchMode, SearchOptions};
 pub use tokens::ApiTokenInfo;
-pub use import::{ImportProgress, ImportResult};
-pub use ingest::{IngestionEvent, IngestionRequest, IngestionResult, FeedPollResult};
-pub use manager::DatabaseManager;
-pub use registry::{DatabaseInfo, OAuthCodeInfo, Registry};
 
 use chrono::Utc;
 use rusqlite::Connection;
@@ -99,7 +99,8 @@ pub struct UpdateAtomRequest {
 /// Rebuilder closure registered by `AtomicCore` so the cache can recompute
 /// itself in the background during debounced invalidations. Captures
 /// `StorageBackend` only (not `AtomicCore`) to avoid a reference cycle.
-type CanvasRebuilder = Box<dyn Fn() -> Result<Arc<GlobalCanvasData>, AtomicCoreError> + Send + Sync + 'static>;
+type CanvasRebuilder =
+    Box<dyn Fn() -> Result<Arc<GlobalCanvasData>, AtomicCoreError> + Send + Sync + 'static>;
 
 /// How long `invalidate_debounced` waits after the last invalidation before
 /// kicking off a background rebuild. Sized so that bulk-event storms (e.g.
@@ -161,7 +162,9 @@ impl CanvasCache {
     /// rebuild generation so any in-flight debounced rebuild no-ops on
     /// completion. Next read pays full compute cost.
     pub fn invalidate(&self) {
-        self.inner.rebuild_gen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.inner
+            .rebuild_gen
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         if let Ok(mut g) = self.inner.data.write() {
             *g = None;
         }
@@ -196,11 +199,7 @@ impl CanvasCache {
             }
             let cache_compute = cache.clone();
             let result = tokio::task::spawn_blocking(move || {
-                cache_compute
-                    .inner
-                    .rebuilder
-                    .get()
-                    .map(|f| f())
+                cache_compute.inner.rebuilder.get().map(|f| f())
             })
             .await;
             match result {
@@ -239,7 +238,8 @@ pub struct AtomicCore {
     /// from racing and ensures supersede semantics are consistent. Entries are
     /// created lazily and persist for the lifetime of the process — the
     /// working set is bounded by the number of wiki articles touched.
-    wiki_tag_locks: Arc<std::sync::Mutex<std::collections::HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
+    wiki_tag_locks:
+        Arc<std::sync::Mutex<std::collections::HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
     /// Single-flight guard for `run_daily_briefing`. Both the scheduler tick
     /// loop and the `POST /api/briefings/run` route contend for this lock —
     /// `try_lock` rejects the loser with `Conflict` so we never fire two
@@ -363,13 +363,18 @@ impl AtomicCore {
     /// (or the user via the settings tab / API) decides which top-level categories
     /// the auto-tagger may extend. Existing databases that were seeded before this
     /// change keep their tags via the V11 migration's backfill.
-    fn seed_and_backfill(db: Database, registry: Option<Arc<registry::Registry>>) -> Result<Self, AtomicCoreError> {
-
+    fn seed_and_backfill(
+        db: Database,
+        registry: Option<Arc<registry::Registry>>,
+    ) -> Result<Self, AtomicCoreError> {
         // Reconcile vec_chunks dimension with the configured embedding model.
         // Only for empty databases (no atoms yet) — e.g. newly created databases
         // whose migration hardcodes float[1536] but the user's model differs.
         if let Some(ref reg) = registry {
-            let conn = db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+            let conn = db
+                .conn
+                .lock()
+                .map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
             let atom_count: i64 = conn
                 .query_row("SELECT COUNT(*) FROM atoms", [], |row| row.get(0))
                 .unwrap_or(0);
@@ -409,7 +414,10 @@ impl AtomicCore {
         // Backfill tag centroid embeddings if the table exists but is empty
         // (i.e. an existing DB just got the new schema for the first time)
         {
-            let conn = db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+            let conn = db
+                .conn
+                .lock()
+                .map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
             let has_embeddings: bool = conn
                 .query_row(
                     "SELECT EXISTS(SELECT 1 FROM atom_chunks WHERE embedding IS NOT NULL)",
@@ -418,20 +426,20 @@ impl AtomicCore {
                 )
                 .unwrap_or(false);
             let has_centroids: bool = conn
-                .query_row(
-                    "SELECT EXISTS(SELECT 1 FROM tag_embeddings)",
-                    [],
-                    |row| row.get(0),
-                )
+                .query_row("SELECT EXISTS(SELECT 1 FROM tag_embeddings)", [], |row| {
+                    row.get(0)
+                })
                 .unwrap_or(false);
 
             if has_embeddings && !has_centroids {
-                let mut stmt = conn.prepare(
-                    "SELECT DISTINCT at.tag_id
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT DISTINCT at.tag_id
                      FROM atom_tags at
                      INNER JOIN atom_chunks ac ON at.atom_id = ac.atom_id
                      WHERE ac.embedding IS NOT NULL",
-                ).map_err(|e| AtomicCoreError::Database(e))?;
+                    )
+                    .map_err(|e| AtomicCoreError::Database(e))?;
 
                 let tag_ids: Vec<String> = stmt
                     .query_map([], |row| row.get(0))
@@ -464,7 +472,9 @@ impl AtomicCore {
     /// Get settings map for passing to background tasks when registry is present.
     /// Returns Some if registry is available, None if settings should be read from data db.
     fn settings_for_background(&self) -> Option<HashMap<String, String>> {
-        self.registry.as_ref().and_then(|reg| reg.get_all_settings().ok())
+        self.registry
+            .as_ref()
+            .and_then(|reg| reg.get_all_settings().ok())
     }
 
     /// Get the storage path (for display purposes).
@@ -595,7 +605,8 @@ impl AtomicCore {
         match &self.storage {
             #[cfg(feature = "postgres")]
             storage::StorageBackend::Postgres(pg) => {
-                pg.create_oauth_client(client_name, client_secret_hash, redirect_uris_json).await
+                pg.create_oauth_client(client_name, client_secret_hash, redirect_uris_json)
+                    .await
             }
             _ => Err(oauth_unavailable()),
         }
@@ -626,7 +637,9 @@ impl AtomicCore {
         }
         match &self.storage {
             #[cfg(feature = "postgres")]
-            storage::StorageBackend::Postgres(pg) => pg.get_oauth_client_redirect_uris(client_id).await,
+            storage::StorageBackend::Postgres(pg) => {
+                pg.get_oauth_client_redirect_uris(client_id).await
+            }
             _ => Err(oauth_unavailable()),
         }
     }
@@ -641,7 +654,9 @@ impl AtomicCore {
         }
         match &self.storage {
             #[cfg(feature = "postgres")]
-            storage::StorageBackend::Postgres(pg) => pg.get_oauth_client_secret_hash(client_id).await,
+            storage::StorageBackend::Postgres(pg) => {
+                pg.get_oauth_client_secret_hash(client_id).await
+            }
             _ => Err(oauth_unavailable()),
         }
     }
@@ -680,7 +695,8 @@ impl AtomicCore {
                     redirect_uri,
                     created_at,
                     expires_at,
-                ).await
+                )
+                .await
             }
             _ => Err(oauth_unavailable()),
         }
@@ -712,7 +728,9 @@ impl AtomicCore {
         }
         match &self.storage {
             #[cfg(feature = "postgres")]
-            storage::StorageBackend::Postgres(pg) => pg.mark_oauth_code_used(code_hash, token_id).await,
+            storage::StorageBackend::Postgres(pg) => {
+                pg.mark_oauth_code_used(code_hash, token_id).await
+            }
             _ => Err(oauth_unavailable()),
         }
     }
@@ -735,7 +753,10 @@ impl AtomicCore {
     }
 
     /// Get an atom by its source URL
-    pub async fn get_atom_by_source_url(&self, url: &str) -> Result<Option<AtomWithTags>, AtomicCoreError> {
+    pub async fn get_atom_by_source_url(
+        &self,
+        url: &str,
+    ) -> Result<Option<AtomWithTags>, AtomicCoreError> {
         self.storage.get_atom_by_source_url_sync(url).await
     }
 
@@ -816,13 +837,16 @@ impl AtomicCore {
                 .filter(|r| r.skip_if_source_exists)
                 .filter_map(|r| r.source_url.clone())
                 .collect();
-            self.storage.check_existing_source_urls_sync(&source_urls).await?
+            self.storage
+                .check_existing_source_urls_sync(&source_urls)
+                .await?
         } else {
             std::collections::HashSet::new()
         };
 
         // Filter requests, skipping duplicates when flagged
-        let mut atoms_to_insert: Vec<(String, CreateAtomRequest, String)> = Vec::with_capacity(requests.len());
+        let mut atoms_to_insert: Vec<(String, CreateAtomRequest, String)> =
+            Vec::with_capacity(requests.len());
         for request in requests {
             if request.skip_if_source_exists {
                 if let Some(ref url) = request.source_url {
@@ -837,7 +861,10 @@ impl AtomicCore {
         }
 
         // Bulk insert via storage
-        let atoms_with_tags = self.storage.insert_atoms_bulk_impl(&atoms_to_insert).await?;
+        let atoms_with_tags = self
+            .storage
+            .insert_atoms_bulk_impl(&atoms_to_insert)
+            .await?;
         self.canvas_cache.invalidate();
 
         // Collect atom IDs for background embedding (don't clone content — read from DB later)
@@ -849,7 +876,10 @@ impl AtomicCore {
         // Spawn batch embedding
         if !atom_ids.is_empty() {
             for atom_id in &atom_ids {
-                self.storage.set_embedding_status_sync(atom_id, "processing", None).await.ok();
+                self.storage
+                    .set_embedding_status_sync(atom_id, "processing", None)
+                    .await
+                    .ok();
             }
 
             let storage_clone = self.storage.clone();
@@ -864,15 +894,29 @@ impl AtomicCore {
                     .expect("Embedding batch semaphore closed unexpectedly");
 
                 // Read content from DB in one query (not captured at spawn time)
-                let embedding_pairs = match storage_clone.get_atom_contents_batch_impl(&atom_ids).await {
+                let embedding_pairs = match storage_clone
+                    .get_atom_contents_batch_impl(&atom_ids)
+                    .await
+                {
                     Ok(pairs) => {
                         // Mark any missing atoms as failed so they don't stay stuck in "processing"
                         if pairs.len() < atom_ids.len() {
-                            let found_ids: std::collections::HashSet<&str> = pairs.iter().map(|(id, _)| id.as_str()).collect();
+                            let found_ids: std::collections::HashSet<&str> =
+                                pairs.iter().map(|(id, _)| id.as_str()).collect();
                             for atom_id in &atom_ids {
                                 if !found_ids.contains(atom_id.as_str()) {
-                                    tracing::warn!(atom_id, "Atom not found for embedding, marking as failed");
-                                    storage_clone.set_embedding_status_sync(atom_id, "failed", Some("Atom not found")).await.ok();
+                                    tracing::warn!(
+                                        atom_id,
+                                        "Atom not found for embedding, marking as failed"
+                                    );
+                                    storage_clone
+                                        .set_embedding_status_sync(
+                                            atom_id,
+                                            "failed",
+                                            Some("Atom not found"),
+                                        )
+                                        .await
+                                        .ok();
                                 }
                             }
                         }
@@ -881,7 +925,10 @@ impl AtomicCore {
                     Err(e) => {
                         tracing::error!(error = %e, "Failed to batch-read atom contents for embedding");
                         for atom_id in &atom_ids {
-                            storage_clone.set_embedding_status_sync(atom_id, "failed", Some(&e.to_string())).await.ok();
+                            storage_clone
+                                .set_embedding_status_sync(atom_id, "failed", Some(&e.to_string()))
+                                .await
+                                .ok();
                         }
                         return;
                     }
@@ -890,8 +937,27 @@ impl AtomicCore {
                 if !embedding_pairs.is_empty() {
                     let input = embedding::AtomInput::Preloaded(embedding_pairs);
                     match bg_settings {
-                        Some(s) => embedding::process_embedding_batch_with_settings(storage_clone, input, false, on_event, s, canvas_cache).await,
-                        None => embedding::process_embedding_batch(storage_clone, input, false, on_event, canvas_cache).await,
+                        Some(s) => {
+                            embedding::process_embedding_batch_with_settings(
+                                storage_clone,
+                                input,
+                                false,
+                                on_event,
+                                s,
+                                canvas_cache,
+                            )
+                            .await
+                        }
+                        None => {
+                            embedding::process_embedding_batch(
+                                storage_clone,
+                                input,
+                                false,
+                                on_event,
+                                canvas_cache,
+                            )
+                            .await
+                        }
                     };
                 }
             });
@@ -949,7 +1015,10 @@ impl AtomicCore {
             .await?
             .map(|content| !content.trim().is_empty())
             .unwrap_or(false);
-        let result = self.storage.update_atom_content_only_impl(id, &request, &now).await?;
+        let result = self
+            .storage
+            .update_atom_content_only_impl(id, &request, &now)
+            .await?;
         self.canvas_cache.invalidate();
         tracing::info!(
             atom_id = %id,
@@ -970,7 +1039,10 @@ impl AtomicCore {
     }
 
     /// Get atoms by tag (includes atoms with descendant tags)
-    pub async fn get_atoms_by_tag(&self, tag_id: &str) -> Result<Vec<AtomWithTags>, AtomicCoreError> {
+    pub async fn get_atoms_by_tag(
+        &self,
+        tag_id: &str,
+    ) -> Result<Vec<AtomWithTags>, AtomicCoreError> {
         self.storage.get_atoms_by_tag_impl(tag_id).await
     }
 
@@ -1001,7 +1073,10 @@ impl AtomicCore {
 
     /// Get tags with counts, pruning leaf nodes below `min_count`.
     /// Sorted by atom_count descending at every level.
-    pub async fn get_all_tags_filtered(&self, min_count: i32) -> Result<Vec<TagWithCount>, AtomicCoreError> {
+    pub async fn get_all_tags_filtered(
+        &self,
+        min_count: i32,
+    ) -> Result<Vec<TagWithCount>, AtomicCoreError> {
         self.storage.get_all_tags_filtered_impl(min_count).await
     }
 
@@ -1015,7 +1090,9 @@ impl AtomicCore {
         limit: i32,
         offset: i32,
     ) -> Result<PaginatedTagChildren, AtomicCoreError> {
-        self.storage.get_tag_children_impl(parent_id, min_count, limit, offset).await
+        self.storage
+            .get_tag_children_impl(parent_id, min_count, limit, offset)
+            .await
     }
 
     /// Load all tags and their direct counts from the database.
@@ -1050,7 +1127,11 @@ impl AtomicCore {
 
     /// Mark or unmark a top-level tag as a candidate for AI auto-tagging to extend.
     /// When false, the auto-tagger will not create new sub-tags under this tag.
-    pub async fn set_tag_autotag_target(&self, id: &str, value: bool) -> Result<(), AtomicCoreError> {
+    pub async fn set_tag_autotag_target(
+        &self,
+        id: &str,
+        value: bool,
+    ) -> Result<(), AtomicCoreError> {
         self.storage.set_tag_autotag_target_impl(id, value).await
     }
 
@@ -1076,7 +1157,9 @@ impl AtomicCore {
         keep_default_names: &[String],
         add_custom_names: &[String],
     ) -> Result<Vec<Tag>, AtomicCoreError> {
-        self.storage.configure_autotag_targets_impl(keep_default_names, add_custom_names).await
+        self.storage
+            .configure_autotag_targets_impl(keep_default_names, add_custom_names)
+            .await
     }
 
     // ==================== Search Operations ====================
@@ -1106,7 +1189,9 @@ impl AtomicCore {
 
         match options.mode {
             search::SearchMode::Keyword => {
-                self.storage.keyword_search_sync(&options.query, options.limit, tag_id, cutoff_ref).await
+                self.storage
+                    .keyword_search_sync(&options.query, options.limit, tag_id, cutoff_ref)
+                    .await
             }
             search::SearchMode::Semantic => {
                 // Generate query embedding via provider
@@ -1120,13 +1205,15 @@ impl AtomicCore {
                 if embeddings.is_empty() || embeddings[0].is_empty() {
                     return Ok(vec![]);
                 }
-                self.storage.vector_search_sync(
-                    &embeddings[0],
-                    options.limit,
-                    options.threshold,
-                    tag_id,
-                    cutoff_ref,
-                ).await
+                self.storage
+                    .vector_search_sync(
+                        &embeddings[0],
+                        options.limit,
+                        options.threshold,
+                        tag_id,
+                        cutoff_ref,
+                    )
+                    .await
             }
             search::SearchMode::Hybrid => {
                 // Generate embedding for semantic leg
@@ -1138,21 +1225,21 @@ impl AtomicCore {
                     .await
                     .map_err(|e| AtomicCoreError::Search(e.to_string()))?;
 
-                let keyword_results = self.storage.keyword_search_sync(
-                    &options.query,
-                    options.limit * 2,
-                    tag_id,
-                    cutoff_ref,
-                ).await?;
+                let keyword_results = self
+                    .storage
+                    .keyword_search_sync(&options.query, options.limit * 2, tag_id, cutoff_ref)
+                    .await?;
 
                 let semantic_results = if !embeddings.is_empty() && !embeddings[0].is_empty() {
-                    self.storage.vector_search_sync(
-                        &embeddings[0],
-                        options.limit * 2,
-                        options.threshold,
-                        tag_id,
-                        cutoff_ref,
-                    ).await?
+                    self.storage
+                        .vector_search_sync(
+                            &embeddings[0],
+                            options.limit * 2,
+                            options.threshold,
+                            tag_id,
+                            cutoff_ref,
+                        )
+                        .await?
                 } else {
                     vec![]
                 };
@@ -1180,7 +1267,9 @@ impl AtomicCore {
                 sqlite.global_keyword_search_sync(&query, section_limit)
             })
             .await
-            .map_err(|e| AtomicCoreError::DatabaseOperation(format!("spawn_blocking join: {e}")))?;
+            .map_err(|e| {
+                AtomicCoreError::DatabaseOperation(format!("spawn_blocking join: {e}"))
+            })?;
         }
 
         #[cfg(feature = "postgres")]
@@ -1200,7 +1289,9 @@ impl AtomicCore {
         limit: i32,
         threshold: f32,
     ) -> Result<Vec<SimilarAtomResult>, AtomicCoreError> {
-        self.storage.find_similar_sync(atom_id, limit, threshold).await
+        self.storage
+            .find_similar_sync(atom_id, limit, threshold)
+            .await
     }
 
     // ==================== Wiki Operations ====================
@@ -1223,9 +1314,15 @@ impl AtomicCore {
                 .unwrap_or_else(|| "anthropic/claude-sonnet-4.6".to_string()),
         };
         let strategy = wiki::WikiStrategy::from_string(
-            settings_map.get("wiki_strategy").map(|s| s.as_str()).unwrap_or("centroid"),
+            settings_map
+                .get("wiki_strategy")
+                .map(|s| s.as_str())
+                .unwrap_or("centroid"),
         );
-        let related = self.storage.get_related_tags_impl(tag_id, MAX_CROSS_LINK_TAGS).await
+        let related = self
+            .storage
+            .get_related_tags_impl(tag_id, MAX_CROSS_LINK_TAGS)
+            .await
             .unwrap_or_default();
         let linkable_article_names: Vec<(String, String)> = related
             .into_iter()
@@ -1271,10 +1368,16 @@ impl AtomicCore {
             &result.article.content,
             &ctx.linkable_article_names,
         );
-        tracing::info!(wiki_links = wiki_links.len(), citations = result.citations.len(), "[wiki] Extracted links and citations");
+        tracing::info!(
+            wiki_links = wiki_links.len(),
+            citations = result.citations.len(),
+            "[wiki] Extracted links and citations"
+        );
 
         // Save to database
-        self.storage.save_wiki_with_links_sync(&result.article, &result.citations, &wiki_links).await?;
+        self.storage
+            .save_wiki_with_links_sync(&result.article, &result.citations, &wiki_links)
+            .await?;
 
         // Any pending proposal was computed against the previous live article
         // and is now meaningless — drop it. Log-and-continue on error; a stale
@@ -1313,11 +1416,16 @@ impl AtomicCore {
         tag_id: &str,
         tag_name: &str,
     ) -> Result<WikiArticleWithCitations, AtomicCoreError> {
-        tracing::warn!(tag_id, "[wiki] update_wiki is deprecated; use propose_wiki_update instead");
+        tracing::warn!(
+            tag_id,
+            "[wiki] update_wiki is deprecated; use propose_wiki_update instead"
+        );
         let _guard = self.wiki_tag_lock(tag_id).await;
         tracing::info!(tag_name, tag_id, "[wiki] Updating article");
 
-        let existing = self.get_wiki(tag_id).await?
+        let existing = self
+            .get_wiki(tag_id)
+            .await?
             .ok_or_else(|| AtomicCoreError::Wiki("No existing article to update".to_string()))?;
 
         let (strategy, ctx) = self.build_wiki_strategy_context(tag_id, tag_name).await?;
@@ -1340,7 +1448,9 @@ impl AtomicCore {
         );
 
         // Save to database
-        self.storage.save_wiki_with_links_sync(&result.article, &result.citations, &wiki_links).await?;
+        self.storage
+            .save_wiki_with_links_sync(&result.article, &result.citations, &wiki_links)
+            .await?;
 
         tracing::info!("[wiki] Article updated successfully");
         Ok(result)
@@ -1421,9 +1531,11 @@ impl AtomicCore {
     ) -> Result<WikiArticleWithCitations, AtomicCoreError> {
         let _guard = self.wiki_tag_lock(tag_id).await;
 
-        let proposal = self.storage.get_wiki_proposal_sync(tag_id).await?.ok_or_else(|| {
-            AtomicCoreError::Wiki("No pending proposal for this tag".to_string())
-        })?;
+        let proposal = self
+            .storage
+            .get_wiki_proposal_sync(tag_id)
+            .await?
+            .ok_or_else(|| AtomicCoreError::Wiki("No pending proposal for this tag".to_string()))?;
 
         let existing = self.get_wiki(tag_id).await?.ok_or_else(|| {
             AtomicCoreError::Wiki("Live article disappeared while proposal was pending".to_string())
@@ -1466,8 +1578,7 @@ impl AtomicCore {
             .filter(|t| t.has_article)
             .map(|t| (t.tag_id, t.tag_name))
             .collect();
-        let wiki_links =
-            wiki::extract_wiki_links(&article.id, &article.content, &linkable_names);
+        let wiki_links = wiki::extract_wiki_links(&article.id, &article.content, &linkable_names);
 
         // save_wiki_with_links archives the previous version into
         // wiki_article_versions as part of its normal flow.
@@ -1478,7 +1589,10 @@ impl AtomicCore {
         // Delete the proposal row after successful save.
         self.storage.delete_wiki_proposal_sync(tag_id).await?;
 
-        tracing::info!(tag_id, "[wiki] Proposal accepted and promoted to live article");
+        tracing::info!(
+            tag_id,
+            "[wiki] Proposal accepted and promoted to live article"
+        );
 
         Ok(WikiArticleWithCitations {
             article,
@@ -1495,12 +1609,18 @@ impl AtomicCore {
     }
 
     /// Get an existing wiki article
-    pub async fn get_wiki(&self, tag_id: &str) -> Result<Option<WikiArticleWithCitations>, AtomicCoreError> {
+    pub async fn get_wiki(
+        &self,
+        tag_id: &str,
+    ) -> Result<Option<WikiArticleWithCitations>, AtomicCoreError> {
         self.storage.get_wiki_sync(tag_id).await
     }
 
     /// Get wiki article status (for checking if update is needed)
-    pub async fn get_wiki_status(&self, tag_id: &str) -> Result<WikiArticleStatus, AtomicCoreError> {
+    pub async fn get_wiki_status(
+        &self,
+        tag_id: &str,
+    ) -> Result<WikiArticleStatus, AtomicCoreError> {
         self.storage.get_wiki_status_sync(tag_id).await
     }
 
@@ -1516,7 +1636,11 @@ impl AtomicCore {
     }
 
     /// Get tags related to a given tag by semantic connectivity
-    pub async fn get_related_tags(&self, tag_id: &str, limit: usize) -> Result<Vec<RelatedTag>, AtomicCoreError> {
+    pub async fn get_related_tags(
+        &self,
+        tag_id: &str,
+        limit: usize,
+    ) -> Result<Vec<RelatedTag>, AtomicCoreError> {
         self.storage.get_related_tags_impl(tag_id, limit).await
     }
 
@@ -1526,12 +1650,18 @@ impl AtomicCore {
     }
 
     /// List version history for a wiki article
-    pub async fn list_wiki_versions(&self, tag_id: &str) -> Result<Vec<WikiVersionSummary>, AtomicCoreError> {
+    pub async fn list_wiki_versions(
+        &self,
+        tag_id: &str,
+    ) -> Result<Vec<WikiVersionSummary>, AtomicCoreError> {
         self.storage.list_wiki_versions_sync(tag_id).await
     }
 
     /// Get a specific wiki article version
-    pub async fn get_wiki_version(&self, version_id: &str) -> Result<Option<WikiArticleVersion>, AtomicCoreError> {
+    pub async fn get_wiki_version(
+        &self,
+        version_id: &str,
+    ) -> Result<Option<WikiArticleVersion>, AtomicCoreError> {
         self.storage.get_wiki_version_sync(version_id).await
     }
 
@@ -1550,32 +1680,45 @@ impl AtomicCore {
     /// scheduled tick correctly waits for the full interval. On failure the
     /// error bubbles up and `last_run` is left unchanged — the scheduler
     /// will retry on the next tick.
-    pub async fn run_daily_briefing(&self) -> Result<Option<briefing::BriefingWithCitations>, AtomicCoreError> {
+    pub async fn run_daily_briefing(
+        &self,
+    ) -> Result<Option<briefing::BriefingWithCitations>, AtomicCoreError> {
         let _guard = self.briefing_lock.try_lock().map_err(|_| {
             AtomicCoreError::Conflict("A daily briefing is already running".to_string())
         })?;
-        let since = scheduler::state::get_last_run(self, "daily_briefing").await?
+        let since = scheduler::state::get_last_run(self, "daily_briefing")
+            .await?
             .unwrap_or_else(|| chrono::Utc::now() - chrono::Duration::days(7));
         let result = briefing::run_briefing(self, since).await?;
-        if let Err(e) = scheduler::state::set_last_run(self, "daily_briefing", chrono::Utc::now()).await {
+        if let Err(e) =
+            scheduler::state::set_last_run(self, "daily_briefing", chrono::Utc::now()).await
+        {
             tracing::warn!(error = %e, "[briefing] Failed to persist daily_briefing last_run");
         }
         Ok(result)
     }
 
     /// Get the most recent briefing joined with citations.
-    pub async fn get_latest_briefing(&self) -> Result<Option<briefing::BriefingWithCitations>, AtomicCoreError> {
+    pub async fn get_latest_briefing(
+        &self,
+    ) -> Result<Option<briefing::BriefingWithCitations>, AtomicCoreError> {
         self.storage.get_latest_briefing_sync().await
     }
 
     /// Get a specific briefing by id, joined with citations. Returns `None`
     /// if no briefing with that id exists.
-    pub async fn get_briefing(&self, id: &str) -> Result<Option<briefing::BriefingWithCitations>, AtomicCoreError> {
+    pub async fn get_briefing(
+        &self,
+        id: &str,
+    ) -> Result<Option<briefing::BriefingWithCitations>, AtomicCoreError> {
         self.storage.get_briefing_sync(id).await
     }
 
     /// List recent briefings (without citations) for a lightweight history view.
-    pub async fn list_briefings(&self, limit: i32) -> Result<Vec<briefing::Briefing>, AtomicCoreError> {
+    pub async fn list_briefings(
+        &self,
+        limit: i32,
+    ) -> Result<Vec<briefing::Briefing>, AtomicCoreError> {
         self.storage.list_briefings_sync(limit).await
     }
 
@@ -1589,12 +1732,19 @@ impl AtomicCore {
         let on_event = self.wrap_event_for_cache(on_event);
         let canvas_cache = Some(self.canvas_cache.clone());
         match self.settings_for_background() {
-            Some(s) => embedding::process_pending_embeddings_with_settings(self.storage.clone(), on_event, s, canvas_cache)
-                .await
-                .map_err(|e| AtomicCoreError::Embedding(e)),
-            None => embedding::process_pending_embeddings(self.storage.clone(), on_event, canvas_cache)
-                .await
-                .map_err(|e| AtomicCoreError::Embedding(e)),
+            Some(s) => embedding::process_pending_embeddings_with_settings(
+                self.storage.clone(),
+                on_event,
+                s,
+                canvas_cache,
+            )
+            .await
+            .map_err(|e| AtomicCoreError::Embedding(e)),
+            None => {
+                embedding::process_pending_embeddings(self.storage.clone(), on_event, canvas_cache)
+                    .await
+                    .map_err(|e| AtomicCoreError::Embedding(e))
+            }
         }
     }
 
@@ -1613,21 +1763,25 @@ impl AtomicCore {
         let on_event = self.wrap_event_for_cache(on_event);
         let canvas_cache = Some(self.canvas_cache.clone());
         let count = match self.settings_for_background() {
-            Some(s) => embedding::process_pending_embeddings_due_with_settings(
-                self.storage.clone(),
-                on_event,
-                cutoff_rfc3339.clone(),
-                s,
-                canvas_cache,
-            )
-            .await,
-            None => embedding::process_pending_embeddings_due(
-                self.storage.clone(),
-                on_event,
-                cutoff_rfc3339.clone(),
-                canvas_cache,
-            )
-            .await,
+            Some(s) => {
+                embedding::process_pending_embeddings_due_with_settings(
+                    self.storage.clone(),
+                    on_event,
+                    cutoff_rfc3339.clone(),
+                    s,
+                    canvas_cache,
+                )
+                .await
+            }
+            None => {
+                embedding::process_pending_embeddings_due(
+                    self.storage.clone(),
+                    on_event,
+                    cutoff_rfc3339.clone(),
+                    canvas_cache,
+                )
+                .await
+            }
         }
         .map_err(|e| AtomicCoreError::Embedding(e))?;
         if count > 0 {
@@ -1650,7 +1804,11 @@ impl AtomicCore {
     }
 
     /// Retry embedding for a specific atom
-    pub async fn retry_embedding<F>(&self, atom_id: &str, on_event: F) -> Result<(), AtomicCoreError>
+    pub async fn retry_embedding<F>(
+        &self,
+        atom_id: &str,
+        on_event: F,
+    ) -> Result<(), AtomicCoreError>
     where
         F: Fn(EmbeddingEvent) + Send + Sync + 'static,
     {
@@ -1662,7 +1820,10 @@ impl AtomicCore {
             )));
         }
 
-        let content = self.storage.get_atom_content_impl(atom_id).await?
+        let content = self
+            .storage
+            .get_atom_content_impl(atom_id)
+            .await?
             .ok_or_else(|| AtomicCoreError::NotFound(format!("Atom {} not found", atom_id)))?;
 
         embedding::spawn_embedding_task_single_with_settings(
@@ -1695,21 +1856,27 @@ impl AtomicCore {
             let canvas_cache = Some(self.canvas_cache.clone());
             executor::spawn(async move {
                 match bg_settings {
-                    Some(s) => embedding::process_embedding_batch_with_settings(
-                        storage_clone,
-                        input,
-                        true, // skip tagging - re-embedding only
-                        on_event,
-                        s,
-                        canvas_cache,
-                    ).await,
-                    None => embedding::process_embedding_batch(
-                        storage_clone,
-                        input,
-                        true,
-                        on_event,
-                        canvas_cache,
-                    ).await,
+                    Some(s) => {
+                        embedding::process_embedding_batch_with_settings(
+                            storage_clone,
+                            input,
+                            true, // skip tagging - re-embedding only
+                            on_event,
+                            s,
+                            canvas_cache,
+                        )
+                        .await
+                    }
+                    None => {
+                        embedding::process_embedding_batch(
+                            storage_clone,
+                            input,
+                            true,
+                            on_event,
+                            canvas_cache,
+                        )
+                        .await
+                    }
                 };
             });
         }
@@ -1737,21 +1904,27 @@ impl AtomicCore {
             let canvas_cache = Some(self.canvas_cache.clone());
             executor::spawn(async move {
                 match bg_settings {
-                    Some(s) => embedding::process_embedding_batch_with_settings(
-                        storage_clone,
-                        input,
-                        false,
-                        on_event,
-                        s,
-                        canvas_cache,
-                    ).await,
-                    None => embedding::process_embedding_batch(
-                        storage_clone,
-                        input,
-                        false,
-                        on_event,
-                        canvas_cache,
-                    ).await,
+                    Some(s) => {
+                        embedding::process_embedding_batch_with_settings(
+                            storage_clone,
+                            input,
+                            false,
+                            on_event,
+                            s,
+                            canvas_cache,
+                        )
+                        .await
+                    }
+                    None => {
+                        embedding::process_embedding_batch(
+                            storage_clone,
+                            input,
+                            false,
+                            on_event,
+                            canvas_cache,
+                        )
+                        .await
+                    }
                 };
             });
         }
@@ -1765,7 +1938,9 @@ impl AtomicCore {
         F: Fn(EmbeddingEvent) + Send + Sync + Clone + 'static,
     {
         // Verify atom exists
-        self.storage.get_atom_content_impl(atom_id).await?
+        self.storage
+            .get_atom_content_impl(atom_id)
+            .await?
             .ok_or_else(|| AtomicCoreError::NotFound(format!("Atom {} not found", atom_id)))?;
         let status = self.storage.get_tagging_status_impl(atom_id).await?;
         if status == "processing" {
@@ -1775,7 +1950,9 @@ impl AtomicCore {
             )));
         }
         // Reset tagging status to pending
-        self.storage.set_tagging_status_sync(atom_id, "pending", None).await?;
+        self.storage
+            .set_tagging_status_sync(atom_id, "pending", None)
+            .await?;
 
         let storage = self.storage.clone();
         let atom_id = atom_id.to_string();
@@ -1783,7 +1960,13 @@ impl AtomicCore {
         bg_settings.insert("auto_tagging_enabled".to_string(), "true".to_string());
         let on_event = self.wrap_event_for_cache(on_event);
         executor::spawn(async move {
-            embedding::process_tagging_batch_with_settings(storage, vec![atom_id], on_event, bg_settings).await;
+            embedding::process_tagging_batch_with_settings(
+                storage,
+                vec![atom_id],
+                on_event,
+                bg_settings,
+            )
+            .await;
         });
 
         Ok(())
@@ -1797,7 +1980,9 @@ impl AtomicCore {
         min_similarity: f32,
         min_cluster_size: i32,
     ) -> Result<Vec<AtomCluster>, AtomicCoreError> {
-        self.storage.compute_clusters_sync(min_similarity, min_cluster_size).await
+        self.storage
+            .compute_clusters_sync(min_similarity, min_cluster_size)
+            .await
     }
 
     /// Save cluster assignments to the database
@@ -1810,7 +1995,9 @@ impl AtomicCore {
         &self,
         min_similarity: f32,
     ) -> Result<std::collections::HashMap<String, i32>, AtomicCoreError> {
-        self.storage.get_connection_counts_sync(min_similarity).await
+        self.storage
+            .get_connection_counts_sync(min_similarity)
+            .await
     }
 
     // ==================== Compaction ====================
@@ -1848,7 +2035,9 @@ impl AtomicCore {
         limit: i32,
         offset: i32,
     ) -> Result<Vec<ConversationWithTags>, AtomicCoreError> {
-        self.storage.get_conversations_sync(filter_tag_id, limit, offset).await
+        self.storage
+            .get_conversations_sync(filter_tag_id, limit, offset)
+            .await
     }
 
     /// Get a single conversation with all messages
@@ -1866,7 +2055,9 @@ impl AtomicCore {
         title: Option<&str>,
         is_archived: Option<bool>,
     ) -> Result<Conversation, AtomicCoreError> {
-        self.storage.update_conversation_sync(id, title, is_archived).await
+        self.storage
+            .update_conversation_sync(id, title, is_archived)
+            .await
     }
 
     /// Delete a conversation
@@ -1880,7 +2071,9 @@ impl AtomicCore {
         conversation_id: &str,
         tag_ids: &[String],
     ) -> Result<ConversationWithTags, AtomicCoreError> {
-        self.storage.set_conversation_scope_sync(conversation_id, tag_ids).await
+        self.storage
+            .set_conversation_scope_sync(conversation_id, tag_ids)
+            .await
     }
 
     /// Add a single tag to conversation scope
@@ -1889,7 +2082,9 @@ impl AtomicCore {
         conversation_id: &str,
         tag_id: &str,
     ) -> Result<ConversationWithTags, AtomicCoreError> {
-        self.storage.add_tag_to_scope_sync(conversation_id, tag_id).await
+        self.storage
+            .add_tag_to_scope_sync(conversation_id, tag_id)
+            .await
     }
 
     /// Remove a single tag from conversation scope
@@ -1898,7 +2093,9 @@ impl AtomicCore {
         conversation_id: &str,
         tag_id: &str,
     ) -> Result<ConversationWithTags, AtomicCoreError> {
-        self.storage.remove_tag_from_scope_sync(conversation_id, tag_id).await
+        self.storage
+            .remove_tag_from_scope_sync(conversation_id, tag_id)
+            .await
     }
 
     /// Send a chat message and run the agent loop.
@@ -1956,12 +2153,17 @@ impl AtomicCore {
     }
 
     /// Bulk save/update atom positions after simulation completes
-    pub async fn save_atom_positions(&self, positions: &[AtomPosition]) -> Result<(), AtomicCoreError> {
+    pub async fn save_atom_positions(
+        &self,
+        positions: &[AtomPosition],
+    ) -> Result<(), AtomicCoreError> {
         self.storage.save_atom_positions_impl(positions).await
     }
 
     /// Get atoms with their average embedding vector for similarity calculations
-    pub async fn get_atoms_with_embeddings(&self) -> Result<Vec<AtomWithEmbedding>, AtomicCoreError> {
+    pub async fn get_atoms_with_embeddings(
+        &self,
+    ) -> Result<Vec<AtomWithEmbedding>, AtomicCoreError> {
         self.storage.get_atoms_with_embeddings_impl().await
     }
 
@@ -1982,7 +2184,10 @@ impl AtomicCore {
     /// schedule a debounced canvas cache rebuild. The returned closure is
     /// `Clone` so it can be passed to both single-atom and batch spawn sites.
     /// Debounced (not eager) so streaming batches collapse into one rebuild.
-    fn wrap_event_for_cache<F>(&self, on_event: F) -> impl Fn(EmbeddingEvent) + Send + Sync + Clone + 'static
+    fn wrap_event_for_cache<F>(
+        &self,
+        on_event: F,
+    ) -> impl Fn(EmbeddingEvent) + Send + Sync + Clone + 'static
     where
         F: Fn(EmbeddingEvent) + Send + Sync + 'static,
     {
@@ -1991,8 +2196,7 @@ impl AtomicCore {
         move |event: EmbeddingEvent| {
             if matches!(
                 &event,
-                EmbeddingEvent::EmbeddingComplete { .. }
-                    | EmbeddingEvent::TaggingComplete { .. }
+                EmbeddingEvent::EmbeddingComplete { .. } | EmbeddingEvent::TaggingComplete { .. }
             ) {
                 cache.invalidate_debounced();
             }
@@ -2009,7 +2213,9 @@ impl AtomicCore {
     /// cached `Arc` until a mutation invalidates it. Cold-cache rebuilds are
     /// serialized by a compute guard so N simultaneous misses collapse into
     /// one compute (the first waiter runs it; the rest re-read the cache).
-    pub async fn compute_and_get_canvas_data(&self) -> Result<Arc<GlobalCanvasData>, AtomicCoreError> {
+    pub async fn compute_and_get_canvas_data(
+        &self,
+    ) -> Result<Arc<GlobalCanvasData>, AtomicCoreError> {
         if let Some(cached) = self.canvas_cache.get() {
             return Ok(cached);
         }
@@ -2048,7 +2254,8 @@ impl AtomicCore {
         let projected = projection::compute_2d_projection(&embeddings);
 
         // Build position lookup
-        let position_map: std::collections::HashMap<String, (f64, f64)> = projected.iter()
+        let position_map: std::collections::HashMap<String, (f64, f64)> = projected
+            .iter()
             .map(|(id, x, y)| (id.clone(), (*x, *y)))
             .collect();
 
@@ -2057,7 +2264,8 @@ impl AtomicCore {
         let atom_metadata = storage.get_canvas_atom_metadata_light_sync().await?;
         let mut atom_tag_map = storage.get_all_atom_tag_ids_sync().await?;
 
-        let atoms: Vec<CanvasAtomPosition> = atom_metadata.into_iter()
+        let atoms: Vec<CanvasAtomPosition> = atom_metadata
+            .into_iter()
             .filter_map(|(atom_id, title, primary_tag, tag_count, source_url)| {
                 let (x, y) = position_map.get(&atom_id)?;
                 let tag_ids = atom_tag_map.remove(&atom_id).unwrap_or_default();
@@ -2086,7 +2294,11 @@ impl AtomicCore {
         let cluster_data = storage.enrich_clusters_with_tags_sync(cluster_data).await?;
         let clusters = Self::build_cluster_centroids(&cluster_data, &position_map);
 
-        Ok(Arc::new(GlobalCanvasData { atoms, edges, clusters }))
+        Ok(Arc::new(GlobalCanvasData {
+            atoms,
+            edges,
+            clusters,
+        }))
     }
 
     /// Register the canvas cache rebuilder so background-debounced
@@ -2100,8 +2312,7 @@ impl AtomicCore {
             // current runtime handle is safe and does not starve the
             // executor. We bridge from the sync rebuilder signature to the
             // async compute path here.
-            tokio::runtime::Handle::current()
-                .block_on(Self::compute_canvas_data_impl(&storage))
+            tokio::runtime::Handle::current().block_on(Self::compute_canvas_data_impl(&storage))
         }));
     }
 
@@ -2128,13 +2339,13 @@ impl AtomicCore {
         let max_w = kept.iter().map(|(_, _, w)| *w).fold(f32::MIN, f32::max);
         let range = (max_w - min_w).max(0.001);
 
-        kept.into_iter().map(|(src, tgt, score)| {
-            CanvasEdgeData {
+        kept.into_iter()
+            .map(|(src, tgt, score)| CanvasEdgeData {
                 source: src.to_string(),
                 target: tgt.to_string(),
                 weight: (score - min_w) / range,
-            }
-        }).collect()
+            })
+            .collect()
     }
 
     /// Build cluster centroid labels from cluster data and position map (pure math).
@@ -2183,7 +2394,10 @@ impl AtomicCore {
     // ==================== Semantic Graph Operations ====================
 
     /// Get semantic edges above a minimum similarity threshold (capped at 10k for safety)
-    pub async fn get_semantic_edges(&self, min_similarity: f32) -> Result<Vec<SemanticEdge>, AtomicCoreError> {
+    pub async fn get_semantic_edges(
+        &self,
+        min_similarity: f32,
+    ) -> Result<Vec<SemanticEdge>, AtomicCoreError> {
         self.storage.get_semantic_edges_sync(min_similarity).await
     }
 
@@ -2194,7 +2408,9 @@ impl AtomicCore {
         depth: i32,
         min_similarity: f32,
     ) -> Result<NeighborhoodGraph, AtomicCoreError> {
-        self.storage.get_atom_neighborhood_sync(atom_id, depth, min_similarity).await
+        self.storage
+            .get_atom_neighborhood_sync(atom_id, depth, min_similarity)
+            .await
     }
 
     /// Rebuild semantic edges for all atoms with embeddings.
@@ -2211,12 +2427,9 @@ impl AtomicCore {
         if count > 0 {
             // Kick off the background edge pipeline with the cache handle so
             // each completed batch invalidates the cache as edges land on disk.
-            embedding::process_pending_edges(
-                self.storage.clone(),
-                Some(self.canvas_cache.clone()),
-            )
-            .await
-            .map_err(|e| AtomicCoreError::Embedding(e))?;
+            embedding::process_pending_edges(self.storage.clone(), Some(self.canvas_cache.clone()))
+                .await
+                .map_err(|e| AtomicCoreError::Embedding(e))?;
         }
         Ok(count)
     }
@@ -2233,7 +2446,9 @@ impl AtomicCore {
         parent_id: Option<&str>,
         children_hint: Option<Vec<String>>,
     ) -> Result<CanvasLevel, AtomicCoreError> {
-        self.storage.get_canvas_level_sync(parent_id, children_hint).await
+        self.storage
+            .get_canvas_level_sync(parent_id, children_hint)
+            .await
     }
 
     // ==================== Embedding Status ====================
@@ -2263,8 +2478,18 @@ impl AtomicCore {
             let on_event = self.wrap_event_for_cache(on_event);
             executor::spawn(async move {
                 match bg_settings {
-                    Some(s) => embedding::process_tagging_batch_with_settings(storage, pending_atoms, on_event, s).await,
-                    None => embedding::process_tagging_batch(storage, pending_atoms, on_event).await,
+                    Some(s) => {
+                        embedding::process_tagging_batch_with_settings(
+                            storage,
+                            pending_atoms,
+                            on_event,
+                            s,
+                        )
+                        .await
+                    }
+                    None => {
+                        embedding::process_tagging_batch(storage, pending_atoms, on_event).await
+                    }
                 };
             });
         }
@@ -2296,8 +2521,18 @@ impl AtomicCore {
             let on_event = self.wrap_event_for_cache(on_event);
             executor::spawn(async move {
                 match bg_settings {
-                    Some(s) => embedding::process_tagging_batch_with_settings(storage, pending_atoms, on_event, s).await,
-                    None => embedding::process_tagging_batch(storage, pending_atoms, on_event).await,
+                    Some(s) => {
+                        embedding::process_tagging_batch_with_settings(
+                            storage,
+                            pending_atoms,
+                            on_event,
+                            s,
+                        )
+                        .await
+                    }
+                    None => {
+                        embedding::process_tagging_batch(storage, pending_atoms, on_event).await
+                    }
                 };
             });
         }
@@ -2307,7 +2542,11 @@ impl AtomicCore {
 
     /// Process a single atom's pipeline immediately using the latest persisted
     /// content. Intended for editor dismiss/finalize after draft autosaves.
-    pub async fn process_atom_pipeline<F>(&self, atom_id: &str, on_event: F) -> Result<(), AtomicCoreError>
+    pub async fn process_atom_pipeline<F>(
+        &self,
+        atom_id: &str,
+        on_event: F,
+    ) -> Result<(), AtomicCoreError>
     where
         F: Fn(EmbeddingEvent) + Send + Sync + 'static,
     {
@@ -2317,8 +2556,12 @@ impl AtomicCore {
             .await?
             .ok_or_else(|| AtomicCoreError::NotFound(format!("Atom not found: {}", atom_id)))?;
 
-        self.storage.set_embedding_status_sync(atom_id, "pending", None).await?;
-        self.storage.set_tagging_status_sync(atom_id, "pending", None).await?;
+        self.storage
+            .set_embedding_status_sync(atom_id, "pending", None)
+            .await?;
+        self.storage
+            .set_tagging_status_sync(atom_id, "pending", None)
+            .await?;
         tracing::info!(
             atom_id = %atom_id,
             has_content = !content.trim().is_empty(),
@@ -2367,7 +2610,13 @@ impl AtomicCore {
         let current_settings = self.get_settings().await?;
         let value_changed = current_settings.get(key).map(|s| s.as_str()) != Some(value);
 
-        let dimension_affecting_keys = ["provider", "embedding_model", "ollama_embedding_model", "openai_compat_embedding_model", "openai_compat_embedding_dimension"];
+        let dimension_affecting_keys = [
+            "provider",
+            "embedding_model",
+            "ollama_embedding_model",
+            "openai_compat_embedding_model",
+            "openai_compat_embedding_dimension",
+        ];
         let mut dimension_changed = false;
         let mut old_dim = 0usize;
         let mut new_dim = 0usize;
@@ -2405,17 +2654,28 @@ impl AtomicCore {
             // and resets every atom's embedding_status to 'pending'.
             self.storage.recreate_vector_index_sync(new_dim).await?;
             self.canvas_cache.invalidate();
-            tracing::info!(new_dim, "Recreated active database vector index for dimension change");
+            tracing::info!(
+                new_dim,
+                "Recreated active database vector index for dimension change"
+            );
             // Now spawn re-embedding — atoms are in 'pending' status after the recreate.
             let queued = self.spawn_reembed_pending(on_event.clone()).await?;
-            tracing::info!(queued, "Queued atoms for re-embedding after dimension change");
+            tracing::info!(
+                queued,
+                "Queued atoms for re-embedding after dimension change"
+            );
         }
 
         // Auto-retry failed atoms when provider config changes
         // (covers: URL, API key, model, provider type)
         let retry_keys = [
-            "provider", "embedding_model", "ollama_embedding_model", "ollama_host",
-            "openai_compat_embedding_model", "openai_compat_base_url", "openai_compat_api_key",
+            "provider",
+            "embedding_model",
+            "ollama_embedding_model",
+            "ollama_host",
+            "openai_compat_embedding_model",
+            "openai_compat_base_url",
+            "openai_compat_api_key",
             "openrouter_api_key",
         ];
         let mut retried_failed = 0i32;
@@ -2432,7 +2692,11 @@ impl AtomicCore {
             }
         }
 
-        let total_atoms = self.storage.count_pending_embeddings_sync().await.unwrap_or(0);
+        let total_atoms = self
+            .storage
+            .count_pending_embeddings_sync()
+            .await
+            .unwrap_or(0);
 
         Ok(SettingChangeResult {
             dimension_changed,
@@ -2456,9 +2720,10 @@ impl AtomicCore {
         let config = ProviderConfig::from_settings(&settings_map);
 
         match config.provider_type {
-            ProviderType::OpenRouter => {
-                Ok(config.openrouter_api_key.as_ref().map_or(false, |k| !k.is_empty()))
-            }
+            ProviderType::OpenRouter => Ok(config
+                .openrouter_api_key
+                .as_ref()
+                .map_or(false, |k| !k.is_empty())),
             ProviderType::Ollama => Ok(!config.ollama_host.is_empty()),
             ProviderType::OpenAICompat => Ok(!config.openai_compat_base_url.is_empty()),
         }
@@ -2470,12 +2735,22 @@ impl AtomicCore {
     }
 
     /// Get cached model capabilities from the settings table.
-    pub async fn get_cached_capabilities(&self) -> Result<Option<providers::models::ModelCapabilitiesCache>, AtomicCoreError> {
-        let json = self.storage.get_setting_sync("model_capabilities_cache").await?;
+    pub async fn get_cached_capabilities(
+        &self,
+    ) -> Result<Option<providers::models::ModelCapabilitiesCache>, AtomicCoreError> {
+        let json = self
+            .storage
+            .get_setting_sync("model_capabilities_cache")
+            .await?;
         match json {
             Some(j) => {
                 let cache: providers::models::ModelCapabilitiesCache = serde_json::from_str(&j)
-                    .map_err(|e| AtomicCoreError::Configuration(format!("Failed to parse capabilities cache: {}", e)))?;
+                    .map_err(|e| {
+                        AtomicCoreError::Configuration(format!(
+                            "Failed to parse capabilities cache: {}",
+                            e
+                        ))
+                    })?;
                 Ok(Some(cache))
             }
             None => Ok(None),
@@ -2483,10 +2758,16 @@ impl AtomicCore {
     }
 
     /// Save model capabilities cache to the settings table.
-    pub async fn save_capabilities_cache(&self, cache: &providers::models::ModelCapabilitiesCache) -> Result<(), AtomicCoreError> {
-        let json = serde_json::to_string(cache)
-            .map_err(|e| AtomicCoreError::Configuration(format!("Failed to serialize capabilities cache: {}", e)))?;
-        self.storage.set_setting_sync("model_capabilities_cache", &json).await
+    pub async fn save_capabilities_cache(
+        &self,
+        cache: &providers::models::ModelCapabilitiesCache,
+    ) -> Result<(), AtomicCoreError> {
+        let json = serde_json::to_string(cache).map_err(|e| {
+            AtomicCoreError::Configuration(format!("Failed to serialize capabilities cache: {}", e))
+        })?;
+        self.storage
+            .set_setting_sync("model_capabilities_cache", &json)
+            .await
     }
 
     // ==================== Import Operations ====================
@@ -2586,7 +2867,11 @@ impl AtomicCore {
             }
 
             // Check for duplicate by source_url
-            if self.storage.source_url_exists_sync(&note.source_url).await? {
+            if self
+                .storage
+                .source_url_exists_sync(&note.source_url)
+                .await?
+            {
                 stats.skipped += 1;
                 on_progress(ImportProgress {
                     current: index as i32 + 1,
@@ -2600,17 +2885,21 @@ impl AtomicCore {
             let atom_id = Uuid::new_v4().to_string();
 
             // Use insert_atom_impl for the atom insert
-            match self.storage.insert_atom_impl(
-                &atom_id,
-                &CreateAtomRequest {
-                    content: note.content.clone(),
-                    source_url: Some(note.source_url.clone()),
-                    published_at: None,
-                    tag_ids: vec![],
-                    ..Default::default()
-                },
-                &note.created_at,
-            ).await {
+            match self
+                .storage
+                .insert_atom_impl(
+                    &atom_id,
+                    &CreateAtomRequest {
+                        content: note.content.clone(),
+                        source_url: Some(note.source_url.clone()),
+                        published_at: None,
+                        tag_ids: vec![],
+                        ..Default::default()
+                    },
+                    &note.created_at,
+                )
+                .await
+            {
                 Ok(_) => {
                     imported_atoms.push((atom_id.clone(), note.content.clone()));
                 }
@@ -2634,7 +2923,11 @@ impl AtomicCore {
                     "Obsidian import is not yet supported with Postgres backend".to_string(),
                 )
             })?;
-            let conn = sqlite.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+            let conn = sqlite
+                .db
+                .conn
+                .lock()
+                .map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
             let mut folder_tag_ids: Vec<String> = Vec::new();
             for htag in &note.folder_tags {
                 let parent_id = if htag.parent_path.is_empty() {
@@ -2644,13 +2937,9 @@ impl AtomicCore {
                     folder_tag_ids.get(parent_index).map(|s| s.as_str())
                 };
 
-                if let Some(tag_id) = get_or_create_tag(
-                    &conn,
-                    &mut tag_cache,
-                    &htag.name,
-                    parent_id,
-                    &mut stats,
-                ) {
+                if let Some(tag_id) =
+                    get_or_create_tag(&conn, &mut tag_cache, &htag.name, parent_id, &mut stats)
+                {
                     folder_tag_ids.push(tag_id.clone());
                     if let Err(e) = conn.execute(
                         "INSERT OR IGNORE INTO atom_tags (atom_id, tag_id) VALUES (?1, ?2)",
@@ -2692,7 +2981,10 @@ impl AtomicCore {
         // Trigger embedding processing for all imported atoms
         if !imported_atoms.is_empty() {
             for (atom_id, _) in &imported_atoms {
-                self.storage.set_embedding_status_sync(atom_id, "processing", None).await.ok();
+                self.storage
+                    .set_embedding_status_sync(atom_id, "processing", None)
+                    .await
+                    .ok();
             }
             self.canvas_cache.invalidate();
 
@@ -2703,8 +2995,27 @@ impl AtomicCore {
             let canvas_cache = Some(self.canvas_cache.clone());
             executor::spawn(async move {
                 match bg_settings {
-                    Some(s) => embedding::process_embedding_batch_with_settings(storage_clone, input, false, on_event, s, canvas_cache).await,
-                    None => embedding::process_embedding_batch(storage_clone, input, false, on_event, canvas_cache).await,
+                    Some(s) => {
+                        embedding::process_embedding_batch_with_settings(
+                            storage_clone,
+                            input,
+                            false,
+                            on_event,
+                            s,
+                            canvas_cache,
+                        )
+                        .await
+                    }
+                    None => {
+                        embedding::process_embedding_batch(
+                            storage_clone,
+                            input,
+                            false,
+                            on_event,
+                            canvas_cache,
+                        )
+                        .await
+                    }
                 };
             });
         }
@@ -2762,16 +3073,21 @@ impl AtomicCore {
         let content_length = resolved.markdown.len();
 
         // Create atom (this triggers embedding in background)
-        let atom = self.create_atom(
-            CreateAtomRequest {
-                content: resolved.markdown,
-                source_url: Some(request.url.clone()),
-                published_at: request.published_at,
-                tag_ids: request.tag_ids,
-                ..Default::default()
-            },
-            on_embed,
-        ).await?.ok_or_else(|| AtomicCoreError::Validation("Atom creation returned None".to_string()))?;
+        let atom = self
+            .create_atom(
+                CreateAtomRequest {
+                    content: resolved.markdown,
+                    source_url: Some(request.url.clone()),
+                    published_at: request.published_at,
+                    tag_ids: request.tag_ids,
+                    ..Default::default()
+                },
+                on_embed,
+            )
+            .await?
+            .ok_or_else(|| {
+                AtomicCoreError::Validation("Atom creation returned None".to_string())
+            })?;
 
         let result = ingest::IngestionResult {
             atom_id: atom.atom.id.clone(),
@@ -2844,16 +3160,19 @@ impl AtomicCore {
             .await
             .map_err(|e| AtomicCoreError::Ingestion(format!("Cannot fetch feed: {}", e)))?;
 
-        let parsed = ingest::rss::parse_feed(&feed_data)
-            .map_err(|e| AtomicCoreError::Ingestion(e))?;
+        let parsed =
+            ingest::rss::parse_feed(&feed_data).map_err(|e| AtomicCoreError::Ingestion(e))?;
 
-        let feed = self.storage.create_feed_sync(
-            &request.url,
-            parsed.title.as_deref(),
-            parsed.site_url.as_deref(),
-            request.poll_interval,
-            &request.tag_ids,
-        ).await?;
+        let feed = self
+            .storage
+            .create_feed_sync(
+                &request.url,
+                parsed.title.as_deref(),
+                parsed.site_url.as_deref(),
+                request.poll_interval,
+                &request.tag_ids,
+            )
+            .await?;
 
         // Poll immediately after creation
         let core = self.clone();
@@ -2876,14 +3195,20 @@ impl AtomicCore {
     }
 
     /// Update a feed's settings.
-    pub async fn update_feed(&self, id: &str, request: UpdateFeedRequest) -> Result<Feed, AtomicCoreError> {
-        self.storage.update_feed_sync(
-            id,
-            None, // title not in UpdateFeedRequest
-            request.poll_interval,
-            request.is_paused,
-            request.tag_ids.as_deref(),
-        ).await
+    pub async fn update_feed(
+        &self,
+        id: &str,
+        request: UpdateFeedRequest,
+    ) -> Result<Feed, AtomicCoreError> {
+        self.storage
+            .update_feed_sync(
+                id,
+                None, // title not in UpdateFeedRequest
+                request.poll_interval,
+                request.is_paused,
+                request.tag_ids.as_deref(),
+            )
+            .await
     }
 
     /// Delete a feed. Does NOT delete atoms created from this feed.
@@ -2943,7 +3268,8 @@ impl AtomicCore {
             let link = match &item.link {
                 Some(l) => l.clone(),
                 None => {
-                    self.mark_feed_item_skipped(feed_id, &item.guid, "No link in feed item").await?;
+                    self.mark_feed_item_skipped(feed_id, &item.guid, "No link in feed item")
+                        .await?;
                     skipped += 1;
                     continue;
                 }
@@ -2952,32 +3278,43 @@ impl AtomicCore {
             let request_id = Uuid::new_v4().to_string();
             match ingest::resolve_url(&link, &request_id, &on_ingest).await {
                 Ok(resolved) => {
-                    match self.create_atom(
-                        CreateAtomRequest {
-                            content: resolved.markdown,
-                            source_url: Some(link),
-                            published_at: item.published_at.clone(),
-                            tag_ids: feed.tag_ids.clone(),
-                            skip_if_source_exists: true,
-                        },
-                        on_embed.clone(),
-                    ).await {
+                    match self
+                        .create_atom(
+                            CreateAtomRequest {
+                                content: resolved.markdown,
+                                source_url: Some(link),
+                                published_at: item.published_at.clone(),
+                                tag_ids: feed.tag_ids.clone(),
+                                skip_if_source_exists: true,
+                            },
+                            on_embed.clone(),
+                        )
+                        .await
+                    {
                         Ok(Some(atom)) => {
-                            self.complete_feed_item(feed_id, &item.guid, &atom.atom.id).await?;
+                            self.complete_feed_item(feed_id, &item.guid, &atom.atom.id)
+                                .await?;
                             new_items += 1;
                         }
                         Ok(None) => {
-                            self.mark_feed_item_skipped(feed_id, &item.guid, "duplicate source_url").await?;
+                            self.mark_feed_item_skipped(
+                                feed_id,
+                                &item.guid,
+                                "duplicate source_url",
+                            )
+                            .await?;
                             skipped += 1;
                         }
                         Err(e) => {
-                            self.mark_feed_item_skipped(feed_id, &item.guid, &e.to_string()).await?;
+                            self.mark_feed_item_skipped(feed_id, &item.guid, &e.to_string())
+                                .await?;
                             errors += 1;
                         }
                     }
                 }
                 Err(reason) => {
-                    self.mark_feed_item_skipped(feed_id, &item.guid, &reason).await?;
+                    self.mark_feed_item_skipped(feed_id, &item.guid, &reason)
+                        .await?;
                     skipped += 1;
                 }
             }
@@ -2987,11 +3324,13 @@ impl AtomicCore {
         self.storage.mark_feed_polled_sync(feed_id, None).await?;
         // Backfill title/site_url from feed data if not already set
         if parsed.title.is_some() || parsed.site_url.is_some() {
-            self.storage.backfill_feed_metadata_sync(
-                feed_id,
-                parsed.title.as_deref(),
-                parsed.site_url.as_deref(),
-            ).await?;
+            self.storage
+                .backfill_feed_metadata_sync(
+                    feed_id,
+                    parsed.title.as_deref(),
+                    parsed.site_url.as_deref(),
+                )
+                .await?;
         }
 
         let result = ingest::FeedPollResult {
@@ -3028,7 +3367,10 @@ impl AtomicCore {
 
         let mut results = Vec::new();
         for feed_id in due_feed_ids {
-            match self.poll_feed(&feed_id, on_ingest.clone(), on_embed.clone()).await {
+            match self
+                .poll_feed(&feed_id, on_ingest.clone(), on_embed.clone())
+                .await
+            {
                 Ok(r) => results.push(r),
                 Err(e) => {
                     tracing::error!(feed_id = %feed_id, error = %e, "Feed poll failed");
@@ -3045,22 +3387,42 @@ impl AtomicCore {
     }
 
     /// Mark a claimed feed item as successfully ingested with its atom_id.
-    async fn complete_feed_item(&self, feed_id: &str, guid: &str, atom_id: &str) -> Result<(), AtomicCoreError> {
-        self.storage.complete_feed_item_sync(feed_id, guid, atom_id).await
+    async fn complete_feed_item(
+        &self,
+        feed_id: &str,
+        guid: &str,
+        atom_id: &str,
+    ) -> Result<(), AtomicCoreError> {
+        self.storage
+            .complete_feed_item_sync(feed_id, guid, atom_id)
+            .await
     }
 
     /// Mark a claimed feed item as skipped with a reason.
-    async fn mark_feed_item_skipped(&self, feed_id: &str, guid: &str, reason: &str) -> Result<(), AtomicCoreError> {
-        self.storage.mark_feed_item_skipped_sync(feed_id, guid, reason).await
+    async fn mark_feed_item_skipped(
+        &self,
+        feed_id: &str,
+        guid: &str,
+        reason: &str,
+    ) -> Result<(), AtomicCoreError> {
+        self.storage
+            .mark_feed_item_skipped_sync(feed_id, guid, reason)
+            .await
     }
 
     /// Helper: update a feed's last_error field.
     async fn update_feed_error(&self, feed_id: &str, error: &str) {
-        let _ = self.storage.mark_feed_polled_sync(feed_id, Some(error)).await;
+        let _ = self
+            .storage
+            .mark_feed_polled_sync(feed_id, Some(error))
+            .await;
     }
 
     /// Get suggested wiki articles (tags without articles, ranked by demand)
-    pub async fn get_suggested_wiki_articles(&self, limit: i32) -> Result<Vec<SuggestedArticle>, AtomicCoreError> {
+    pub async fn get_suggested_wiki_articles(
+        &self,
+        limit: i32,
+    ) -> Result<Vec<SuggestedArticle>, AtomicCoreError> {
         self.storage.get_suggested_wiki_articles_sync(limit).await
     }
 
@@ -3222,10 +3584,8 @@ pub(crate) fn get_dominant_tags_for_cluster(
 
     let mut stmt = conn.prepare(&sql)?;
 
-    let params: Vec<&dyn rusqlite::ToSql> = atom_ids
-        .iter()
-        .map(|s| s as &dyn rusqlite::ToSql)
-        .collect();
+    let params: Vec<&dyn rusqlite::ToSql> =
+        atom_ids.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
 
     let tags: Vec<String> = stmt
         .query_map(params.as_slice(), |row| row.get(0))?
@@ -3274,13 +3634,18 @@ pub(crate) fn build_neighborhood_graph(
     // Depth 1 tag connections
     let center_tags: Vec<String> = {
         let mut stmt = conn.prepare("SELECT tag_id FROM atom_tags WHERE atom_id = ?1")?;
-        let results = stmt.query_map([atom_id], |row| row.get(0))?
+        let results = stmt
+            .query_map([atom_id], |row| row.get(0))?
             .collect::<Result<Vec<_>, _>>()?;
         results
     };
 
     if !center_tags.is_empty() {
-        let placeholders: String = center_tags.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let placeholders: String = center_tags
+            .iter()
+            .map(|_| "?")
+            .collect::<Vec<_>>()
+            .join(",");
         let query = format!(
             "SELECT atom_id, COUNT(*) as shared_count
              FROM atom_tags
@@ -3357,7 +3722,8 @@ pub(crate) fn build_neighborhood_graph(
     let atom_rows: Vec<Atom> = atom_stmt
         .query_map(rusqlite::params_from_iter(atom_ids.iter()), atom_from_row)?
         .collect::<Result<Vec<_>, _>>()?;
-    let atom_lookup: HashMap<String, Atom> = atom_rows.into_iter().map(|a| (a.id.clone(), a)).collect();
+    let atom_lookup: HashMap<String, Atom> =
+        atom_rows.into_iter().map(|a| (a.id.clone(), a)).collect();
 
     // Batch fetch tags for all atoms
     let tag_map = get_atom_tags_map_for_ids(conn, &atom_ids)?;
@@ -3368,7 +3734,10 @@ pub(crate) fn build_neighborhood_graph(
             let tags = tag_map.get(aid).cloned().unwrap_or_default();
             let depth = *atom_depths.get(aid).unwrap_or(&0);
             atoms.push(NeighborhoodAtom {
-                atom: AtomWithTags { atom: atom.clone(), tags },
+                atom: AtomWithTags {
+                    atom: atom.clone(),
+                    tags,
+                },
                 depth,
             });
         }
@@ -3387,7 +3756,11 @@ pub(crate) fn build_neighborhood_graph(
     let mut edge_stmt = conn.prepare(&edge_query)?;
     let semantic_edges: HashMap<(String, String), f32> = edge_stmt
         .query_map(rusqlite::params_from_iter(edge_params.iter()), |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, f32>(2)?))
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, f32>(2)?,
+            ))
         })?
         .filter_map(|r| r.ok())
         .map(|(src, tgt, score)| ((src, tgt), score))
@@ -3406,7 +3779,11 @@ pub(crate) fn build_neighborhood_graph(
     let mut shared_stmt = conn.prepare(&shared_tag_query)?;
     let shared_tags_map: HashMap<(String, String), i32> = shared_stmt
         .query_map(rusqlite::params_from_iter(edge_params.iter()), |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, i32>(2)?))
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i32>(2)?,
+            ))
         })?
         .filter_map(|r| r.ok())
         .map(|(a, b, count)| ((a, b), count))
@@ -3426,7 +3803,11 @@ pub(crate) fn build_neighborhood_graph(
                 .copied();
 
             // Look up shared tags (stored with a < b ordering)
-            let (key_a, key_b) = if id_a < id_b { (id_a, id_b) } else { (id_b, id_a) };
+            let (key_a, key_b) = if id_a < id_b {
+                (id_a, id_b)
+            } else {
+                (id_b, id_a)
+            };
             let shared_tags = shared_tags_map
                 .get(&(key_a.clone(), key_b.clone()))
                 .copied()
@@ -3494,7 +3875,8 @@ fn is_non_text_line(trimmed: &str) -> bool {
     trimmed.starts_with("```") ||                              // code fence
     trimmed.starts_with("![") ||                               // image
     trimmed.chars().all(|c| c == '-' || c == '*' || c == '_' || c == ' ') && trimmed.len() >= 3 || // hr
-    (trimmed.starts_with("http://") || trimmed.starts_with("https://")) && !trimmed.contains(' ') // bare URL
+    (trimmed.starts_with("http://") || trimmed.starts_with("https://")) && !trimmed.contains(' ')
+    // bare URL
 }
 
 /// Extract a plain-text title (first line) and snippet (subsequent text) from markdown content.
@@ -3611,15 +3993,16 @@ pub(crate) fn atom_from_row(row: &rusqlite::Row) -> rusqlite::Result<Atom> {
 }
 
 /// Get tags for a specific atom
-pub(crate) fn get_tags_for_atom(conn: &Connection, atom_id: &str) -> Result<Vec<Tag>, AtomicCoreError> {
-    let mut stmt = conn
-        .prepare(
-            "SELECT t.id, t.name, t.parent_id, t.created_at, t.is_autotag_target
+pub(crate) fn get_tags_for_atom(
+    conn: &Connection,
+    atom_id: &str,
+) -> Result<Vec<Tag>, AtomicCoreError> {
+    let mut stmt = conn.prepare(
+        "SELECT t.id, t.name, t.parent_id, t.created_at, t.is_autotag_target
              FROM tags t
              INNER JOIN atom_tags at ON t.id = at.tag_id
              WHERE at.atom_id = ?1",
-        )
-        ?;
+    )?;
 
     let tags = stmt
         .query_map([atom_id], |row| {
@@ -3630,39 +4013,37 @@ pub(crate) fn get_tags_for_atom(conn: &Connection, atom_id: &str) -> Result<Vec<
                 created_at: row.get(3)?,
                 is_autotag_target: row.get::<_, i32>(4)? != 0,
             })
-        })
-        ?
-        .collect::<Result<Vec<_>, _>>()
-        ?;
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
 
     Ok(tags)
 }
 
 /// Bulk fetch all atom-tag relationships in a single query.
 /// Returns a map from atom_id to Vec<Tag>.
-pub(crate) fn get_all_atom_tags_map(conn: &Connection) -> Result<std::collections::HashMap<String, Vec<Tag>>, AtomicCoreError> {
-    let mut stmt = conn
-        .prepare(
-            "SELECT at.atom_id, t.id, t.name, t.parent_id, t.created_at, t.is_autotag_target
+pub(crate) fn get_all_atom_tags_map(
+    conn: &Connection,
+) -> Result<std::collections::HashMap<String, Vec<Tag>>, AtomicCoreError> {
+    let mut stmt = conn.prepare(
+        "SELECT at.atom_id, t.id, t.name, t.parent_id, t.created_at, t.is_autotag_target
              FROM atom_tags at
              INNER JOIN tags t ON at.tag_id = t.id",
-        )?;
+    )?;
 
     let mut map: std::collections::HashMap<String, Vec<Tag>> = std::collections::HashMap::new();
 
-    let rows = stmt
-        .query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                Tag {
-                    id: row.get(1)?,
-                    name: row.get(2)?,
-                    parent_id: row.get(3)?,
-                    created_at: row.get(4)?,
-                    is_autotag_target: row.get::<_, i32>(5)? != 0,
-                },
-            ))
-        })?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            Tag {
+                id: row.get(1)?,
+                name: row.get(2)?,
+                parent_id: row.get(3)?,
+                created_at: row.get(4)?,
+                is_autotag_target: row.get::<_, i32>(5)? != 0,
+            },
+        ))
+    })?;
 
     for row in rows {
         let (atom_id, tag) = row?;
@@ -3673,7 +4054,10 @@ pub(crate) fn get_all_atom_tags_map(conn: &Connection) -> Result<std::collection
 }
 
 /// Bulk fetch atom-tag relationships for a specific set of atom IDs.
-pub(crate) fn get_atom_tags_map_for_ids(conn: &Connection, atom_ids: &[String]) -> Result<std::collections::HashMap<String, Vec<Tag>>, AtomicCoreError> {
+pub(crate) fn get_atom_tags_map_for_ids(
+    conn: &Connection,
+    atom_ids: &[String],
+) -> Result<std::collections::HashMap<String, Vec<Tag>>, AtomicCoreError> {
     if atom_ids.is_empty() {
         return Ok(std::collections::HashMap::new());
     }
@@ -3691,19 +4075,18 @@ pub(crate) fn get_atom_tags_map_for_ids(conn: &Connection, atom_ids: &[String]) 
 
     let mut map: std::collections::HashMap<String, Vec<Tag>> = std::collections::HashMap::new();
 
-    let rows = stmt
-        .query_map(rusqlite::params_from_iter(atom_ids.iter()), |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                Tag {
-                    id: row.get(1)?,
-                    name: row.get(2)?,
-                    parent_id: row.get(3)?,
-                    created_at: row.get(4)?,
-                    is_autotag_target: row.get::<_, i32>(5)? != 0,
-                },
-            ))
-        })?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(atom_ids.iter()), |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            Tag {
+                id: row.get(1)?,
+                name: row.get(2)?,
+                parent_id: row.get(3)?,
+                created_at: row.get(4)?,
+                is_autotag_target: row.get::<_, i32>(5)? != 0,
+            },
+        ))
+    })?;
 
     for row in rows {
         let (atom_id, tag) = row?;
@@ -3752,8 +4135,13 @@ pub(crate) fn build_tag_tree_with_counts(
         let mut result: Vec<TagWithCount> = children
             .iter()
             .map(|tag| {
-                let child_nodes =
-                    build_subtree(Some(&tag.id), children_by_parent, direct_counts, min_count, false);
+                let child_nodes = build_subtree(
+                    Some(&tag.id),
+                    children_by_parent,
+                    direct_counts,
+                    min_count,
+                    false,
+                );
                 let own_count = direct_counts.get(&tag.id).copied().unwrap_or(0);
                 let children_count: i32 = child_nodes.iter().map(|c| c.atom_count).sum();
                 TagWithCount {
@@ -3822,7 +4210,13 @@ mod tests {
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
             )
             .unwrap();
-        Tag { id, name: tag_name, parent_id, created_at, is_autotag_target: is_autotag_target != 0 }
+        Tag {
+            id,
+            name: tag_name,
+            parent_id,
+            created_at,
+            is_autotag_target: is_autotag_target != 0,
+        }
     }
 
     /// Test utility: Create a test atom
@@ -3952,7 +4346,10 @@ mod tests {
         // Use seeded Topics, add hierarchy: Topics -> AI -> Machine Learning
         let topics = get_seeded_tag(&db, "Topics");
         let ai = db.create_tag("AI", Some(&topics.id)).await.unwrap();
-        let _ml = db.create_tag("Machine Learning", Some(&ai.id)).await.unwrap();
+        let _ml = db
+            .create_tag("Machine Learning", Some(&ai.id))
+            .await
+            .unwrap();
 
         let all_tags = db.get_all_tags().await.unwrap();
 
@@ -3961,7 +4358,10 @@ mod tests {
         assert_eq!(topics_node.children.len(), 1);
         assert_eq!(topics_node.children[0].tag.name, "AI");
         assert_eq!(topics_node.children[0].children.len(), 1);
-        assert_eq!(topics_node.children[0].children[0].tag.name, "Machine Learning");
+        assert_eq!(
+            topics_node.children[0].children[0].tag.name,
+            "Machine Learning"
+        );
     }
 
     #[tokio::test]
@@ -3981,6 +4381,86 @@ mod tests {
         // Verify it's gone
         let tags_after = db.get_all_tags().await.unwrap();
         assert!(!tags_after.iter().any(|t| t.tag.id == tag_id));
+    }
+
+    #[tokio::test]
+    async fn test_delete_tag_removes_wiki_fts_rows_for_descendants() {
+        let (db, _temp) = create_test_db().await;
+
+        let parent = db.create_tag("Parent", None).await.unwrap();
+        let child = db.create_tag("Child", Some(&parent.id)).await.unwrap();
+
+        {
+            let sqlite = db.storage.as_sqlite().unwrap();
+            let conn = sqlite.db.conn.lock().unwrap();
+            let now = chrono::Utc::now().to_rfc3339();
+            for (wiki_id, tag_id, tag_name, content) in [
+                (
+                    uuid::Uuid::new_v4().to_string(),
+                    parent.id.clone(),
+                    "Parent".to_string(),
+                    "parent wiki".to_string(),
+                ),
+                (
+                    uuid::Uuid::new_v4().to_string(),
+                    child.id.clone(),
+                    "Child".to_string(),
+                    "child wiki".to_string(),
+                ),
+            ] {
+                conn.execute(
+                    "INSERT INTO wiki_articles (id, tag_id, content, created_at, updated_at, atom_count)
+                     VALUES (?1, ?2, ?3, ?4, ?5, 0)",
+                    rusqlite::params![&wiki_id, &tag_id, &content, &now, &now],
+                )
+                .unwrap();
+                conn.execute(
+                    "INSERT INTO wiki_articles_fts (id, tag_id, tag_name, content)
+                     VALUES (?1, ?2, ?3, ?4)",
+                    rusqlite::params![&wiki_id, &tag_id, &tag_name, &content],
+                )
+                .unwrap();
+            }
+        }
+
+        db.delete_tag(&parent.id, true).await.unwrap();
+
+        let sqlite = db.storage.as_sqlite().unwrap();
+        let conn = sqlite.db.conn.lock().unwrap();
+        let remaining_fts: i64 = conn
+            .query_row("SELECT COUNT(*) FROM wiki_articles_fts", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(remaining_fts, 0);
+    }
+
+    #[tokio::test]
+    async fn test_global_search_ignores_stale_wiki_fts_rows() {
+        let (db, _temp) = create_test_db().await;
+
+        let stale_tag = db.create_tag("StaleTag", None).await.unwrap();
+
+        {
+            let sqlite = db.storage.as_sqlite().unwrap();
+            let conn = sqlite.db.conn.lock().unwrap();
+            let stale_wiki_id = uuid::Uuid::new_v4().to_string();
+            conn.execute(
+                "INSERT INTO wiki_articles_fts (id, tag_id, tag_name, content)
+                 VALUES (?1, ?2, ?3, ?4)",
+                rusqlite::params![
+                    &stale_wiki_id,
+                    &stale_tag.id,
+                    &stale_tag.name,
+                    "orphaned wiki content"
+                ],
+            )
+            .unwrap();
+        }
+
+        let response = db.search_global_keyword("orphaned", 10).await.unwrap();
+
+        assert!(response.wiki.is_empty());
     }
 
     // ==================== Atom-Tag Relationship Tests ====================
@@ -4095,11 +4575,20 @@ mod tests {
         // Backslash escapes
         assert_eq!(strip_inline_markdown(r"U\.S\. policy"), "U.S. policy");
         // Bold and italic
-        assert_eq!(strip_inline_markdown("**bold** and *italic*"), "bold and italic");
+        assert_eq!(
+            strip_inline_markdown("**bold** and *italic*"),
+            "bold and italic"
+        );
         // Links: keep text, drop URL
-        assert_eq!(strip_inline_markdown("[click here](https://example.com)"), "click here");
+        assert_eq!(
+            strip_inline_markdown("[click here](https://example.com)"),
+            "click here"
+        );
         // Images: drop entirely
-        assert_eq!(strip_inline_markdown("before ![alt](img.png) after"), "before  after");
+        assert_eq!(
+            strip_inline_markdown("before ![alt](img.png) after"),
+            "before  after"
+        );
         // Inline code
         assert_eq!(strip_inline_markdown("use `foo()` here"), "use foo() here");
         // Mixed
@@ -4108,5 +4597,4 @@ mod tests {
             "The U.S. has a link"
         );
     }
-
 }

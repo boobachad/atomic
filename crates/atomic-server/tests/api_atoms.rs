@@ -23,10 +23,14 @@ struct TestCtx {
 impl TestCtx {
     async fn new() -> Self {
         let temp = tempfile::TempDir::new().unwrap();
-        let manager = Arc::new(
-            atomic_core::DatabaseManager::new(temp.path()).unwrap(),
-        );
-        let (_info, raw_token) = manager.active_core().await.unwrap().create_api_token("test").await.unwrap();
+        let manager = Arc::new(atomic_core::DatabaseManager::new(temp.path()).unwrap());
+        let (_info, raw_token) = manager
+            .active_core()
+            .await
+            .unwrap()
+            .create_api_token("test")
+            .await
+            .unwrap();
         let (event_tx, _) = broadcast::channel(16);
         let state = web::Data::new(atomic_server::state::AppState {
             manager,
@@ -58,15 +62,13 @@ fn test_app(
         InitError = (),
     >,
 > {
-    App::new()
-        .app_data(ctx.state.clone())
-        .service(
-            web::scope("/api")
-                .wrap(atomic_server::auth::BearerAuth {
-                    state: ctx.state.clone(),
-                })
-                .configure(atomic_server::routes::configure_routes),
-        )
+    App::new().app_data(ctx.state.clone()).service(
+        web::scope("/api")
+            .wrap(atomic_server::auth::BearerAuth {
+                state: ctx.state.clone(),
+            })
+            .configure(atomic_server::routes::configure_routes),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -419,14 +421,10 @@ async fn test_unauthenticated_request_rejected() {
 #[actix_web::test]
 async fn test_openapi_spec_is_valid() {
     let ctx = TestCtx::new().await;
-    let app = actix_test::init_service(
-        App::new()
-            .app_data(ctx.state.clone())
-            .route(
-                "/api/docs/openapi.json",
-                web::get().to(atomic_server::openapi_spec),
-            ),
-    )
+    let app = actix_test::init_service(App::new().app_data(ctx.state.clone()).route(
+        "/api/docs/openapi.json",
+        web::get().to(atomic_server::openapi_spec),
+    ))
     .await;
 
     let req = actix_test::TestRequest::get()

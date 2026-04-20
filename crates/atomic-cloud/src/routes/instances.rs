@@ -65,9 +65,7 @@ pub async fn start(state: web::Data<CloudState>, req: HttpRequest) -> HttpRespon
 
     let machine_id = match &instance.fly_machine_id {
         Some(id) => id.clone(),
-        None => {
-            return CloudError::BadRequest("Instance not yet provisioned".into()).to_response()
-        }
+        None => return CloudError::BadRequest("Instance not yet provisioned".into()).to_response(),
     };
 
     match state
@@ -76,8 +74,7 @@ pub async fn start(state: web::Data<CloudState>, req: HttpRequest) -> HttpRespon
         .await
     {
         Ok(()) => {
-            let _ =
-                crate::db::update_instance_status(&state.db, instance.id, "running").await;
+            let _ = crate::db::update_instance_status(&state.db, instance.id, "running").await;
             HttpResponse::Ok().json(serde_json::json!({ "status": "starting" }))
         }
         Err(e) => e.to_response(),
@@ -93,9 +90,7 @@ pub async fn stop(state: web::Data<CloudState>, req: HttpRequest) -> HttpRespons
 
     let machine_id = match &instance.fly_machine_id {
         Some(id) => id.clone(),
-        None => {
-            return CloudError::BadRequest("Instance not yet provisioned".into()).to_response()
-        }
+        None => return CloudError::BadRequest("Instance not yet provisioned".into()).to_response(),
     };
 
     match state
@@ -104,8 +99,7 @@ pub async fn stop(state: web::Data<CloudState>, req: HttpRequest) -> HttpRespons
         .await
     {
         Ok(()) => {
-            let _ =
-                crate::db::update_instance_status(&state.db, instance.id, "stopped").await;
+            let _ = crate::db::update_instance_status(&state.db, instance.id, "stopped").await;
             HttpResponse::Ok().json(serde_json::json!({ "status": "stopped" }))
         }
         Err(e) => e.to_response(),
@@ -121,9 +115,7 @@ pub async fn restart(state: web::Data<CloudState>, req: HttpRequest) -> HttpResp
 
     let machine_id = match &instance.fly_machine_id {
         Some(id) => id.clone(),
-        None => {
-            return CloudError::BadRequest("Instance not yet provisioned".into()).to_response()
-        }
+        None => return CloudError::BadRequest("Instance not yet provisioned".into()).to_response(),
     };
 
     // Stop then start
@@ -141,8 +133,7 @@ pub async fn restart(state: web::Data<CloudState>, req: HttpRequest) -> HttpResp
         .await
     {
         Ok(()) => {
-            let _ =
-                crate::db::update_instance_status(&state.db, instance.id, "running").await;
+            let _ = crate::db::update_instance_status(&state.db, instance.id, "running").await;
             HttpResponse::Ok().json(serde_json::json!({ "status": "restarting" }))
         }
         Err(e) => e.to_response(),

@@ -29,18 +29,32 @@ pub async fn set_setting(
     let value = body.into_inner().value;
 
     // Handle dimension-affecting settings via set_setting_with_reembed (avoids deadlock)
-    let dimension_keys = ["provider", "embedding_model", "ollama_embedding_model", "openai_compat_embedding_model", "openai_compat_embedding_dimension"];
+    let dimension_keys = [
+        "provider",
+        "embedding_model",
+        "ollama_embedding_model",
+        "openai_compat_embedding_model",
+        "openai_compat_embedding_dimension",
+    ];
     if dimension_keys.contains(&key.as_str()) {
         let manager = state.manager.clone();
         let active_id = state.manager.active_id().unwrap_or_default();
         let on_event = crate::event_bridge::embedding_event_callback(state.event_tx.clone());
-        let result = db.0.set_setting_with_reembed(&key, &value, on_event.clone()).await;
+        let result =
+            db.0.set_setting_with_reembed(&key, &value, on_event.clone())
+                .await;
         // If dimension changed, recreate vector indexes on all other databases
         // AND enqueue their atoms for re-embedding.
         if let Ok(ref r) = &result {
             if r.dimension_changed {
-                if let Err(e) = manager.recreate_other_vector_indexes(r.new_dim, &active_id).await {
-                    tracing::error!("Failed to recreate vector indexes on other databases: {}", e);
+                if let Err(e) = manager
+                    .recreate_other_vector_indexes(r.new_dim, &active_id)
+                    .await
+                {
+                    tracing::error!(
+                        "Failed to recreate vector indexes on other databases: {}",
+                        e
+                    );
                 } else {
                     // Enqueue re-embedding for every non-active database.
                     match manager.list_databases().await {
@@ -51,7 +65,10 @@ pub async fn set_setting(
                                 }
                                 match manager.get_core(&db_info.id).await {
                                     Ok(other_core) => {
-                                        match other_core.spawn_reembed_pending(on_event.clone()).await {
+                                        match other_core
+                                            .spawn_reembed_pending(on_event.clone())
+                                            .await
+                                        {
                                             Ok(n) => tracing::info!(
                                                 db_id = %db_info.id,
                                                 db_name = %db_info.name,
@@ -91,9 +108,7 @@ pub struct TestOpenRouterBody {
 }
 
 #[utoipa::path(post, path = "/api/settings/test-openrouter", request_body = TestOpenRouterBody, responses((status = 200, description = "Connection successful"), (status = 400, description = "API error", body = ApiErrorResponse)), tag = "settings")]
-pub async fn test_openrouter_connection(
-    body: web::Json<TestOpenRouterBody>,
-) -> HttpResponse {
+pub async fn test_openrouter_connection(body: web::Json<TestOpenRouterBody>) -> HttpResponse {
     // Validate the key against the authenticated `/key` endpoint rather than a
     // real chat completion. This avoids spending credits and exercising a
     // specific model just to confirm the key is valid.
@@ -131,9 +146,7 @@ pub struct TestOpenAICompatBody {
 }
 
 #[utoipa::path(post, path = "/api/settings/test-openai-compat", request_body = TestOpenAICompatBody, responses((status = 200, description = "Connection successful"), (status = 400, description = "API error", body = ApiErrorResponse)), tag = "settings")]
-pub async fn test_openai_compat_connection(
-    body: web::Json<TestOpenAICompatBody>,
-) -> HttpResponse {
+pub async fn test_openai_compat_connection(body: web::Json<TestOpenAICompatBody>) -> HttpResponse {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
         .build()

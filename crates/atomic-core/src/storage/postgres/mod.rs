@@ -7,25 +7,25 @@
 #[cfg(feature = "postgres")]
 mod atoms;
 #[cfg(feature = "postgres")]
-mod tags;
-#[cfg(feature = "postgres")]
-mod chunks;
-#[cfg(feature = "postgres")]
-mod search;
+mod briefings;
 #[cfg(feature = "postgres")]
 mod chat;
 #[cfg(feature = "postgres")]
-mod wiki;
-#[cfg(feature = "postgres")]
-mod briefings;
-#[cfg(feature = "postgres")]
-mod feeds;
+mod chunks;
 #[cfg(feature = "postgres")]
 mod clusters;
 #[cfg(feature = "postgres")]
-mod settings;
+mod feeds;
 #[cfg(feature = "postgres")]
 mod oauth;
+#[cfg(feature = "postgres")]
+mod search;
+#[cfg(feature = "postgres")]
+mod settings;
+#[cfg(feature = "postgres")]
+mod tags;
+#[cfg(feature = "postgres")]
+mod wiki;
 
 #[cfg(feature = "postgres")]
 use crate::error::AtomicCoreError;
@@ -62,8 +62,13 @@ impl PostgresStorage {
             .acquire_timeout(std::time::Duration::from_secs(10))
             .connect(database_url)
             .await
-            .map_err(|e| AtomicCoreError::DatabaseOperation(format!("Postgres connection failed: {}", e)))?;
-        Ok(Self { pool, db_id: db_id.to_string() })
+            .map_err(|e| {
+                AtomicCoreError::DatabaseOperation(format!("Postgres connection failed: {}", e))
+            })?;
+        Ok(Self {
+            pool,
+            db_id: db_id.to_string(),
+        })
     }
 
     /// Create a new PostgresStorage sharing the same pool but with a different db_id.
@@ -109,9 +114,12 @@ impl PostgresStorage {
             .bind(MIGRATION_LOCK_KEY)
             .execute(&self.pool)
             .await
-            .map_err(|e| AtomicCoreError::DatabaseOperation(
-                format!("Failed to acquire migration lock: {}", e)
-            ))?;
+            .map_err(|e| {
+                AtomicCoreError::DatabaseOperation(format!(
+                    "Failed to acquire migration lock: {}",
+                    e
+                ))
+            })?;
 
         let result = self.run_migrations_inner(migrations).await;
 
@@ -125,7 +133,10 @@ impl PostgresStorage {
         result
     }
 
-    async fn run_migrations_inner(&self, migrations: &[(i32, &str)]) -> Result<(), AtomicCoreError> {
+    async fn run_migrations_inner(
+        &self,
+        migrations: &[(i32, &str)],
+    ) -> Result<(), AtomicCoreError> {
         // Check if schema_version table exists
         let table_exists: bool = sqlx::query_scalar::<_, bool>(
             "SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_name = 'schema_version')"
@@ -145,12 +156,12 @@ impl PostgresStorage {
 
         for &(version, sql) in migrations {
             if version > current_version {
-                sqlx::raw_sql(sql)
-                    .execute(&self.pool)
-                    .await
-                    .map_err(|e| AtomicCoreError::DatabaseOperation(
-                        format!("Migration {} failed: {}", version, e)
-                    ))?;
+                sqlx::raw_sql(sql).execute(&self.pool).await.map_err(|e| {
+                    AtomicCoreError::DatabaseOperation(format!(
+                        "Migration {} failed: {}",
+                        version, e
+                    ))
+                })?;
             }
         }
 

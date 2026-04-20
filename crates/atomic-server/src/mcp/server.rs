@@ -8,8 +8,7 @@ use rmcp::{
     handler::server::wrapper::Parameters,
     model::{CallToolResult, Content, ServerCapabilities, ServerInfo},
     service::RequestContext,
-    RoleServer,
-    tool, tool_handler, tool_router, ErrorData, ServerHandler,
+    tool, tool_handler, tool_router, ErrorData, RoleServer, ServerHandler,
 };
 use std::sync::Arc;
 use tokio::sync::broadcast;
@@ -36,14 +35,20 @@ impl AtomicMcpServer {
     }
 
     /// Resolve the correct AtomicCore from the request context's DbSelection extension.
-    async fn resolve_core(&self, context: &RequestContext<RoleServer>) -> Result<AtomicCore, ErrorData> {
-        let db_id = context.extensions.get::<DbSelection>().and_then(|s| s.0.clone());
+    async fn resolve_core(
+        &self,
+        context: &RequestContext<RoleServer>,
+    ) -> Result<AtomicCore, ErrorData> {
+        let db_id = context
+            .extensions
+            .get::<DbSelection>()
+            .and_then(|s| s.0.clone());
         match db_id {
-            Some(id) => self
-                .manager
-                .get_core(&id)
-                .await
-                .map_err(|e| ErrorData::internal_error(format!("Database not found: {}", e), None)),
+            Some(id) => {
+                self.manager.get_core(&id).await.map_err(|e| {
+                    ErrorData::internal_error(format!("Database not found: {}", e), None)
+                })
+            }
             None => self
                 .manager
                 .active_core()
@@ -66,13 +71,10 @@ impl AtomicMcpServer {
     ) -> Result<CallToolResult, ErrorData> {
         let core = self.resolve_core(&context).await?;
         let limit = params.limit.unwrap_or(10).min(50);
-        let options = atomic_core::SearchOptions::new(
-            params.query,
-            atomic_core::SearchMode::Hybrid,
-            limit,
-        )
-        .with_threshold(0.3)
-        .with_since_days(params.since_days);
+        let options =
+            atomic_core::SearchOptions::new(params.query, atomic_core::SearchMode::Hybrid, limit)
+                .with_threshold(0.3)
+                .with_since_days(params.since_days);
 
         let results = core
             .search(options)
@@ -111,9 +113,10 @@ impl AtomicMcpServer {
         let atom_with_tags = match core.get_atom(&params.atom_id).await {
             Ok(Some(a)) => a,
             Ok(None) => {
-                return Ok(CallToolResult::success(vec![
-                    Content::text(format!("Atom not found: {}", params.atom_id)),
-                ]));
+                return Ok(CallToolResult::success(vec![Content::text(format!(
+                    "Atom not found: {}",
+                    params.atom_id
+                ))]));
             }
             Err(e) => return Err(ErrorData::internal_error(e.to_string(), None)),
         };
@@ -148,9 +151,7 @@ impl AtomicMcpServer {
         };
 
         let response_text = serde_json::to_string_pretty(&response)
-            .map_err(|e| {
-                ErrorData::internal_error(format!("Serialization error: {}", e), None)
-            })?;
+            .map_err(|e| ErrorData::internal_error(format!("Serialization error: {}", e), None))?;
 
         Ok(CallToolResult::success(vec![Content::text(response_text)]))
     }
@@ -179,7 +180,9 @@ impl AtomicMcpServer {
             .create_atom(request, on_event)
             .await
             .map_err(|e| ErrorData::internal_error(e.to_string(), None))?
-            .ok_or_else(|| ErrorData::internal_error("Atom creation returned None".to_string(), None))?;
+            .ok_or_else(|| {
+                ErrorData::internal_error("Atom creation returned None".to_string(), None)
+            })?;
 
         // Broadcast atom creation event
         let _ = self.event_tx.send(ServerEvent::AtomCreated {

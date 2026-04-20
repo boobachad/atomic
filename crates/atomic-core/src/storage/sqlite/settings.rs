@@ -117,9 +117,7 @@ impl SqliteStorage {
 // ==================== DatabaseStore ====================
 
 impl SqliteStorage {
-    pub(crate) fn list_databases_sync(
-        &self,
-    ) -> StorageResult<Vec<crate::registry::DatabaseInfo>> {
+    pub(crate) fn list_databases_sync(&self) -> StorageResult<Vec<crate::registry::DatabaseInfo>> {
         Err(AtomicCoreError::Configuration(
             "Database management not available on SQLite storage backend".to_string(),
         ))
@@ -134,11 +132,7 @@ impl SqliteStorage {
         ))
     }
 
-    pub(crate) fn rename_database_sync(
-        &self,
-        _id: &str,
-        _name: &str,
-    ) -> StorageResult<()> {
+    pub(crate) fn rename_database_sync(&self, _id: &str, _name: &str) -> StorageResult<()> {
         Err(AtomicCoreError::Configuration(
             "Database management not available on SQLite storage backend".to_string(),
         ))
@@ -202,10 +196,7 @@ impl DatabaseStore for SqliteStorage {
 
 #[async_trait]
 impl TokenStore for SqliteStorage {
-    async fn create_api_token(
-        &self,
-        name: &str,
-    ) -> StorageResult<(ApiTokenInfo, String)> {
+    async fn create_api_token(&self, name: &str) -> StorageResult<(ApiTokenInfo, String)> {
         self.create_api_token_sync(name)
     }
 
@@ -213,10 +204,7 @@ impl TokenStore for SqliteStorage {
         self.list_api_tokens_sync()
     }
 
-    async fn verify_api_token(
-        &self,
-        raw_token: &str,
-    ) -> StorageResult<Option<ApiTokenInfo>> {
+    async fn verify_api_token(&self, raw_token: &str) -> StorageResult<Option<ApiTokenInfo>> {
         self.verify_api_token_sync(raw_token)
     }
 

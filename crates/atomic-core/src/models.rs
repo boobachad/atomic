@@ -429,7 +429,7 @@ pub struct GlobalCanvasData {
 pub struct AtomWithEmbedding {
     #[serde(flatten)]
     pub atom: AtomWithTags,
-    pub embedding: Option<Vec<f32>>,  // Average of chunk embeddings, None if not yet embedded
+    pub embedding: Option<Vec<f32>>, // Average of chunk embeddings, None if not yet embedded
 }
 
 // ==================== Semantic Graph Types ====================

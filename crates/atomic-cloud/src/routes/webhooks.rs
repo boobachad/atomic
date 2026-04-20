@@ -16,26 +16,32 @@ pub async fn handle_webhook(
     let signature = match req.headers().get("Stripe-Signature") {
         Some(v) => match v.to_str() {
             Ok(s) => s.to_string(),
-            Err(_) => return CloudError::BadRequest("Invalid signature header".into()).to_response(),
+            Err(_) => {
+                return CloudError::BadRequest("Invalid signature header".into()).to_response()
+            }
         },
-        None => return CloudError::BadRequest("Missing Stripe-Signature header".into()).to_response(),
+        None => {
+            return CloudError::BadRequest("Missing Stripe-Signature header".into()).to_response()
+        }
     };
 
-    let event = match state.stripe.verify_webhook(
-        &state.config.stripe_webhook_secret,
-        &body,
-        &signature,
-    ) {
-        Ok(e) => e,
-        Err(e) => return e.to_response(),
-    };
+    let event =
+        match state
+            .stripe
+            .verify_webhook(&state.config.stripe_webhook_secret, &body, &signature)
+        {
+            Ok(e) => e,
+            Err(e) => return e.to_response(),
+        };
 
     let event_id = event["id"].as_str().unwrap_or_default();
     let event_type = event["type"].as_str().unwrap_or_default();
 
     // Idempotency check
     match crate::db::try_insert_event(&state.db, event_id, event_type, &event).await {
-        Ok(false) => return HttpResponse::Ok().json(serde_json::json!({ "status": "already_processed" })),
+        Ok(false) => {
+            return HttpResponse::Ok().json(serde_json::json!({ "status": "already_processed" }))
+        }
         Err(e) => return e.to_response(),
         Ok(true) => {}
     }
@@ -55,7 +61,8 @@ pub async fn handle_webhook(
             eprintln!("Webhook error for {event_type}: {e}");
             // Return 200 to Stripe even on error — we don't want retries for business logic failures
             // The event is already recorded for debugging
-            HttpResponse::Ok().json(serde_json::json!({ "status": "error", "message": e.to_string() }))
+            HttpResponse::Ok()
+                .json(serde_json::json!({ "status": "error", "message": e.to_string() }))
         }
     }
 }
@@ -113,7 +120,10 @@ async fn handle_checkout_completed(
         Ok(i) => i,
         Err(_) => {
             eprintln!("Instance conflict for {subdomain}, canceling subscription {stripe_subscription_id}");
-            let _ = state.stripe.cancel_subscription(stripe_subscription_id).await;
+            let _ = state
+                .stripe
+                .cancel_subscription(stripe_subscription_id)
+                .await;
             return Err(CloudError::Conflict(
                 "Subdomain or account conflict — subscription canceled and refunded".into(),
             ));
@@ -131,7 +141,14 @@ async fn handle_checkout_completed(
 
     tokio::spawn(async move {
         if let Err(e) = provision_instance(
-            &fly, &db, &fly_app_name, &fly_org, &image, &region, instance_id, &subdomain,
+            &fly,
+            &db,
+            &fly_app_name,
+            &fly_org,
+            &image,
+            &region,
+            instance_id,
+            &subdomain,
         )
         .await
         {
@@ -167,9 +184,7 @@ async fn provision_instance(
 
     // Step 3: Create volume
     let volume_name = format!("{}_data", subdomain.replace('-', "_"));
-    let volume = fly
-        .create_volume(app_name, &volume_name, 3, region)
-        .await?;
+    let volume = fly.create_volume(app_name, &volume_name, 3, region).await?;
 
     // Step 4: Create machine
     let machine = fly
@@ -180,7 +195,10 @@ async fn provision_instance(
     crate::db::update_instance_fly_ids(db, instance_id, &machine.id, &volume.id).await?;
     crate::db::update_instance_status(db, instance_id, "running").await?;
 
-    eprintln!("Provisioned {subdomain}: app={app_name}, machine={}, volume={}", machine.id, volume.id);
+    eprintln!(
+        "Provisioned {subdomain}: app={app_name}, machine={}, volume={}",
+        machine.id, volume.id
+    );
     Ok(())
 }
 

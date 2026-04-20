@@ -170,11 +170,8 @@ pub fn migrate_legacy_token(conn: &Connection) -> Result<bool, AtomicCoreError> 
     };
 
     // Only migrate if no api_tokens exist yet
-    let token_count: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM api_tokens",
-        [],
-        |row| row.get(0),
-    )?;
+    let token_count: i64 =
+        conn.query_row("SELECT COUNT(*) FROM api_tokens", [], |row| row.get(0))?;
 
     if token_count > 0 {
         return Ok(false);
@@ -192,10 +189,7 @@ pub fn migrate_legacy_token(conn: &Connection) -> Result<bool, AtomicCoreError> 
     )?;
 
     // Remove the legacy setting
-    conn.execute(
-        "DELETE FROM settings WHERE key = 'server_auth_token'",
-        [],
-    )?;
+    conn.execute("DELETE FROM settings WHERE key = 'server_auth_token'", [])?;
 
     Ok(true)
 }
@@ -205,11 +199,8 @@ pub fn migrate_legacy_token(conn: &Connection) -> Result<bool, AtomicCoreError> 
 pub fn ensure_default_token(
     conn: &Connection,
 ) -> Result<Option<(ApiTokenInfo, String)>, AtomicCoreError> {
-    let token_count: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM api_tokens",
-        [],
-        |row| row.get(0),
-    )?;
+    let token_count: i64 =
+        conn.query_row("SELECT COUNT(*) FROM api_tokens", [], |row| row.get(0))?;
 
     if token_count > 0 {
         return Ok(None);
@@ -418,7 +409,13 @@ mod tests {
         let raw = generate_raw_token();
         assert!(raw.starts_with("at_"));
         // at_ (3 chars) + base64url of 32 bytes = 43 chars = 46 total
-        assert_eq!(raw.len(), 46, "Token should be 46 chars, got {}: {}", raw.len(), raw);
+        assert_eq!(
+            raw.len(),
+            46,
+            "Token should be 46 chars, got {}: {}",
+            raw.len(),
+            raw
+        );
     }
 
     #[test]

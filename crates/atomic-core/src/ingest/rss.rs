@@ -41,10 +41,7 @@ pub fn parse_feed(data: &[u8]) -> Result<ParsedFeed, String> {
                 guid,
                 title: entry.title.map(|t| t.content),
                 link,
-                published_at: entry
-                    .published
-                    .or(entry.updated)
-                    .map(|dt| dt.to_rfc3339()),
+                published_at: entry.published.or(entry.updated).map(|dt| dt.to_rfc3339()),
             })
         })
         .collect();

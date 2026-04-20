@@ -112,10 +112,14 @@ mod tests {
 
     async fn test_app_state() -> (web::Data<AppState>, String) {
         let temp = tempfile::TempDir::new().unwrap();
-        let manager = std::sync::Arc::new(
-            atomic_core::DatabaseManager::new(temp.path()).unwrap()
-        );
-        let (info, raw_token) = manager.active_core().await.unwrap().create_api_token("test-token").await.unwrap();
+        let manager = std::sync::Arc::new(atomic_core::DatabaseManager::new(temp.path()).unwrap());
+        let (info, raw_token) = manager
+            .active_core()
+            .await
+            .unwrap()
+            .create_api_token("test-token")
+            .await
+            .unwrap();
         let (event_tx, _) = broadcast::channel(16);
         let state = web::Data::new(AppState {
             manager,
@@ -165,9 +169,7 @@ mod tests {
         )
         .await;
 
-        let req = actix_test::TestRequest::get()
-            .uri("/api/ping")
-            .to_request();
+        let req = actix_test::TestRequest::get().uri("/api/ping").to_request();
         let resp = actix_test::try_call_service(&app, req).await;
         assert!(resp.is_err());
     }
