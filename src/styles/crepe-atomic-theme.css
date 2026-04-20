@@ -1,0 +1,574 @@
+:is(.pm-eval-shell, .atomic-milkdown-editor) .milkdown {
+  --crepe-color-background: var(--color-bg-main);
+  --crepe-color-on-background: var(--color-text-primary);
+  --crepe-color-surface: color-mix(in srgb, var(--color-bg-card) 92%, black 8%);
+  --crepe-color-surface-low: var(--color-bg-card);
+  --crepe-color-on-surface: var(--color-text-primary);
+  --crepe-color-on-surface-variant: var(--color-text-secondary);
+  --crepe-color-outline: var(--color-border);
+  --crepe-color-primary: var(--color-accent-light);
+  --crepe-color-secondary: var(--color-bg-hover);
+  --crepe-color-on-secondary: var(--color-text-primary);
+  --crepe-color-inverse: var(--color-text-primary);
+  --crepe-color-on-inverse: var(--color-bg-main);
+  --crepe-color-inline-code: var(--color-text-primary);
+  --crepe-color-error: #f87171;
+  --crepe-color-hover: color-mix(in srgb, var(--color-bg-hover) 88%, white 12%);
+  --crepe-color-selected: color-mix(in srgb, var(--color-accent) 18%, var(--color-bg-main) 82%);
+  --crepe-color-inline-area: color-mix(in srgb, var(--color-bg-card) 86%, black 14%);
+
+  --crepe-font-title: var(--font-sans);
+  --crepe-font-default: var(--font-sans);
+  --crepe-font-code: var(--font-mono);
+
+  --crepe-shadow-1: 0 16px 40px rgba(0, 0, 0, 0.32);
+  --crepe-shadow-2: 0 22px 56px rgba(0, 0, 0, 0.4);
+  --atomic-prose-body: 1rem;
+  --atomic-prose-leading: 1.75;
+  --atomic-prose-spacing: 1.25em;
+  --atomic-prose-heading-tight: -0.025em;
+  --atomic-prose-heading-normal: -0.02em;
+  --atomic-prose-link: #60a5fa;
+  --atomic-prose-link-hover: #93c5fd;
+
+  font-family: var(--font-sans);
+  color: var(--crepe-color-on-background);
+  background: transparent;
+}
+
+:is(.pm-eval-shell, .atomic-milkdown-editor) .milkdown .ProseMirror {
+  padding: 32px 32px 40px;
+  font-size: var(--atomic-prose-body);
+  line-height: var(--atomic-prose-leading);
+}
+
+@media (min-width: 1024px) {
+  :is(.pm-eval-shell, .atomic-milkdown-editor) .milkdown .ProseMirror {
+    padding-left: 28px;
+    padding-right: 28px;
+  }
+}
+
+:is(.pm-eval-shell, .atomic-milkdown-editor) .pm-eval-editor {
+  position: relative;
+}
+
+:is(.pm-eval-shell, .atomic-milkdown-editor) .milkdown .ProseMirror h1,
+:is(.pm-eval-shell, .atomic-milkdown-editor) .milkdown .ProseMirror h2,
+:is(.pm-eval-shell, .atomic-milkdown-editor) .milkdown .ProseMirror h3,
+:is(.pm-eval-shell, .atomic-milkdown-editor) .milkdown .ProseMirror h4,
+:is(.pm-eval-shell, .atomic-milkdown-editor) .milkdown .ProseMirror h5,
+:is(.pm-eval-shell, .atomic-milkdown-editor) .milkdown .ProseMirror h6 {
+  font-family: var(--font-sans);
+  color: var(--color-text-primary);
+  letter-spacing: var(--atomic-prose-heading-normal);
+  padding: 0;
+}
+
+:is(.pm-eval-shell, .atomic-milkdown-editor) .milkdown .ProseMirror h1 {
+  font-size: 2.25em;
+  font-weight: 800;
+  line-height: 1.1111111;
+  letter-spacing: var(--atomic-prose-heading-tight);
+  margin-top: 0;
+  margin-bottom: 0.8888889em;
+}
+
+:is(.pm-eval-shell, .atomic-milkdown-editor) .milkdown .ProseMirror h2 {
+  font-size: 1.5em;
+  font-weight: 700;
+  line-height: 1.3333333;
+  margin-top: 2em;
+  margin-bottom: 1em;
+}
+
+:is(.pm-eval-shell, .atomic-milkdown-editor) .milkdown .ProseMirror h3 {
+  font-size: 1.25em;
+  font-weight: 600;
+  line-height: 1.6;
+  margin-top: 1.6em;
+  margin-bottom: 0.6em;
+}
+
+:is(.pm-eval-shell, .atomic-milkdown-editor) .milkdown .ProseMirror h4 {
+  font-size: 1em;
+  font-weight: 600;
+  line-height: 1.5;
+  margin-top: 1.5em;
+  margin-bottom: 0.5em;
+}
+
+:is(.pm-eval-shell, .atomic-milkdown-editor) .milkdown .ProseMirror h5 {
+  font-size: 0.875em;
+  font-weight: 600;
+  line-height: 1.4285714;
+  margin-top: 1.4285714em;
+  margin-bottom: 0.5714286em;
+}
+
+:is(.pm-eval-shell, .atomic-milkdown-editor) .milkdown .ProseMirror h6 {
+  font-size: 0.85em;
+  font-weight: 600;
+  line-height: 1.4;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--color-text-secondary);
+  margin-top: 1.4em;
+  margin-bottom: 0.5em;
+}
+
+:is(.pm-eval-shell, .atomic-milkdown-editor) .milkdown .ProseMirror p,
+:is(.pm-eval-shell, .atomic-milkdown-editor) .milkdown .ProseMirror li,
+:is(.pm-eval-shell, .atomic-milkdown-editor) .milkdown .ProseMirror blockquote {
+  font-size: var(--atomic-prose-body);
+  line-height: var(--atomic-prose-leading);
+}
+
+:is(.pm-eval-shell, .atomic-milkdown-editor) .milkdown .ProseMirror p {
+  padding: 0;
+  margin: var(--atomic-prose-spacing) 0;
+}
+
+:is(.pm-eval-shell, .atomic-milkdown-editor) .milkdown .ProseMirror strong {
+  color: var(--color-text-primary);
+  font-weight: 650;
+}
+
+:is(.pm-eval-shell, .atomic-milkdown-editor) .milkdown .ProseMirror em {
+  color: inherit;
+}
+
+:is(.pm-eval-shell, .atomic-milkdown-editor) .milkdown .ProseMirror a {
+  color: var(--atomic-prose-link);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 0.14em;
+}
+
+:is(.pm-eval-shell, .atomic-milkdown-editor) .milkdown .ProseMirror a::after {
+  content: "";
+  display: inline-block;
+  width: 0.78em;
+  height: 0.78em;
+  margin-left: 0.32em;
+  vertical-align: -0.02em;
+  background-color: color-mix(in srgb, var(--atomic-prose-link) 82%, white 18%);
+  -webkit-mask-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 24 24' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cg id='SVGRepo_iconCarrier'%3E%3Cg id='Interface / External_Link'%3E%3Cpath id='Vector' d='M10.0002 5H8.2002C7.08009 5 6.51962 5 6.0918 5.21799C5.71547 5.40973 5.40973 5.71547 5.21799 6.0918C5 6.51962 5 7.08009 5 8.2002V15.8002C5 16.9203 5 17.4801 5.21799 17.9079C5.40973 18.2842 5.71547 18.5905 6.0918 18.7822C6.5192 19 7.07899 19 8.19691 19H15.8031C16.921 19 17.48 19 17.9074 18.7822C18.2837 18.5905 18.5905 18.2839 18.7822 17.9076C19 17.4802 19 16.921 19 15.8031V14M20 9V4M20 4H15M20 4L13 11' stroke='%23000000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/g%3E%3C/g%3E%3C/svg%3E");
+  mask-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 24 24' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cg id='SVGRepo_iconCarrier'%3E%3Cg id='Interface / External_Link'%3E%3Cpath id='Vector' d='M10.0002 5H8.2002C7.08009 5 6.51962 5 6.0918 5.21799C5.71547 5.40973 5.40973 5.71547 5.21799 6.0918C5 6.51962 5 7.08009 5 8.2002V15.8002C5 16.9203 5 17.4801 5.21799 17.9079C5.40973 18.2842 5.71547 18.5905 6.0918 18.7822C6.5192 19 7.07899 19 8.19691 19H15.8031C16.921 19 17.48 19 17.9074 18.7822C18.2837 18.5905 18.5905 18.2839 18.7822 17.9076C19 17.4802 19 16.921 19 15.8031V14M20 9V4M20 4H15M20 4L13 11' stroke='%23000000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/g%3E%3C/g%3E%3C/svg%3E");
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  -webkit-mask-size: contain;
+  mask-size: contain;
+  opacity: 0.9;
+}
+
+:is(.pm-eval-shell, .atomic-milkdown-editor) .milkdown .ProseMirror a:hover {
+  color: var(--atomic-prose-link-hover);
+}
+
+:is(.pm-eval-shell, .atomic-milkdown-editor) .milkdown .ProseMirror a:hover::after {
+  background-color: color-mix(in srgb, var(--atomic-prose-link-hover) 84%, white 16%);
+  opacity: 1;
+}
+
+:is(.pm-eval-shell, .atomic-milkdown-editor) .milkdown .ProseMirror code {
+  font-family: var(--font-mono);
+  font-size: 0.875em;
+  color: color-mix(in srgb, var(--color-text-primary) 92%, white 8%);
+  background: color-mix(in srgb, var(--color-bg-card) 88%, black 12%);
+  border-radius: 0.35rem;
+  padding: 0.08rem 0.34rem;
+}
+
+:is(.pm-eval-shell, .atomic-milkdown-editor) .milkdown .ProseMirror pre {
+  background: color-mix(in srgb, var(--color-bg-card) 88%, black 12%);
+  border: 1px solid var(--color-border);
+  border-radius: 0.8rem;
+  padding: 0.9rem 1rem;
+  margin: 1.6em 0;
+  overflow-x: auto;
+}
+
+:is(.pm-eval-shell, .atomic-milkdown-editor) .milkdown .ProseMirror pre code {
+  background: transparent;
+  padding: 0;
+  font-size: 0.9375rem;
+  line-height: 1.7;
+}
+
+:is(.pm-eval-shell, .atomic-milkdown-editor) .milkdown .ProseMirror blockquote {
+  margin: 1.6em 0;
+  padding-left: 1.1rem;
+  color: var(--color-text-secondary);
+}
+
+:is(.pm-eval-shell, .atomic-milkdown-editor) .milkdown .ProseMirror blockquote::before {
+  left: 0;
+  top: 0.2rem;
+  bottom: 0.2rem;
+  width: 3px;
+  background: color-mix(in srgb, var(--color-accent) 72%, white 28%);
+}
+
+:is(.pm-eval-shell, .atomic-milkdown-editor) .milkdown .ProseMirror ul,
+:is(.pm-eval-shell, .atomic-milkdown-editor) .milkdown .ProseMirror ol {
+  margin: 1.25em 0;
+  padding-left: 1.625em;
+}
+
+:is(.pm-eval-shell, .atomic-milkdown-editor) .milkdown .ProseMirror ul > li::marker,
+:is(.pm-eval-shell, .atomic-milkdown-editor) .milkdown .ProseMirror ol > li::marker {
+  color: var(--color-text-secondary);
+  font-size: 0.9em;
+}
+
+:is(.pm-eval-shell, .atomic-milkdown-editor) .milkdown .ProseMirror li {
+  margin: 0.12em 0;
+  line-height: 1.5;
+}
+
+:is(.pm-eval-shell, .atomic-milkdown-editor) .milkdown .milkdown-list-item-block > .list-item {
+  align-items: center;
+}
+
+:is(.pm-eval-shell, .atomic-milkdown-editor) .milkdown .milkdown-list-item-block li {
+  gap: 8px;
+}
+
+:is(.pm-eval-shell, .atomic-milkdown-editor) .milkdown .milkdown-list-item-block {
+  margin: 0.08em 0;
+}
+
+:is(.pm-eval-shell, .atomic-milkdown-editor) .milkdown .milkdown-list-item-block > .list-item > .children > .content-dom > * {
+  margin-top: 0;
+  margin-bottom: 0;
+}
+
+:is(.pm-eval-shell, .atomic-milkdown-editor) .milkdown .milkdown-list-item-block > .list-item > .children > .content-dom > * + * {
+  margin-top: 0.12em;
+}
+
+:is(.pm-eval-shell, .atomic-milkdown-editor) .milkdown .milkdown-list-item-block > .list-item > .children > .content-dom p {
+  margin: 0;
+  line-height: inherit;
+}
+
+:is(.pm-eval-shell, .atomic-milkdown-editor) .milkdown .milkdown-list-item-block li .label-wrapper {
+  width: 20px;
+  height: 1.5em;
+}
+
+:is(.pm-eval-shell, .atomic-milkdown-editor) .milkdown .milkdown-list-item-block li .label-wrapper .label {
+  width: 20px;
+  height: 1.5em;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+:is(.pm-eval-shell, .atomic-milkdown-editor) .milkdown .ProseMirror img {
+  border-radius: 0.8rem;
+}
+
+:is(.pm-eval-shell, .atomic-milkdown-editor) .milkdown .ProseMirror table {
+  width: 100%;
+  margin: 0.95em 0;
+  border-collapse: collapse;
+  font-size: 0.8125rem;
+  line-height: 1.3;
+}
+
+:is(.pm-eval-shell, .atomic-milkdown-editor) .milkdown .ProseMirror th,
+:is(.pm-eval-shell, .atomic-milkdown-editor) .milkdown .ProseMirror td {
+  border: 1px solid var(--color-border);
+  padding: 0.28rem 0.42rem;
+  text-align: left;
+}
+
+:is(.pm-eval-shell, .atomic-milkdown-editor) .milkdown .ProseMirror th {
+  font-weight: 600;
+  color: var(--color-text-primary);
+  background: color-mix(in srgb, var(--color-bg-card) 88%, black 12%);
+}
+
+:is(.pm-eval-shell, .atomic-milkdown-editor) .milkdown .ProseMirror hr {
+  margin: 2.5em 0;
+  padding: 0;
+  height: 1px;
+  background: color-mix(in srgb, var(--color-border) 86%, transparent 14%);
+}
+
+:is(.pm-eval-shell, .atomic-milkdown-editor) .milkdown .milkdown-slash-menu {
+  border-radius: 0.72rem;
+  box-shadow: var(--crepe-shadow-1);
+}
+
+:is(.pm-eval-shell, .atomic-milkdown-editor) .milkdown .milkdown-toolbar {
+  gap: 0;
+  border: 1px solid color-mix(in srgb, var(--color-border) 86%, transparent 14%);
+  border-radius: 0.7rem;
+}
+
+:is(.pm-eval-shell, .atomic-milkdown-editor) .milkdown .milkdown-toolbar .divider {
+  height: 20px;
+  margin: 7px 3px;
+  background: color-mix(in srgb, var(--color-text-secondary) 30%, transparent 70%);
+}
+
+:is(.pm-eval-shell, .atomic-milkdown-editor) .milkdown .milkdown-toolbar .toolbar-item {
+  width: 28px;
+  height: 28px;
+  margin: 5px 3px;
+  padding: 4px;
+  border-radius: 0.45rem;
+}
+
+:is(.pm-eval-shell, .atomic-milkdown-editor) .milkdown .milkdown-toolbar .toolbar-item svg {
+  color: var(--color-text-primary);
+  fill: var(--color-text-primary);
+  width: 18px;
+  height: 18px;
+  opacity: 0.9;
+}
+
+:is(.pm-eval-shell, .atomic-milkdown-editor) .milkdown .milkdown-toolbar .toolbar-item:hover svg,
+:is(.pm-eval-shell, .atomic-milkdown-editor) .milkdown .milkdown-toolbar .toolbar-item:focus-visible svg {
+  color: var(--color-text-primary);
+  fill: var(--color-text-primary);
+  opacity: 1;
+}
+
+:is(.pm-eval-shell, .atomic-milkdown-editor) .milkdown .milkdown-toolbar .toolbar-item.active svg {
+  color: var(--color-accent-light);
+  fill: var(--color-accent-light);
+  opacity: 1;
+}
+
+:is(.pm-eval-shell, .atomic-milkdown-editor) .pm-eval-selection-toolbar {
+  position: absolute;
+  z-index: 30;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px;
+  background: color-mix(in srgb, var(--color-bg-card) 94%, black 6%);
+  border: 1px solid color-mix(in srgb, var(--color-border) 86%, transparent 14%);
+  border-radius: 0.75rem;
+  box-shadow: var(--crepe-shadow-1);
+  transform: translate(-50%, calc(-100% - 8px));
+}
+
+:is(.pm-eval-shell, .atomic-milkdown-editor) .pm-eval-selection-toolbar__item {
+  width: 30px;
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-text-primary);
+  border-radius: 0.5rem;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+:is(.pm-eval-shell, .atomic-milkdown-editor) .pm-eval-selection-toolbar__item:hover,
+:is(.pm-eval-shell, .atomic-milkdown-editor) .pm-eval-selection-toolbar__item:focus-visible {
+  background: color-mix(in srgb, var(--color-bg-hover) 84%, white 16%);
+  outline: none;
+}
+
+:is(.pm-eval-shell, .atomic-milkdown-editor) .pm-eval-selection-toolbar__item.is-active {
+  color: var(--color-accent-light);
+  background: color-mix(in srgb, var(--color-accent) 20%, transparent 80%);
+}
+
+:is(.pm-eval-shell, .atomic-milkdown-editor) .pm-eval-link-popover {
+  position: absolute;
+  z-index: 32;
+  width: min(280px, calc(100% - 24px));
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  background: color-mix(in srgb, var(--color-bg-card) 94%, black 6%);
+  border: 1px solid color-mix(in srgb, var(--color-border) 86%, transparent 14%);
+  border-radius: 0.72rem;
+  box-shadow: var(--crepe-shadow-1);
+  transform: translate(-50%, 0);
+}
+
+:is(.pm-eval-shell, .atomic-milkdown-editor) .pm-eval-link-popover__input {
+  width: 100%;
+  min-width: 0;
+  height: 32px;
+  padding: 0 10px;
+  font-size: 13px;
+  color: var(--color-text-primary);
+  background: color-mix(in srgb, var(--color-bg-main) 88%, black 12%);
+  border: 1px solid color-mix(in srgb, var(--color-border) 86%, transparent 14%);
+  border-radius: 0.58rem;
+  outline: none;
+}
+
+:is(.pm-eval-shell, .atomic-milkdown-editor) .pm-eval-link-popover__input::placeholder {
+  color: var(--color-text-secondary);
+}
+
+:is(.pm-eval-shell, .atomic-milkdown-editor) .pm-eval-link-popover__input:focus {
+  border-color: var(--color-accent);
+}
+
+:is(.pm-eval-shell, .atomic-milkdown-editor) .pm-eval-link-popover__actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding-top: 1px;
+}
+
+:is(.pm-eval-shell, .atomic-milkdown-editor) .pm-eval-link-popover__text-action {
+  padding: 0;
+  font-size: 11px;
+  line-height: 1.2;
+  color: #fca5a5;
+  background: transparent;
+  border: 0;
+  transition: color 120ms ease, opacity 120ms ease;
+}
+
+:is(.pm-eval-shell, .atomic-milkdown-editor) .pm-eval-link-popover__text-action:hover,
+:is(.pm-eval-shell, .atomic-milkdown-editor) .pm-eval-link-popover__text-action:focus-visible {
+  color: #fda4af;
+  opacity: 1;
+  outline: none;
+}
+
+:is(.pm-eval-shell, .atomic-milkdown-editor) .pm-eval-image-popover {
+  position: absolute;
+  z-index: 31;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px;
+  background: color-mix(in srgb, var(--color-bg-card) 94%, black 6%);
+  border: 1px solid color-mix(in srgb, var(--color-border) 86%, transparent 14%);
+  border-radius: 0.72rem;
+  box-shadow: var(--crepe-shadow-1);
+  transform: translate(-50%, 0);
+}
+
+:is(.pm-eval-shell, .atomic-milkdown-editor) .pm-eval-image-popover__action {
+  height: 28px;
+  padding: 0 10px;
+  font-size: 12px;
+  line-height: 1;
+  color: var(--color-text-primary);
+  background: transparent;
+  border-radius: 0.5rem;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+:is(.pm-eval-shell, .atomic-milkdown-editor) .pm-eval-image-popover__action:hover,
+:is(.pm-eval-shell, .atomic-milkdown-editor) .pm-eval-image-popover__action:focus-visible {
+  background: color-mix(in srgb, var(--color-bg-hover) 84%, white 16%);
+  outline: none;
+}
+
+:is(.pm-eval-shell, .atomic-milkdown-editor) .milkdown .empty-image-inline .link-importer .placeholder .uploader,
+:is(.pm-eval-shell, .atomic-milkdown-editor) .milkdown .milkdown-image-block > .image-edit .link-importer .placeholder .uploader {
+  display: none;
+}
+
+:is(.pm-eval-shell, .atomic-milkdown-editor) .milkdown .empty-image-inline .link-importer .placeholder .text,
+:is(.pm-eval-shell, .atomic-milkdown-editor) .milkdown .milkdown-image-block > .image-edit .link-importer .placeholder .text {
+  margin-left: 0;
+}
+
+:is(.pm-eval-shell, .atomic-milkdown-editor) .milkdown .milkdown-link-preview > .link-preview,
+:is(.pm-eval-shell, .atomic-milkdown-editor) .milkdown .milkdown-link-edit > .link-edit {
+  border: 1px solid color-mix(in srgb, var(--color-border) 86%, transparent 14%);
+}
+
+:is(.pm-eval-shell, .atomic-milkdown-editor) .milkdown .milkdown-link-preview > .link-preview > .link-icon > svg,
+:is(.pm-eval-shell, .atomic-milkdown-editor) .milkdown .milkdown-link-preview > .link-preview > .button > svg,
+:is(.pm-eval-shell, .atomic-milkdown-editor) .milkdown .milkdown-link-edit > .link-edit > .button > svg {
+  color: var(--color-text-primary);
+  fill: var(--color-text-primary);
+  opacity: 0.92;
+}
+
+:is(.pm-eval-shell, .atomic-milkdown-editor) .milkdown .milkdown-link-preview > .link-preview > .link-icon:hover > svg,
+:is(.pm-eval-shell, .atomic-milkdown-editor) .milkdown .milkdown-link-preview > .link-preview > .button:hover > svg,
+:is(.pm-eval-shell, .atomic-milkdown-editor) .milkdown .milkdown-link-edit > .link-edit > .button:hover > svg,
+:is(.pm-eval-shell, .atomic-milkdown-editor) .milkdown .milkdown-link-edit > .link-edit > .button:focus-visible > svg {
+  opacity: 1;
+}
+
+:is(.pm-eval-shell, .atomic-milkdown-editor) .milkdown .milkdown-slash-menu .tab-group {
+  padding: 8px 8px 0;
+}
+
+:is(.pm-eval-shell, .atomic-milkdown-editor) .milkdown .milkdown-slash-menu .tab-group ul {
+  gap: 6px;
+  padding: 6px 6px 8px;
+}
+
+:is(.pm-eval-shell, .atomic-milkdown-editor) .milkdown .milkdown-slash-menu .tab-group ul li {
+  padding: 4px 8px;
+  font-size: 12px;
+  line-height: 18px;
+}
+
+:is(.pm-eval-shell, .atomic-milkdown-editor) .milkdown .milkdown-slash-menu .menu-groups {
+  padding: 0 8px 8px;
+  max-height: 340px;
+}
+
+:is(.pm-eval-shell, .atomic-milkdown-editor) .milkdown .milkdown-slash-menu .menu-groups .menu-group h6 {
+  padding: 10px 8px 8px;
+  font-size: 11px;
+  line-height: 16px;
+  letter-spacing: 0.04em;
+}
+
+:is(.pm-eval-shell, .atomic-milkdown-editor) .milkdown .milkdown-slash-menu .menu-groups .menu-group li {
+  min-width: 188px;
+  gap: 10px;
+  padding: 8px;
+  border-radius: 0.5rem;
+}
+
+:is(.pm-eval-shell, .atomic-milkdown-editor) .milkdown .milkdown-slash-menu .menu-groups .menu-group li svg {
+  width: 18px;
+  height: 18px;
+}
+
+:is(.pm-eval-shell, .atomic-milkdown-editor) .milkdown .milkdown-slash-menu .menu-groups .menu-group li > span {
+  font-size: 12px;
+  line-height: 18px;
+  font-weight: 600;
+}
+
+:is(.pm-eval-shell, .atomic-milkdown-editor) .milkdown .milkdown-block-handle {
+  gap: 1px;
+}
+
+:is(.pm-eval-shell, .atomic-milkdown-editor) .milkdown .milkdown-block-handle .operation-item {
+  width: 26px;
+  height: 26px;
+  padding: 3px;
+  border-radius: 0.45rem;
+}
+
+:is(.pm-eval-shell, .atomic-milkdown-editor) .milkdown .milkdown-block-handle .operation-item svg {
+  width: 18px;
+  height: 18px;
+}
+
+.pm-eval-surface-frame {
+  position: relative;
+}
+
+@media (max-width: 900px) {
+  :is(.pm-eval-shell, .atomic-milkdown-editor) .milkdown .ProseMirror {
+    padding: 28px 24px 40px;
+  }
+}

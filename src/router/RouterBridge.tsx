@@ -140,7 +140,7 @@ export function RouterBridge() {
           overlayNav: { stack: [], index: -1 },
           localGraph: { ...store.localGraph, isOpen: false },
           ...(store.leftPanelOpenBeforeReader
-            ? { leftPanelOpen: true, leftPanelOpenBeforeReader: false }
+            ? { leftPanelOpen: true, leftPanelOpenBeforeReader: false, leftPanelTransitionMode: 'manual' as const }
             : {}),
         });
       }
@@ -171,7 +171,7 @@ export function RouterBridge() {
         localGraph: { ...store.localGraph, isOpen: false },
         overlayNav: nextNav,
         ...(becameFirstOverlay && store.leftPanelOpen
-          ? { leftPanelOpen: false, leftPanelOpenBeforeReader: true }
+          ? { leftPanelOpen: false, leftPanelOpenBeforeReader: true, leftPanelTransitionMode: 'overlay' as const }
           : {}),
       });
     } else if (parsed.kind === 'graph') {
@@ -187,7 +187,7 @@ export function RouterBridge() {
         },
         overlayNav: nextNav,
         ...(becameFirstOverlay && store.leftPanelOpen
-          ? { leftPanelOpen: false, leftPanelOpenBeforeReader: true }
+          ? { leftPanelOpen: false, leftPanelOpenBeforeReader: true, leftPanelTransitionMode: 'overlay' as const }
           : {}),
       });
     } else if (parsed.kind === 'wiki-reader') {
@@ -200,7 +200,7 @@ export function RouterBridge() {
         localGraph: { ...store.localGraph, isOpen: false },
         overlayNav: nextNav,
         ...(becameFirstOverlay && store.leftPanelOpen
-          ? { leftPanelOpen: false, leftPanelOpenBeforeReader: true }
+          ? { leftPanelOpen: false, leftPanelOpenBeforeReader: true, leftPanelTransitionMode: 'overlay' as const }
           : {}),
       });
     }

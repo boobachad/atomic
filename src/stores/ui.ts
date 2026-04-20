@@ -5,6 +5,7 @@ import { viewPath, atomReaderPath, wikiReaderPath, atomGraphPath } from '../rout
 
 export type ViewMode = 'dashboard' | 'atoms' | 'canvas' | 'wiki';
 export type AtomsLayout = 'grid' | 'list';
+export type LeftPanelTransitionMode = 'manual' | 'overlay';
 
 interface LocalGraphState {
   isOpen: boolean;
@@ -54,6 +55,7 @@ interface UIStore {
   // Panel state
   leftPanelOpen: boolean;
   leftPanelOpenBeforeReader: boolean;
+  leftPanelTransitionMode: LeftPanelTransitionMode;
   wikiSidebarOpen: boolean;
   // Chat sidebar state
   chatSidebarOpen: boolean;
@@ -148,6 +150,7 @@ export const useUIStore = create<UIStore>()(
       highlightedAtomId: null,
       leftPanelOpen: true,
       leftPanelOpenBeforeReader: false,
+      leftPanelTransitionMode: 'manual',
       wikiSidebarOpen: true,
       chatSidebarOpen: false,
       chatSidebarWidth: 480,
@@ -159,8 +162,8 @@ export const useUIStore = create<UIStore>()(
       commandPaletteInitialQuery: '',
       readerTheme: 'dark' as 'light' | 'dark',
 
-      setLeftPanelOpen: (open: boolean) => set({ leftPanelOpen: open }),
-      toggleLeftPanel: () => set((state) => ({ leftPanelOpen: !state.leftPanelOpen })),
+      setLeftPanelOpen: (open: boolean) => set({ leftPanelOpen: open, leftPanelTransitionMode: 'manual' }),
+      toggleLeftPanel: () => set((state) => ({ leftPanelOpen: !state.leftPanelOpen, leftPanelTransitionMode: 'manual' })),
       setWikiSidebarOpen: (open: boolean) => set({ wikiSidebarOpen: open }),
       toggleWikiSidebar: () => set((state) => ({ wikiSidebarOpen: !state.wikiSidebarOpen })),
       setServerConnected: (connected: boolean) => set({ serverConnected: connected }),
@@ -208,7 +211,7 @@ export const useUIStore = create<UIStore>()(
             wikiReaderState: { tagId: null, tagName: null },
             overlayNav: { stack, index: stack.length - 1 },
             localGraph: { ...state.localGraph, isOpen: false },
-            ...(isFirstOpen && state.leftPanelOpen ? { leftPanelOpen: false, leftPanelOpenBeforeReader: true } : {}),
+            ...(isFirstOpen && state.leftPanelOpen ? { leftPanelOpen: false, leftPanelOpenBeforeReader: true, leftPanelTransitionMode: 'overlay' as const } : {}),
           };
         });
         navigateTo(atomReaderPath(atomId, get().selectedTagId));
@@ -225,7 +228,7 @@ export const useUIStore = create<UIStore>()(
             wikiReaderState: { tagId: null, tagName: null },
             overlayNav: { stack, index: stack.length - 1 },
             localGraph: { ...state.localGraph, isOpen: false },
-            ...(isFirstOpen && state.leftPanelOpen ? { leftPanelOpen: false, leftPanelOpenBeforeReader: true } : {}),
+            ...(isFirstOpen && state.leftPanelOpen ? { leftPanelOpen: false, leftPanelOpenBeforeReader: true, leftPanelTransitionMode: 'overlay' as const } : {}),
           };
         });
         navigateTo(atomReaderPath(atomId, get().selectedTagId));
@@ -257,7 +260,7 @@ export const useUIStore = create<UIStore>()(
             readerState: { atomId: null, highlightText: null, editing: false, saveStatus: 'idle' as const },
             overlayNav: { stack, index: stack.length - 1 },
             localGraph: { ...state.localGraph, isOpen: false },
-            ...(isFirstOpen && state.leftPanelOpen ? { leftPanelOpen: false, leftPanelOpenBeforeReader: true } : {}),
+            ...(isFirstOpen && state.leftPanelOpen ? { leftPanelOpen: false, leftPanelOpenBeforeReader: true, leftPanelTransitionMode: 'overlay' as const } : {}),
           };
         });
         navigateTo(wikiReaderPath(tagId, tagName));
@@ -409,7 +412,7 @@ export const useUIStore = create<UIStore>()(
             readerState: { atomId: null, highlightText: null, editing: false, saveStatus: 'idle' as const },
             wikiReaderState: { tagId: null, tagName: null },
             overlayNav: { stack, index: stack.length - 1 },
-            ...(isFirstOpen && state.leftPanelOpen ? { leftPanelOpen: false, leftPanelOpenBeforeReader: true } : {}),
+            ...(isFirstOpen && state.leftPanelOpen ? { leftPanelOpen: false, leftPanelOpenBeforeReader: true, leftPanelTransitionMode: 'overlay' as const } : {}),
           };
         });
         navigateTo(atomGraphPath(atomId, get().selectedTagId));
@@ -502,4 +505,3 @@ export const useUIStore = create<UIStore>()(
     }
   )
 );
-

@@ -1,20 +1,8 @@
-import { lazy, Suspense } from 'react';
 import { Toaster } from 'sonner';
 import { Layout } from './components/layout';
 import { useEmbeddingEvents } from './hooks';
 
-const LayoutDebug = lazy(() => import('./components/dev/LayoutDebug'));
-
 function App() {
-  // Dev-only harness for comparing view/edit layout. Not included on normal paths.
-  if (typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('layout-debug') === '1') {
-    return (
-      <Suspense fallback={null}>
-        <LayoutDebug />
-      </Suspense>
-    );
-  }
-
   // Initialize embedding event listener
   useEmbeddingEvents();
 
@@ -37,4 +25,3 @@ function App() {
 }
 
 export default App;
-

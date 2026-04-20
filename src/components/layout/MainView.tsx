@@ -9,8 +9,6 @@ import {
   ChevronRight,
   Sun,
   Moon,
-  Check,
-  Pencil,
   Trash2,
   MoreHorizontal,
   MessageCircle,
@@ -261,11 +259,11 @@ export function MainView() {
   }, [openCommandPalette]);
 
   const handleReaderDismiss = useCallback(async () => {
-    if (readerState.atomId && readerState.editing) {
+    if (readerState.atomId) {
       await readerEditorActions.current?.stopEditing();
     }
     overlayDismiss();
-  }, [readerState.atomId, readerState.editing, overlayDismiss]);
+  }, [readerState.atomId, overlayDismiss]);
 
   const handleLoadMore = useCallback(() => {
     if (!isSemanticSearch && hasMore) {
@@ -305,8 +303,7 @@ export function MainView() {
               >
                 <X className="w-4 h-4" strokeWidth={2} />
               </button>
-              {/* In edit mode: undo/redo. In view mode: back/forward */}
-              {readerState.atomId && readerState.editing ? (
+              {readerState.atomId ? (
                 <>
                   <button
                     onClick={() => readerEditorActions.current?.undo()}
@@ -344,7 +341,7 @@ export function MainView() {
                 </>
               )}
               {/* Save status indicator */}
-              {readerState.editing && readerState.saveStatus !== 'idle' && (
+              {readerState.atomId && readerState.saveStatus !== 'idle' && (
                 <span className={`text-xs ml-1 ${
                   readerState.saveStatus === 'saving' ? 'text-[var(--color-text-tertiary)]' :
                   readerState.saveStatus === 'saved' ? 'text-green-500' :
@@ -373,25 +370,6 @@ export function MainView() {
                     <Moon className="w-4 h-4" strokeWidth={2} />
                   )}
                 </button>
-                {/* Edit / Done toggle */}
-                <button
-                  onClick={() => readerState.editing
-                    ? readerEditorActions.current?.stopEditing()
-                    : readerEditorActions.current?.startEditing()
-                  }
-                  className={`p-1.5 rounded-md transition-colors ${
-                    readerState.editing
-                      ? 'text-[var(--color-accent)] hover:bg-[var(--color-accent)]/20'
-                      : 'text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-hover)]'
-                  }`}
-                  title={readerState.editing ? 'Done (Esc)' : 'Edit'}
-                >
-                  {readerState.editing ? (
-                    <Check className="w-4 h-4" strokeWidth={2} />
-                  ) : (
-                    <Pencil className="w-4 h-4" strokeWidth={2} />
-                  )}
-                </button>
                 {/* Delete */}
                 <button
                   onClick={() => setShowDeleteModal(true)}
@@ -403,30 +381,9 @@ export function MainView() {
               </div>
             )}
 
-            {/* Mobile reader overflow menu: edit is the primary inline action,
-                theme + delete hide behind a ⋯ button. */}
+            {/* Mobile reader overflow menu: theme + delete hide behind a ⋯ button. */}
             {readerState.atomId && isMobile && (
               <div className="flex items-center gap-1">
-                {/* Edit / Done toggle (kept inline — primary action) */}
-                <button
-                  onClick={() => readerState.editing
-                    ? readerEditorActions.current?.stopEditing()
-                    : readerEditorActions.current?.startEditing()
-                  }
-                  className={`p-1.5 rounded-md transition-colors ${
-                    readerState.editing
-                      ? 'text-[var(--color-accent)] hover:bg-[var(--color-accent)]/20'
-                      : 'text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-hover)]'
-                  }`}
-                  title={readerState.editing ? 'Done (Esc)' : 'Edit'}
-                >
-                  {readerState.editing ? (
-                    <Check className="w-4 h-4" strokeWidth={2} />
-                  ) : (
-                    <Pencil className="w-4 h-4" strokeWidth={2} />
-                  )}
-                </button>
-
                 {/* Overflow menu */}
                 <div className="relative" ref={readerMenuRef}>
                   <button

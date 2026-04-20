@@ -27,6 +27,7 @@ interface UseInlineEditorReturn {
   setEditSourceUrl: (url: string) => void;
   setEditTags: (tags: Tag[]) => void;
   saveNow: () => Promise<void>;
+  flushDraft: () => Promise<void>;
 }
 
 export function useInlineEditor({
@@ -54,6 +55,9 @@ export function useInlineEditor({
   const isEditingRef = useRef(false);
   const savingPromiseRef = useRef<Promise<void>>(Promise.resolve());
   const needsPipelineRef = useRef(false);
+  const editContentRef = useRef(editContent);
+  const editSourceUrlRef = useRef(editSourceUrl);
+  const editTagsRef = useRef(editTags);
   // Track what was last saved to detect dirty state
   const lastSavedRef = useRef({
     content: atom.content,
@@ -65,6 +69,9 @@ export function useInlineEditor({
   useEffect(() => {
     isEditingRef.current = isEditing;
   }, [isEditing]);
+  useEffect(() => { editContentRef.current = editContent; }, [editContent]);
+  useEffect(() => { editSourceUrlRef.current = editSourceUrl; }, [editSourceUrl]);
+  useEffect(() => { editTagsRef.current = editTags; }, [editTags]);
 
   // Sync from atom prop when not editing (e.g., external updates)
   useEffect(() => {
@@ -72,6 +79,9 @@ export function useInlineEditor({
       setEditContent(atom.content);
       setEditSourceUrl(atom.source_url || '');
       setEditTags(atom.tags);
+      editContentRef.current = atom.content;
+      editSourceUrlRef.current = atom.source_url || '';
+      editTagsRef.current = atom.tags;
       lastSavedRef.current = {
         content: atom.content,
         sourceUrl: atom.source_url || '',
@@ -91,10 +101,10 @@ export function useInlineEditor({
 
   const hasPipelineRelevantChanges = useCallback(() => {
     return (
-      editContent !== lastSavedRef.current.content ||
-      editSourceUrl !== lastSavedRef.current.sourceUrl
+      editContentRef.current !== lastSavedRef.current.content ||
+      editSourceUrlRef.current !== lastSavedRef.current.sourceUrl
     );
-  }, [editContent, editSourceUrl]);
+  }, []);
 
   /** Content-only save (no pipeline). */
   const doContentSave = useCallback(async () => {
@@ -103,17 +113,20 @@ export function useInlineEditor({
     setSaveStatus('saving');
     const promise = (async () => {
       try {
-        const tagIds = editTags.map(t => t.id);
+        const content = editContentRef.current;
+        const sourceUrl = editSourceUrlRef.current;
+        const tags = editTagsRef.current;
+        const tagIds = tags.map(t => t.id);
         const needsPipelineForThisSave = hasPipelineRelevantChanges();
         const saved = await updateAtomContentOnly(
           atom.id,
-          editContent,
-          editSourceUrl || undefined,
+          content,
+          sourceUrl || undefined,
           tagIds,
         );
         lastSavedRef.current = {
-          content: editContent,
-          sourceUrl: editSourceUrl,
+          content,
+          sourceUrl,
           tagIds: tagIds.sort().join(','),
         };
         if (needsPipelineForThisSave) {
@@ -129,7 +142,7 @@ export function useInlineEditor({
     })();
     savingPromiseRef.current = promise;
     await promise;
-  }, [atom.id, editContent, editSourceUrl, editTags, hasPipelineRelevantChanges, updateAtomContentOnly, onAtomUpdated]);
+  }, [atom.id, hasPipelineRelevantChanges, updateAtomContentOnly, onAtomUpdated]);
 
   /** Flush latest draft and only kick the pipeline when content/source changed. */
   const finalizeDraft = useCallback(async () => {
@@ -163,16 +176,19 @@ export function useInlineEditor({
   /** Wrappers that schedule auto-save on change. */
   const handleSetContent = useCallback((content: string) => {
     setEditContent(content);
+    editContentRef.current = content;
     scheduleSave();
   }, [scheduleSave]);
 
   const handleSetSourceUrl = useCallback((url: string) => {
     setEditSourceUrl(url);
+    editSourceUrlRef.current = url;
     scheduleSave();
   }, [scheduleSave]);
 
   const handleSetTags = useCallback((tags: Tag[]) => {
     setEditTags(tags);
+    editTagsRef.current = tags;
     scheduleSave();
   }, [scheduleSave]);
 
@@ -233,13 +249,15 @@ export function useInlineEditor({
     }
   }, [isDirty, doContentSave]);
 
-  // Refs for unmount save (closures in cleanup can be stale)
-  const editContentRef = useRef(editContent);
-  const editSourceUrlRef = useRef(editSourceUrl);
-  const editTagsRef = useRef(editTags);
-  useEffect(() => { editContentRef.current = editContent; }, [editContent]);
-  useEffect(() => { editSourceUrlRef.current = editSourceUrl; }, [editSourceUrl]);
-  useEffect(() => { editTagsRef.current = editTags; }, [editTags]);
+  const flushDraft = useCallback(async () => {
+    if (debounceRef.current) {
+      clearTimeout(debounceRef.current);
+      debounceRef.current = null;
+    }
+    if (isDirty() || needsPipelineRef.current) {
+      await finalizeDraft();
+    }
+  }, [isDirty, finalizeDraft]);
 
   // Cleanup on unmount: delete if empty, otherwise save
   useEffect(() => {
@@ -249,14 +267,32 @@ export function useInlineEditor({
       }
       if (isEditingRef.current) {
         const content = editContentRef.current;
+        const sourceUrl = editSourceUrlRef.current;
+        const latestTags = editTagsRef.current;
+        const tagIds = latestTags.map(t => t.id).sort().join(',');
+        const hasDraftChanges =
+          content !== lastSavedRef.current.content ||
+          sourceUrl !== lastSavedRef.current.sourceUrl ||
+          tagIds !== lastSavedRef.current.tagIds;
         if (wasCreatedEmpty.current && !content.trim()) {
           // Never had content — clean up the empty atom
           useAtomsStore.getState().deleteAtom(atom.id).catch(console.error);
-        } else {
-          const sourceUrl = editSourceUrlRef.current;
-          const tags = editTagsRef.current;
-          const tagIds = tags.map(t => t.id);
-          useAtomsStore.getState().updateAtomContentOnly(atom.id, content, sourceUrl || undefined, tagIds).catch(console.error);
+        } else if (hasDraftChanges) {
+          savingPromiseRef.current
+            .catch(() => {})
+            .then(async () => {
+              const latestContent = editContentRef.current;
+              const latestSourceUrl = editSourceUrlRef.current;
+              const latestTags = editTagsRef.current;
+              const tagIds = latestTags.map(t => t.id);
+              await useAtomsStore.getState().updateAtomContentOnly(
+                atom.id,
+                latestContent,
+                latestSourceUrl || undefined,
+                tagIds,
+              );
+            })
+            .catch(console.error);
         }
       }
     };
@@ -284,5 +320,6 @@ export function useInlineEditor({
     setEditSourceUrl: handleSetSourceUrl,
     setEditTags: handleSetTags,
     saveNow,
+    flushDraft,
   };
 }

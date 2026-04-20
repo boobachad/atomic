@@ -5,6 +5,16 @@ import { VitePWA } from 'vite-plugin-pwa'
 import path from 'path'
 
 const isWebBuild = process.env.VITE_BUILD_TARGET === 'web'
+const EDITOR_DEPENDENCY_MARKERS = [
+  `${path.sep}node_modules${path.sep}@milkdown${path.sep}`,
+  `${path.sep}node_modules${path.sep}prosemirror-`,
+  `${path.sep}node_modules${path.sep}@codemirror${path.sep}`,
+  `${path.sep}node_modules${path.sep}@lezer${path.sep}`,
+  `${path.sep}node_modules${path.sep}codemirror${path.sep}`,
+  `${path.sep}node_modules${path.sep}katex${path.sep}`,
+  `${path.sep}node_modules${path.sep}crelt${path.sep}`,
+  `${path.sep}node_modules${path.sep}w3c-keyname${path.sep}`,
+]
 
 export default defineConfig({
   plugins: [
@@ -109,4 +119,15 @@ export default defineConfig({
         },
       }
     : undefined,
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (EDITOR_DEPENDENCY_MARKERS.some((marker) => id.includes(marker))) {
+            return 'editor'
+          }
+        },
+      },
+    },
+  },
 })
