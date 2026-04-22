@@ -2,6 +2,10 @@
 
 All notable changes to Atomic are documented here.
 
+## v1.26.1 — 2026-04-22
+
+- Fix Docker build failing to resolve the @atomic/editor package introduced in v1.26.0
+
 ## v1.26.0 — 2026-04-22
 
 - Replace the Milkdown/ProseMirror editor with a new CodeMirror 6 editor featuring Obsidian-style live preview — headings, emphasis, links, code blocks, and other markdown syntax render inline while editing, with raw tokens revealed only on the active line
