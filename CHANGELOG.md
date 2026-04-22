@@ -2,6 +2,14 @@
 
 All notable changes to Atomic are documented here.
 
+## v1.26.0 — 2026-04-22
+
+- Replace the Milkdown/ProseMirror editor with a new CodeMirror 6 editor featuring Obsidian-style live preview — headings, emphasis, links, code blocks, and other markdown syntax render inline while editing, with raw tokens revealed only on the active line
+- Add syntax highlighting for fenced code blocks using a Material Palenight palette, with per-token CSS variable overrides via `--atomic-editor-hl-*`
+- Add WYSIWYG table rendering, inline image previews, task-list checkboxes, and bullet/ordered-list styling to the live-preview editor
+- Fix mid-typing emphasis flicker where bold, italic, and strikethrough formatting toggled on and off while typing between delimiter pairs
+- Improve editor performance: reduce bundle size from 2.66 MB to 1.12 MB by tree-shaking unused features and lazy-loading code-block grammars, and narrow widget invalidation so keystrokes in large documents no longer rebuild all decorations
+
 ## v1.25.0 — 2026-04-20
 
 - Replace the CodeMirror markdown editor with Milkdown, a rich-text WYSIWYG editor built on ProseMirror — notes now render inline formatting, images, and code blocks live as you type
