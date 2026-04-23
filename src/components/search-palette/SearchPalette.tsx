@@ -219,7 +219,7 @@ export function SearchPalette({ isOpen, onClose, initialQuery = '' }: SearchPale
           title={atomTitle(result)}
           // When expanded, the per-match sub-rows carry the snippets; showing
           // the header snippet too would just be visual noise.
-          subtitle={expanded ? undefined : result.snippet ?? result.matching_chunk_content}
+          subtitle={expanded ? undefined : result.match_snippet ?? result.matching_chunk_content}
           meta={
             result.match_offsets
               ? `${result.match_offsets.length} ${
@@ -276,7 +276,7 @@ export function SearchPalette({ isOpen, onClose, initialQuery = '' }: SearchPale
           subtitle={
             expanded
               ? undefined
-              : result.snippet ?? result.content_snippet
+              : result.match_snippet ?? result.content_snippet
           }
           meta={
             result.match_offsets

@@ -4485,7 +4485,10 @@ mod tests {
         assert_eq!(response.atoms.len(), 1, "expected one atom-level hit");
 
         let result = &response.atoms[0];
-        let snippet = result.snippet.as_ref().expect("snippet should be populated");
+        let snippet = result
+            .match_snippet
+            .as_ref()
+            .expect("match_snippet should be populated");
         assert!(
             snippet.contains('\u{E000}') && snippet.contains('\u{E001}'),
             "snippet must contain FTS match markers, got: {:?}",
@@ -4505,6 +4508,26 @@ mod tests {
                 "each offset must slice to the matched term"
             );
         }
+
+        // Serialize and confirm the atom's own stored `snippet` is still at the
+        // top level — the FTS excerpt must live under a distinct key so JSON
+        // consumers don't silently lose the saved preview to a duplicated key.
+        let json = serde_json::to_value(result).unwrap();
+        let obj = json.as_object().expect("result serializes as an object");
+        assert!(
+            obj.contains_key("snippet"),
+            "atom preview (Atom.snippet) must be preserved at top level"
+        );
+        assert!(
+            obj.contains_key("match_snippet"),
+            "FTS excerpt must be exposed as match_snippet"
+        );
+        let preview = obj.get("snippet").and_then(|v| v.as_str()).unwrap_or("");
+        assert!(
+            !preview.contains('\u{E000}'),
+            "preview must not accidentally carry FTS markers, got {:?}",
+            preview
+        );
     }
 
     #[tokio::test]
@@ -4547,7 +4570,10 @@ mod tests {
         let hit = &response.wiki[0];
         assert_eq!(hit.id, wiki_id);
         assert_eq!(hit.content, content, "full content should round-trip");
-        let snip = hit.snippet.as_ref().expect("snippet should be populated");
+        let snip = hit
+            .match_snippet
+            .as_ref()
+            .expect("match_snippet should be populated");
         assert!(
             snip.contains('\u{E000}') && snip.contains('\u{E001}'),
             "wiki snippet must carry FTS markers"

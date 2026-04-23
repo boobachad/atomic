@@ -58,11 +58,13 @@ export interface SemanticSearchResult {
    */
   match_offsets?: MatchOffset[];
   /**
-   * Windowed excerpt around matched terms with  /  markers
-   * wrapping each hit. Present for keyword search only; absent for semantic
-   * and hybrid results, where the whole chunk is the best anchor we have.
+   * FTS-windowed excerpt around matched terms with the PUA markers in
+   * `markdownToPlainText` wrapping each hit. Present for keyword search only;
+   * absent for semantic/hybrid results. The backend names this `match_snippet`
+   * (not `snippet`) so it doesn't collide with `Atom.snippet` — the atom's
+   * stored preview, which the server flattens into the same JSON object.
    */
-  snippet?: string;
+  match_snippet?: string;
 }
 
 export interface TagWithCount {
@@ -85,7 +87,7 @@ export interface GlobalWikiSearchResult {
   atom_count: number;
   score: number;
   /** FTS5 windowed excerpt with PUA markers around each matched token. */
-  snippet?: string;
+  match_snippet?: string;
   /** Byte offsets of every match in the article's content, in document order. */
   match_offsets?: MatchOffset[];
 }

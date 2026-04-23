@@ -93,7 +93,7 @@ impl SqliteStorage {
                     similarity_score: similarity,
                     matching_chunk_content: content,
                     matching_chunk_index: chunk_index,
-                    snippet: None,
+                    match_snippet: None,
                     match_offsets: None,
                 });
             }
@@ -160,7 +160,7 @@ impl SqliteStorage {
                     // Chunk fields aren't meaningful for atom-level search.
                     matching_chunk_content: String::new(),
                     matching_chunk_index: 0,
-                    snippet: Some(snippet),
+                    match_snippet: Some(snippet),
                     match_offsets: Some(offsets),
                 });
             }
@@ -771,7 +771,7 @@ fn keyword_search_wiki(
             updated_at,
             atom_count: atom_counts.get(&tag_id).copied().unwrap_or(0),
             score: normalize_bm25_score(score),
-            snippet: Some(fts_snippet),
+            match_snippet: Some(fts_snippet),
             match_offsets: Some(offsets),
         });
     }

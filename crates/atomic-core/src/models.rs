@@ -133,11 +133,13 @@ pub struct SemanticSearchResult {
     pub similarity_score: f32,
     pub matching_chunk_content: String,
     pub matching_chunk_index: i32,
-    /// Windowed excerpt around matched terms with `\u{E000}`/`\u{E001}` markers
-    /// wrapping each hit. Populated for keyword search only; `None` for semantic
-    /// and hybrid paths where there is no single literal match to anchor on.
+    /// FTS-windowed excerpt around matched terms with `\u{E000}`/`\u{E001}`
+    /// markers wrapping each hit. Named `match_snippet` (not `snippet`) so it
+    /// doesn't collide with the atom's stored preview, which `AtomWithTags`
+    /// flattens into the same JSON object under the `snippet` key. Populated
+    /// for keyword search only; `None` for semantic and hybrid paths.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub snippet: Option<String>,
+    pub match_snippet: Option<String>,
     /// Byte offsets of every match in the atom's content, in document order.
     /// Populated for keyword search only — consumers use it for match counts
     /// and cycle-through navigation in the reader.
@@ -172,9 +174,11 @@ pub struct GlobalWikiSearchResult {
     pub atom_count: i32,
     pub score: f32,
     /// FTS5 windowed excerpt around matched terms with `\u{E000}`/`\u{E001}`
-    /// markers wrapping each hit. Populated for keyword search.
+    /// markers wrapping each hit. Populated for keyword search. Named
+    /// `match_snippet` for symmetry with `SemanticSearchResult` and to keep
+    /// the distinction from the legacy `content_snippet` explicit.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub snippet: Option<String>,
+    pub match_snippet: Option<String>,
     /// Byte offsets of every match in the article's content, in document order.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub match_offsets: Option<Vec<MatchOffset>>,
