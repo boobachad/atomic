@@ -139,6 +139,9 @@ pub struct SendMessageBody {
     /// Optional canvas context for canvas-aware chat tools
     #[serde(default)]
     pub canvas_context: Option<atomic_core::CanvasContext>,
+    /// Optional current UI context for page-aware chat tools
+    #[serde(default)]
+    pub page_context: Option<atomic_core::PageContext>,
 }
 
 #[utoipa::path(post, path = "/api/conversations/{id}/messages", params(("id" = String, Path, description = "Conversation ID")), request_body = SendMessageBody, responses((status = 200, description = "Assistant response (streaming events via WebSocket)", body = atomic_core::ChatMessageWithContext)), tag = "chat")]
@@ -152,12 +155,13 @@ pub async fn send_chat_message(
     let body = body.into_inner();
     let on_event = chat_event_callback(state.event_tx.clone());
 
-    let result = if body.canvas_context.is_some() {
+    let result = if body.canvas_context.is_some() || body.page_context.is_some() {
         db.0.send_chat_message_with_canvas(
             &conversation_id,
             &body.content,
             on_event,
             body.canvas_context,
+            body.page_context,
         )
         .await
     } else {

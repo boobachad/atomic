@@ -462,6 +462,7 @@ export const COMMAND_MAP: Record<string, CommandSpec> = {
     transformArgs: (a) => ({
       content: a.content,
       ...(a.canvasContext ? { canvas_context: a.canvasContext } : {}),
+      ...(a.pageContext ? { page_context: a.pageContext } : {}),
     }),
   },
 

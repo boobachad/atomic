@@ -20,6 +20,7 @@ interface UseInlineEditorReturn {
   editTags: Tag[];
   saveStatus: SaveStatus;
   cursorOffset: number | null;
+  editorRevision: number;
 
   startEditing: (cursorOffset?: number) => void;
   stopEditing: () => Promise<void>;
@@ -49,10 +50,12 @@ export function useInlineEditor({
   const [editTags, setEditTags] = useState<Tag[]>(atom.tags);
   const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle');
   const [cursorOffset, setCursorOffset] = useState<number | null>(null);
+  const [editorRevision, setEditorRevision] = useState(0);
 
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isSavingRef = useRef(false);
   const isEditingRef = useRef(false);
+  const atomIdRef = useRef(atom.id);
   const savingPromiseRef = useRef<Promise<void>>(Promise.resolve());
   const needsPipelineRef = useRef(false);
   const editContentRef = useRef(editContent);
@@ -73,20 +76,45 @@ export function useInlineEditor({
   useEffect(() => { editSourceUrlRef.current = editSourceUrl; }, [editSourceUrl]);
   useEffect(() => { editTagsRef.current = editTags; }, [editTags]);
 
-  // Sync from atom prop when not editing (e.g., external updates)
+  // Sync from atom prop for external updates. The CodeMirror editor consumes
+  // markdownSource only on mount, so a real incoming content/source/tag change
+  // bumps editorRevision and remounts the editor. Own autosaves update atom
+  // metadata but match lastSavedRef, so they do not remount and disrupt typing.
   useEffect(() => {
-    if (!isEditingRef.current) {
-      setEditContent(atom.content);
-      setEditSourceUrl(atom.source_url || '');
-      setEditTags(atom.tags);
-      editContentRef.current = atom.content;
-      editSourceUrlRef.current = atom.source_url || '';
-      editTagsRef.current = atom.tags;
-      lastSavedRef.current = {
-        content: atom.content,
-        sourceUrl: atom.source_url || '',
-        tagIds: atom.tags.map(t => t.id).sort().join(','),
-      };
+    const incoming = {
+      content: atom.content,
+      sourceUrl: atom.source_url || '',
+      tagIds: atom.tags.map(t => t.id).sort().join(','),
+    };
+    const atomChanged = atom.id !== atomIdRef.current;
+    const matchesLastSaved =
+      incoming.content === lastSavedRef.current.content &&
+      incoming.sourceUrl === lastSavedRef.current.sourceUrl &&
+      incoming.tagIds === lastSavedRef.current.tagIds;
+
+    if (!atomChanged && matchesLastSaved) return;
+
+    const currentTagIds = editTagsRef.current.map(t => t.id).sort().join(',');
+    const hasLocalDraftChanges =
+      editContentRef.current !== lastSavedRef.current.content ||
+      editSourceUrlRef.current !== lastSavedRef.current.sourceUrl ||
+      currentTagIds !== lastSavedRef.current.tagIds;
+
+    if (!atomChanged && hasLocalDraftChanges) {
+      return;
+    }
+
+    const shouldRemountEditor = atomChanged || incoming.content !== editContentRef.current;
+    atomIdRef.current = atom.id;
+    setEditContent(atom.content);
+    setEditSourceUrl(atom.source_url || '');
+    setEditTags(atom.tags);
+    editContentRef.current = atom.content;
+    editSourceUrlRef.current = atom.source_url || '';
+    editTagsRef.current = atom.tags;
+    lastSavedRef.current = incoming;
+    if (shouldRemountEditor) {
+      setEditorRevision((revision) => revision + 1);
     }
   }, [atom.id, atom.content, atom.source_url, atom.tags]);
 
@@ -314,6 +342,7 @@ export function useInlineEditor({
     editTags,
     saveStatus,
     cursorOffset,
+    editorRevision,
     startEditing,
     stopEditing,
     setEditContent: handleSetContent,

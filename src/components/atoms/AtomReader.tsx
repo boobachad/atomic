@@ -173,6 +173,7 @@ function AtomReaderContent({
 
   const {
     editContent, editSourceUrl, editTags, saveStatus,
+    editorRevision,
     startEditing, setEditContent, setEditSourceUrl, setEditTags, saveNow, flushDraft,
   } = useInlineEditor({ atom, onAtomUpdated });
   const isTaggingInFlight = atom.tagging_status === 'pending' || atom.tagging_status === 'processing';
@@ -286,7 +287,7 @@ function AtomReaderContent({
           <div className="flex-1 min-w-0">
             <Suspense fallback={null}>
               <AtomicCodeMirrorEditor
-                key={atom.id}
+                key={`${atom.id}:${editorRevision}`}
                 documentId={atom.id}
                 markdownSource={editContent}
                 initialRevealText={highlightText}

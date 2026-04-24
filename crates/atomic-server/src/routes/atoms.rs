@@ -270,8 +270,10 @@ pub async fn update_atom(
     let id = path.into_inner();
     let req = body.into_inner();
     let on_event = embedding_event_callback(state.event_tx.clone());
-    ok_or_error(
-        db.0.update_atom(
+    let event_tx = state.event_tx.clone();
+    match db
+        .0
+        .update_atom(
             &id,
             atomic_core::UpdateAtomRequest {
                 content: req.content,
@@ -281,8 +283,14 @@ pub async fn update_atom(
             },
             on_event,
         )
-        .await,
-    )
+        .await
+    {
+        Ok(atom) => {
+            let _ = event_tx.send(ServerEvent::AtomUpdated { atom: atom.clone() });
+            HttpResponse::Ok().json(atom)
+        }
+        Err(e) => crate::error::error_response(e),
+    }
 }
 
 /// Update atom content/metadata without triggering embedding or tagging pipeline.
