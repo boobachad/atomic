@@ -438,6 +438,24 @@ export function useSearchPalette({ isOpen, onClose, initialQuery = '' }: UseSear
     [flatItems, onClose, searchQuery, tags]
   );
 
+  const toggleAtomExpanded = useCallback((id: string) => {
+    setExpandedAtomIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
+  const toggleWikiExpanded = useCallback((id: string) => {
+    setExpandedWikiIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
       switch (e.key) {
@@ -539,6 +557,8 @@ export function useSearchPalette({ isOpen, onClose, initialQuery = '' }: UseSear
     tagResults,
     expandedAtomIds,
     expandedWikiIds,
+    toggleAtomExpanded,
+    toggleWikiExpanded,
     handleKeyDown,
     handleSelect,
   };

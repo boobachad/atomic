@@ -1,6 +1,6 @@
 import { createContext, Fragment, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { BookOpen, ChevronRight, FileText, Hash, MessageCircle } from 'lucide-react';
+import { BookOpen, FileText, Hash, MessageCircle, Minus, Plus } from 'lucide-react';
 import { CommandInput } from '../command-palette/CommandInput';
 import { byteOffsetsToUtf16, MATCH_SNIPPET_PAD, useSearchPalette } from './useSearchPalette';
 import { MATCH_END, MATCH_START, markdownToPlainText } from './markdownToPlainText';
@@ -17,7 +17,7 @@ import {
 // flash hover state — cleared on the next real mousemove inside the palette.
 const KeyboardNavContext = createContext(false);
 
-function Snippet({ text }: { text: string }) {
+function Snippet({ text, compact }: { text: string; compact?: boolean }) {
   const segments = useMemo(() => {
     const plain = markdownToPlainText(text);
     if (!plain.includes(MATCH_START)) {
@@ -46,8 +46,15 @@ function Snippet({ text }: { text: string }) {
     return out.filter((seg) => seg.text.length > 0);
   }, [text]);
 
+  const baseClass = 'text-xs leading-5 text-[var(--color-text-secondary)]';
   return (
-    <div className="mt-1 h-10 overflow-hidden text-xs leading-5 text-[var(--color-text-secondary)]">
+    <div
+      className={
+        compact
+          ? `${baseClass} truncate`
+          : `mt-1 h-10 overflow-hidden ${baseClass}`
+      }
+    >
       {segments.map((seg, idx) =>
         seg.match ? (
           <strong key={idx} className="font-semibold text-[var(--color-text-primary)]">
@@ -84,6 +91,7 @@ function PaletteItem({
   subtitle,
   meta,
   disclosure,
+  onDisclosureClick,
   indented,
 }: {
   selected: boolean;
@@ -92,9 +100,11 @@ function PaletteItem({
   title?: string;
   subtitle?: string;
   meta?: string;
-  /** Show a chevron to signal expandability. `null` means not expandable. */
+  /** Show a +/− toggle to signal expandability. `null`/undefined means not expandable. */
   disclosure?: 'collapsed' | 'expanded' | null;
-  /** Render the row indented (used for match sub-rows under an atom). */
+  /** Click handler for the disclosure toggle itself — stopped from bubbling to the row. */
+  onDisclosureClick?: () => void;
+  /** Render the row indented and compact (used for match sub-rows under an atom). */
   indented?: boolean;
 }) {
   const usingKeyboard = useContext(KeyboardNavContext);
@@ -106,40 +116,53 @@ function PaletteItem({
   // scroll, producing a delayed flash on the newly-selected row.
   const transitionClass = usingKeyboard ? '' : 'transition-colors';
   return (
-    <button
+    <div
+      role="button"
       onClick={onClick}
       data-palette-selected={selected ? 'true' : undefined}
-      className={`w-full flex items-start gap-3 py-3 text-left ${transitionClass} ${
-        indented ? 'pl-12 pr-4' : 'px-4'
+      className={`w-full flex items-start gap-3 text-left cursor-pointer ${transitionClass} ${
+        indented ? 'py-1.5 pl-12 pr-4' : 'py-3 px-4'
       } ${
         selected
           ? 'bg-[var(--color-bg-hover)] border-l-2 border-[var(--color-accent)]'
           : unselectedClass
       }`}
     >
-      {disclosure ? (
-        <span
-          className={`mt-0.5 text-[var(--color-text-tertiary)] transition-transform ${
-            disclosure === 'expanded' ? 'rotate-90' : ''
-          }`}
-          aria-hidden
-        >
-          <ChevronRight className="w-3 h-3" strokeWidth={2.5} />
-        </span>
-      ) : null}
       {icon ? <span className="text-[var(--color-text-secondary)] mt-0.5">{icon}</span> : null}
       <div className="min-w-0 flex-1">
         {title ? (
           <div className="flex items-center gap-2">
             <span className="truncate text-sm font-medium text-[var(--color-text-primary)]">{title}</span>
-            {meta ? (
-              <span className="text-[10px] text-[var(--color-text-tertiary)] shrink-0">{meta}</span>
+            {(meta || disclosure) ? (
+              <div className="ml-auto flex items-center gap-2 shrink-0 text-[var(--color-text-tertiary)]">
+                {meta ? <span className="text-[10px]">{meta}</span> : null}
+                {disclosure ? (
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onDisclosureClick?.();
+                    }}
+                    // p-1 -m-1 expands the click target without shifting layout —
+                    // tapping a 14px icon on a mouse is fine, but this palette also
+                    // opens on mobile where a bigger hit area matters.
+                    className="p-1 -m-1 rounded hover:text-[var(--color-text-primary)] flex items-center"
+                    aria-label={disclosure === 'expanded' ? 'Collapse matches' : 'Expand matches'}
+                  >
+                    {disclosure === 'expanded' ? (
+                      <Minus className="w-3.5 h-3.5" strokeWidth={2.5} />
+                    ) : (
+                      <Plus className="w-3.5 h-3.5" strokeWidth={2.5} />
+                    )}
+                  </button>
+                ) : null}
+              </div>
             ) : null}
           </div>
         ) : null}
-        {subtitle ? <Snippet text={subtitle} /> : null}
+        {subtitle ? <Snippet text={subtitle} compact={indented} /> : null}
       </div>
-    </button>
+    </div>
   );
 }
 
@@ -187,6 +210,8 @@ export function SearchPalette({ isOpen, onClose, initialQuery = '' }: SearchPale
     tagResults,
     expandedAtomIds,
     expandedWikiIds,
+    toggleAtomExpanded,
+    toggleWikiExpanded,
     handleKeyDown,
     handleSelect,
   } = useSearchPalette({ isOpen, onClose, initialQuery });
@@ -270,6 +295,7 @@ export function SearchPalette({ isOpen, onClose, initialQuery = '' }: SearchPale
               : `${Math.round(result.similarity_score * 100)}%`
           }
           disclosure={expandable ? (expanded ? 'expanded' : 'collapsed') : undefined}
+          onDisclosureClick={expandable ? () => toggleAtomExpanded(result.id) : undefined}
         />,
       );
       if (expanded) {
@@ -341,6 +367,7 @@ export function SearchPalette({ isOpen, onClose, initialQuery = '' }: SearchPale
               : `${result.atom_count} atoms`
           }
           disclosure={expandable ? (expanded ? 'expanded' : 'collapsed') : undefined}
+          onDisclosureClick={expandable ? () => toggleWikiExpanded(result.id) : undefined}
         />,
       );
       if (expanded) {
@@ -498,32 +525,32 @@ export function SearchPalette({ isOpen, onClose, initialQuery = '' }: SearchPale
           ) : null}
         </div>
 
-        <div className="px-4 py-2 border-t border-[var(--color-border)] flex items-center justify-between text-[10px] text-[var(--color-text-tertiary)]">
+        <div className="px-4 py-2 border-t border-[var(--color-border)] flex items-center justify-between text-[11px] text-[var(--color-text-primary)]">
           <div className="flex items-center gap-3">
             <span className="flex items-center gap-1">
-              <kbd className="px-1 py-0.5 bg-[var(--color-bg-hover)] rounded">↑↓</kbd>
+              <kbd className="px-1 py-0.5 bg-[var(--color-bg-hover)] border border-[var(--color-border-hover)] rounded text-[var(--color-text-primary)]">↑↓</kbd>
               navigate
             </span>
             <span className="flex items-center gap-1">
-              <kbd className="px-1 py-0.5 bg-[var(--color-bg-hover)] rounded">↵</kbd>
+              <kbd className="px-1 py-0.5 bg-[var(--color-bg-hover)] border border-[var(--color-border-hover)] rounded text-[var(--color-text-primary)]">↵</kbd>
               open
             </span>
             <span className="flex items-center gap-1">
-              <kbd className="px-1 py-0.5 bg-[var(--color-bg-hover)] rounded">→</kbd>
+              <kbd className="px-1 py-0.5 bg-[var(--color-bg-hover)] border border-[var(--color-border-hover)] rounded text-[var(--color-text-primary)]">→</kbd>
               expand matches
             </span>
             <span className="flex items-center gap-1">
-              <kbd className="px-1 py-0.5 bg-[var(--color-bg-hover)] rounded">esc</kbd>
+              <kbd className="px-1 py-0.5 bg-[var(--color-bg-hover)] border border-[var(--color-border-hover)] rounded text-[var(--color-text-primary)]">esc</kbd>
               close
             </span>
           </div>
           <div className="flex items-center gap-3">
             <span className="flex items-center gap-1">
-              <kbd className="px-1 py-0.5 bg-[var(--color-bg-hover)] rounded">#</kbd>
+              <kbd className="px-1 py-0.5 bg-[var(--color-bg-hover)] border border-[var(--color-border-hover)] rounded text-[var(--color-text-primary)]">#</kbd>
               tags only
             </span>
             <span className="flex items-center gap-1">
-              <kbd className="px-1 py-0.5 bg-[var(--color-bg-hover)] rounded">&gt;</kbd>
+              <kbd className="px-1 py-0.5 bg-[var(--color-bg-hover)] border border-[var(--color-border-hover)] rounded text-[var(--color-text-primary)]">&gt;</kbd>
               semantic atoms
             </span>
           </div>
