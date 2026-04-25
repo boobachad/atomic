@@ -41,7 +41,7 @@ async fn postgres_storage() -> Option<atomic_core::storage::PostgresStorage> {
 
     // Truncate data tables for a clean test (preserve schema)
     sqlx::raw_sql(
-        "TRUNCATE atoms, tags, atom_tags, atom_chunks, atom_positions, \
+        "TRUNCATE atoms, tags, atom_tags, atom_chunks, atom_positions, atom_pipeline_jobs, \
          semantic_edges, atom_clusters, tag_embeddings, \
          wiki_articles, wiki_citations, wiki_links, wiki_article_versions, atom_links, \
          conversations, conversation_tags, chat_messages, chat_tool_calls, chat_citations, \

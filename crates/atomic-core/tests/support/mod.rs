@@ -311,7 +311,7 @@ pub async fn truncate_postgres_for_test(url: &str) {
         .expect("connect truncate pool");
     // Same list as storage_tests.rs — keeps both files in sync.
     let _ = sqlx::raw_sql(
-        "TRUNCATE atoms, tags, atom_tags, atom_chunks, atom_positions, \
+        "TRUNCATE atoms, tags, atom_tags, atom_chunks, atom_positions, atom_pipeline_jobs, \
          semantic_edges, atom_clusters, tag_embeddings, \
          wiki_articles, wiki_citations, wiki_links, wiki_article_versions, atom_links, \
          conversations, conversation_tags, chat_messages, chat_tool_calls, chat_citations, \
