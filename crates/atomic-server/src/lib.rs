@@ -73,9 +73,12 @@ pub use utoipa_scalar::{Scalar, Servable};
         routes::embedding::process_pending_embeddings,
         routes::embedding::process_pending_tagging,
         routes::embedding::retry_embedding,
+        routes::embedding::retry_failed_embeddings,
+        routes::embedding::retry_failed_tagging,
         routes::embedding::retry_tagging,
         routes::embedding::reembed_all_atoms,
         routes::embedding::reset_stuck_processing,
+        routes::embedding::get_all_pipeline_statuses,
         routes::embedding::get_embedding_status,
         // Canvas
         routes::canvas::get_positions,

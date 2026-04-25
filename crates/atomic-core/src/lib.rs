@@ -40,6 +40,7 @@ pub mod embedding;
 pub mod error;
 pub mod executor;
 pub mod extraction;
+pub mod graph_maintenance;
 pub mod import;
 pub mod ingest;
 pub mod manager;
@@ -59,7 +60,7 @@ pub mod wiki;
 pub use agent::{CanvasClusterSummary, CanvasContext, ChatEvent, PageContext};
 pub use briefing::{Briefing, BriefingCitation, BriefingWithCitations};
 pub use db::Database;
-pub use embedding::EmbeddingEvent;
+pub use embedding::{EmbeddingEvent, EmbeddingStrategy, TaggingStrategy};
 pub use error::AtomicCoreError;
 pub use import::{ImportProgress, ImportResult};
 pub use ingest::{FeedPollResult, IngestionEvent, IngestionRequest, IngestionResult};
@@ -790,13 +791,15 @@ impl AtomicCore {
         self.canvas_cache.invalidate();
 
         if !content.trim().is_empty() {
-            embedding::spawn_embedding_task_single_with_settings(
-                self.storage.clone(),
-                id,
-                content,
-                self.wrap_event_for_cache(on_event),
-                self.settings_for_background(),
-            );
+            let job = AtomPipelineJobRequest {
+                atom_id: id,
+                embed_requested: true,
+                tag_requested: true,
+                not_before: None,
+                reason: "create_atom".to_string(),
+            };
+            self.storage.enqueue_pipeline_jobs_sync(&[job]).await?;
+            self.process_queued_pipeline_jobs(on_event).await?;
         }
 
         Ok(Some(atom_with_tags))
@@ -874,94 +877,19 @@ impl AtomicCore {
             .map(|awt| awt.atom.id.clone())
             .collect();
 
-        // Spawn batch embedding
         if !atom_ids.is_empty() {
-            for atom_id in &atom_ids {
-                self.storage
-                    .set_embedding_status_sync(atom_id, "processing", None)
-                    .await
-                    .ok();
-            }
-
-            let storage_clone = self.storage.clone();
-            let bg_settings = self.settings_for_background();
-            let on_event = self.wrap_event_for_cache(on_event);
-            let canvas_cache = Some(self.canvas_cache.clone());
-            executor::spawn(async move {
-                // Limit concurrent batch tasks to bound memory from queued work
-                let _permit = executor::EMBEDDING_BATCH_SEMAPHORE
-                    .acquire()
-                    .await
-                    .expect("Embedding batch semaphore closed unexpectedly");
-
-                // Read content from DB in one query (not captured at spawn time)
-                let embedding_pairs = match storage_clone
-                    .get_atom_contents_batch_impl(&atom_ids)
-                    .await
-                {
-                    Ok(pairs) => {
-                        // Mark any missing atoms as failed so they don't stay stuck in "processing"
-                        if pairs.len() < atom_ids.len() {
-                            let found_ids: std::collections::HashSet<&str> =
-                                pairs.iter().map(|(id, _)| id.as_str()).collect();
-                            for atom_id in &atom_ids {
-                                if !found_ids.contains(atom_id.as_str()) {
-                                    tracing::warn!(
-                                        atom_id,
-                                        "Atom not found for embedding, marking as failed"
-                                    );
-                                    storage_clone
-                                        .set_embedding_status_sync(
-                                            atom_id,
-                                            "failed",
-                                            Some("Atom not found"),
-                                        )
-                                        .await
-                                        .ok();
-                                }
-                            }
-                        }
-                        pairs
-                    }
-                    Err(e) => {
-                        tracing::error!(error = %e, "Failed to batch-read atom contents for embedding");
-                        for atom_id in &atom_ids {
-                            storage_clone
-                                .set_embedding_status_sync(atom_id, "failed", Some(&e.to_string()))
-                                .await
-                                .ok();
-                        }
-                        return;
-                    }
-                };
-
-                if !embedding_pairs.is_empty() {
-                    let input = embedding::AtomInput::Preloaded(embedding_pairs);
-                    match bg_settings {
-                        Some(s) => {
-                            embedding::process_embedding_batch_with_settings(
-                                storage_clone,
-                                input,
-                                false,
-                                on_event,
-                                s,
-                                canvas_cache,
-                            )
-                            .await
-                        }
-                        None => {
-                            embedding::process_embedding_batch(
-                                storage_clone,
-                                input,
-                                false,
-                                on_event,
-                                canvas_cache,
-                            )
-                            .await
-                        }
-                    };
-                }
-            });
+            let jobs: Vec<AtomPipelineJobRequest> = atom_ids
+                .iter()
+                .map(|atom_id| AtomPipelineJobRequest {
+                    atom_id: atom_id.clone(),
+                    embed_requested: true,
+                    tag_requested: true,
+                    not_before: None,
+                    reason: "create_atoms_bulk".to_string(),
+                })
+                .collect();
+            self.storage.enqueue_pipeline_jobs_sync(&jobs).await?;
+            self.process_queued_pipeline_jobs(on_event).await?;
         }
 
         let count = atoms_with_tags.len();
@@ -983,19 +911,19 @@ impl AtomicCore {
         F: Fn(EmbeddingEvent) + Send + Sync + 'static,
     {
         let now = Utc::now().to_rfc3339();
-        let content = request.content.clone();
 
         let atom_with_tags = self.storage.update_atom_impl(id, &request, &now).await?;
         self.canvas_cache.invalidate();
 
-        // Spawn embedding task (non-blocking)
-        embedding::spawn_embedding_task_single_with_settings(
-            self.storage.clone(),
-            id.to_string(),
-            content,
-            self.wrap_event_for_cache(on_event),
-            self.settings_for_background(),
-        );
+        let job = AtomPipelineJobRequest {
+            atom_id: id.to_string(),
+            embed_requested: true,
+            tag_requested: true,
+            not_before: None,
+            reason: "update_atom".to_string(),
+        };
+        self.storage.enqueue_pipeline_jobs_sync(&[job]).await?;
+        self.process_queued_pipeline_jobs(on_event).await?;
 
         Ok(atom_with_tags)
     }
@@ -1769,6 +1697,32 @@ impl AtomicCore {
         }
     }
 
+    /// Process due jobs from the unified embedding/tagging queue.
+    pub async fn process_queued_pipeline_jobs<F>(&self, on_event: F) -> Result<i32, AtomicCoreError>
+    where
+        F: Fn(EmbeddingEvent) + Send + Sync + 'static,
+    {
+        let on_event = self.wrap_event_for_cache(on_event);
+        let canvas_cache = Some(self.canvas_cache.clone());
+        match self.settings_for_background() {
+            Some(s) => embedding::process_queued_pipeline_jobs_with_settings(
+                self.storage.clone(),
+                on_event,
+                s,
+                canvas_cache,
+            )
+            .await
+            .map_err(AtomicCoreError::Embedding),
+            None => embedding::process_queued_pipeline_jobs(
+                self.storage.clone(),
+                on_event,
+                canvas_cache,
+            )
+            .await
+            .map_err(AtomicCoreError::Embedding),
+        }
+    }
+
     /// Process pending embeddings only for atoms last updated at or before
     /// `cutoff`. Used by the draft-pipeline scheduler so active edits can
     /// settle before background AI work begins.
@@ -1819,6 +1773,15 @@ impl AtomicCore {
             .map_err(|e| AtomicCoreError::Embedding(e))
     }
 
+    /// Process deferred graph maintenance immediately.
+    ///
+    /// This is the synchronous path used by tests and manual callers that need
+    /// semantic edges/tag centroids to be current before reading the graph. The
+    /// normal server path runs the same work from `GraphMaintenanceTask`.
+    pub async fn process_graph_maintenance(&self) -> Result<(), AtomicCoreError> {
+        graph_maintenance::run_now(self).await
+    }
+
     /// Reset atoms stuck in 'processing' state back to 'pending'
     pub async fn reset_stuck_processing(&self) -> Result<i32, AtomicCoreError> {
         self.storage.reset_stuck_processing_sync().await
@@ -1841,19 +1804,23 @@ impl AtomicCore {
             )));
         }
 
-        let content = self
-            .storage
+        self.storage
             .get_atom_content_impl(atom_id)
             .await?
             .ok_or_else(|| AtomicCoreError::NotFound(format!("Atom {} not found", atom_id)))?;
-
-        embedding::spawn_embedding_task_single_with_settings(
-            self.storage.clone(),
-            atom_id.to_string(),
-            content,
-            self.wrap_event_for_cache(on_event),
-            self.settings_for_background(),
-        );
+        let tagging_status = self.storage.get_tagging_status_impl(atom_id).await?;
+        self.storage
+            .set_embedding_status_sync(atom_id, "pending", None)
+            .await?;
+        let job = AtomPipelineJobRequest {
+            atom_id: atom_id.to_string(),
+            embed_requested: true,
+            tag_requested: tagging_status == "pending",
+            not_before: None,
+            reason: "retry_embedding".to_string(),
+        };
+        self.storage.enqueue_pipeline_jobs_sync(&[job]).await?;
+        self.process_queued_pipeline_jobs(on_event).await?;
 
         Ok(())
     }
@@ -1870,36 +1837,18 @@ impl AtomicCore {
         let count = pending_ids.len() as i32;
 
         if count > 0 {
-            let storage_clone = self.storage.clone();
-            let bg_settings = self.settings_for_background();
-            let input = embedding::AtomInput::IdsOnly(pending_ids);
-            let on_event = self.wrap_event_for_cache(on_event);
-            let canvas_cache = Some(self.canvas_cache.clone());
-            executor::spawn(async move {
-                match bg_settings {
-                    Some(s) => {
-                        embedding::process_embedding_batch_with_settings(
-                            storage_clone,
-                            input,
-                            true, // skip tagging - re-embedding only
-                            on_event,
-                            s,
-                            canvas_cache,
-                        )
-                        .await
-                    }
-                    None => {
-                        embedding::process_embedding_batch(
-                            storage_clone,
-                            input,
-                            true,
-                            on_event,
-                            canvas_cache,
-                        )
-                        .await
-                    }
-                };
-            });
+            let jobs: Vec<AtomPipelineJobRequest> = pending_ids
+                .into_iter()
+                .map(|atom_id| AtomPipelineJobRequest {
+                    atom_id,
+                    embed_requested: true,
+                    tag_requested: false,
+                    not_before: None,
+                    reason: "spawn_reembed_pending".to_string(),
+                })
+                .collect();
+            self.storage.enqueue_pipeline_jobs_sync(&jobs).await?;
+            self.process_queued_pipeline_jobs(on_event).await?;
         }
 
         Ok(count)
@@ -1918,36 +1867,18 @@ impl AtomicCore {
         let count = atom_ids.len() as i32;
 
         if count > 0 {
-            let storage_clone = self.storage.clone();
-            let bg_settings = self.settings_for_background();
-            let input = embedding::AtomInput::IdsOnly(atom_ids);
-            let on_event = self.wrap_event_for_cache(on_event);
-            let canvas_cache = Some(self.canvas_cache.clone());
-            executor::spawn(async move {
-                match bg_settings {
-                    Some(s) => {
-                        embedding::process_embedding_batch_with_settings(
-                            storage_clone,
-                            input,
-                            false,
-                            on_event,
-                            s,
-                            canvas_cache,
-                        )
-                        .await
-                    }
-                    None => {
-                        embedding::process_embedding_batch(
-                            storage_clone,
-                            input,
-                            false,
-                            on_event,
-                            canvas_cache,
-                        )
-                        .await
-                    }
-                };
-            });
+            let jobs: Vec<AtomPipelineJobRequest> = atom_ids
+                .into_iter()
+                .map(|atom_id| AtomPipelineJobRequest {
+                    atom_id,
+                    embed_requested: true,
+                    tag_requested: false,
+                    not_before: None,
+                    reason: "reembed_all_atoms".to_string(),
+                })
+                .collect();
+            self.storage.enqueue_pipeline_jobs_sync(&jobs).await?;
+            self.process_queued_pipeline_jobs(on_event).await?;
         }
 
         Ok(count)
@@ -1975,22 +1906,55 @@ impl AtomicCore {
             .set_tagging_status_sync(atom_id, "pending", None)
             .await?;
 
-        let storage = self.storage.clone();
-        let atom_id = atom_id.to_string();
-        let mut bg_settings = self.settings_for_background().unwrap_or_default();
+        let mut bg_settings = match self.settings_for_background() {
+            Some(settings) => settings,
+            None => self.storage.get_all_settings_sync().await?,
+        };
         bg_settings.insert("auto_tagging_enabled".to_string(), "true".to_string());
         let on_event = self.wrap_event_for_cache(on_event);
-        executor::spawn(async move {
-            embedding::process_tagging_batch_with_settings(
-                storage,
-                vec![atom_id],
-                on_event,
-                bg_settings,
-            )
-            .await;
-        });
+        let job = AtomPipelineJobRequest {
+            atom_id: atom_id.to_string(),
+            embed_requested: false,
+            tag_requested: true,
+            not_before: None,
+            reason: "retry_tagging".to_string(),
+        };
+        self.storage.enqueue_pipeline_jobs_sync(&[job]).await?;
+        embedding::process_queued_pipeline_jobs_with_settings(
+            self.storage.clone(),
+            on_event,
+            bg_settings,
+            Some(self.canvas_cache.clone()),
+        )
+        .await
+        .map_err(AtomicCoreError::Embedding)?;
 
         Ok(())
+    }
+
+    /// Retry every atom whose embedding stage is currently failed in this database.
+    pub async fn retry_failed_embeddings<F>(&self, on_event: F) -> Result<i32, AtomicCoreError>
+    where
+        F: Fn(EmbeddingEvent) + Send + Sync + Clone + 'static,
+    {
+        let count = self.storage.reset_failed_embedding_statuses_sync().await?;
+        if count > 0 {
+            self.process_pending_embeddings(on_event).await?;
+        }
+        Ok(count)
+    }
+
+    /// Retry every atom whose tagging stage is currently failed and whose
+    /// embeddings are already complete in this database.
+    pub async fn retry_failed_tagging<F>(&self, on_event: F) -> Result<i32, AtomicCoreError>
+    where
+        F: Fn(EmbeddingEvent) + Send + Sync + Clone + 'static,
+    {
+        let count = self.storage.reset_failed_tagging_statuses_sync().await?;
+        if count > 0 {
+            self.process_pending_tagging(on_event).await?;
+        }
+        Ok(count)
     }
 
     // ==================== Clustering ====================
@@ -2492,33 +2456,10 @@ impl AtomicCore {
     where
         F: Fn(EmbeddingEvent) + Send + Sync + Clone + 'static,
     {
-        let pending_atoms = self.storage.claim_pending_tagging_sync().await?;
-
-        let count = pending_atoms.len() as i32;
-
-        if count > 0 {
-            let storage = self.storage.clone();
-            let bg_settings = self.settings_for_background();
-            let on_event = self.wrap_event_for_cache(on_event);
-            executor::spawn(async move {
-                match bg_settings {
-                    Some(s) => {
-                        embedding::process_tagging_batch_with_settings(
-                            storage,
-                            pending_atoms,
-                            on_event,
-                            s,
-                        )
-                        .await
-                    }
-                    None => {
-                        embedding::process_tagging_batch(storage, pending_atoms, on_event).await
-                    }
-                };
-            });
-        }
-
-        Ok(count)
+        self.storage
+            .enqueue_pipeline_jobs_from_statuses_sync(None)
+            .await?;
+        self.process_queued_pipeline_jobs(on_event).await
     }
 
     /// Process pending tagging only for atoms last updated at or before `cutoff`.
@@ -2531,36 +2472,13 @@ impl AtomicCore {
         F: Fn(EmbeddingEvent) + Send + Sync + Clone + 'static,
     {
         let cutoff_rfc3339 = cutoff.to_rfc3339();
-        let pending_atoms = self
-            .storage
-            .claim_pending_tagging_due_sync(&cutoff_rfc3339)
+        self.storage
+            .enqueue_pipeline_jobs_from_statuses_sync(Some(&cutoff_rfc3339))
             .await?;
-
-        let count = pending_atoms.len() as i32;
-
+        let count = self.process_queued_pipeline_jobs(on_event).await?;
         if count > 0 {
-            tracing::info!(cutoff = %cutoff_rfc3339, count, "Queued pending tagging due for processing");
-            let storage = self.storage.clone();
-            let bg_settings = self.settings_for_background();
-            let on_event = self.wrap_event_for_cache(on_event);
-            executor::spawn(async move {
-                match bg_settings {
-                    Some(s) => {
-                        embedding::process_tagging_batch_with_settings(
-                            storage,
-                            pending_atoms,
-                            on_event,
-                            s,
-                        )
-                        .await
-                    }
-                    None => {
-                        embedding::process_tagging_batch(storage, pending_atoms, on_event).await
-                    }
-                };
-            });
+            tracing::info!(cutoff = %cutoff_rfc3339, count, "Queued pending pipeline jobs due for processing");
         }
-
         Ok(count)
     }
 
@@ -2597,13 +2515,15 @@ impl AtomicCore {
             return Ok(());
         }
 
-        embedding::spawn_embedding_task_single_with_settings(
-            self.storage.clone(),
-            atom_id.to_string(),
-            content,
-            self.wrap_event_for_cache(on_event),
-            self.settings_for_background(),
-        );
+        let job = AtomPipelineJobRequest {
+            atom_id: atom_id.to_string(),
+            embed_requested: true,
+            tag_requested: true,
+            not_before: None,
+            reason: "process_atom_pipeline".to_string(),
+        };
+        self.storage.enqueue_pipeline_jobs_sync(&[job]).await?;
+        self.process_queued_pipeline_jobs(on_event).await?;
 
         Ok(())
     }
@@ -3004,44 +2924,19 @@ impl AtomicCore {
 
         // Trigger embedding processing for all imported atoms
         if !imported_atoms.is_empty() {
-            for (atom_id, _) in &imported_atoms {
-                self.storage
-                    .set_embedding_status_sync(atom_id, "processing", None)
-                    .await
-                    .ok();
-            }
+            let jobs: Vec<AtomPipelineJobRequest> = imported_atoms
+                .iter()
+                .map(|(atom_id, _)| AtomPipelineJobRequest {
+                    atom_id: atom_id.clone(),
+                    embed_requested: true,
+                    tag_requested: true,
+                    not_before: None,
+                    reason: "import_markdown".to_string(),
+                })
+                .collect();
             self.canvas_cache.invalidate();
-
-            let storage_clone = self.storage.clone();
-            let bg_settings = self.settings_for_background();
-            let input = embedding::AtomInput::Preloaded(imported_atoms);
-            let on_event = self.wrap_event_for_cache(on_event);
-            let canvas_cache = Some(self.canvas_cache.clone());
-            executor::spawn(async move {
-                match bg_settings {
-                    Some(s) => {
-                        embedding::process_embedding_batch_with_settings(
-                            storage_clone,
-                            input,
-                            false,
-                            on_event,
-                            s,
-                            canvas_cache,
-                        )
-                        .await
-                    }
-                    None => {
-                        embedding::process_embedding_batch(
-                            storage_clone,
-                            input,
-                            false,
-                            on_event,
-                            canvas_cache,
-                        )
-                        .await
-                    }
-                };
-            });
+            self.storage.enqueue_pipeline_jobs_sync(&jobs).await?;
+            self.process_queued_pipeline_jobs(on_event).await?;
         }
 
         Ok(stats)

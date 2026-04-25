@@ -14,6 +14,7 @@
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -40,15 +41,25 @@ pub const EDGE_SIMILARITY_THRESHOLD: f32 = 0.5;
 /// `/v1/chat/completions`. Holds the server handle for lifetime management.
 pub struct MockAiServer {
     server: MockServer,
+    counters: Arc<MockAiCounters>,
+}
+
+#[derive(Default)]
+struct MockAiCounters {
+    embedding_requests: AtomicUsize,
+    chat_requests: AtomicUsize,
 }
 
 impl MockAiServer {
     pub async fn start() -> Self {
         let server = MockServer::start().await;
+        let counters = Arc::new(MockAiCounters::default());
 
         Mock::given(method("POST"))
             .and(path("/v1/embeddings"))
-            .respond_with(EmbedResponder)
+            .respond_with(EmbedResponder {
+                counters: counters.clone(),
+            })
             .mount(&server)
             .await;
 
@@ -58,17 +69,32 @@ impl MockAiServer {
         // for tagging we return a deterministic {"tags":[...]} shape.
         Mock::given(method("POST"))
             .and(path("/v1/chat/completions"))
-            .respond_with(ChatResponder)
+            .respond_with(ChatResponder {
+                counters: counters.clone(),
+            })
             .mount(&server)
             .await;
 
-        Self { server }
+        Self { server, counters }
     }
 
     /// Base URL the `OpenAICompatProvider` should hit. No `/v1` suffix —
     /// the provider normalizes the URL itself.
     pub fn base_url(&self) -> String {
         self.server.uri()
+    }
+
+    pub fn embedding_request_count(&self) -> usize {
+        self.counters.embedding_requests.load(Ordering::Relaxed)
+    }
+
+    pub fn chat_request_count(&self) -> usize {
+        self.counters.chat_requests.load(Ordering::Relaxed)
+    }
+
+    pub fn reset_counts(&self) {
+        self.counters.embedding_requests.store(0, Ordering::Relaxed);
+        self.counters.chat_requests.store(0, Ordering::Relaxed);
     }
 }
 
@@ -104,10 +130,15 @@ fn embed_text(text: &str) -> Vec<f32> {
     vec
 }
 
-struct EmbedResponder;
+struct EmbedResponder {
+    counters: Arc<MockAiCounters>,
+}
 
 impl Respond for EmbedResponder {
     fn respond(&self, req: &Request) -> ResponseTemplate {
+        self.counters
+            .embedding_requests
+            .fetch_add(1, Ordering::Relaxed);
         let body: Value = match serde_json::from_slice(&req.body) {
             Ok(v) => v,
             Err(_) => return ResponseTemplate::new(400),
@@ -135,10 +166,13 @@ impl Respond for EmbedResponder {
     }
 }
 
-struct ChatResponder;
+struct ChatResponder {
+    counters: Arc<MockAiCounters>,
+}
 
 impl Respond for ChatResponder {
     fn respond(&self, req: &Request) -> ResponseTemplate {
+        self.counters.chat_requests.fetch_add(1, Ordering::Relaxed);
         let body: Value = match serde_json::from_slice(&req.body) {
             Ok(v) => v,
             Err(_) => return ResponseTemplate::new(400),
@@ -300,7 +334,7 @@ pub type EventRx = UnboundedReceiver<atomic_core::EmbeddingEvent>;
 /// in the test). The callback is `Arc`-backed because `create_atom`'s bound
 /// is `Fn + Send + Sync + 'static`.
 pub fn event_collector() -> (
-    impl Fn(atomic_core::EmbeddingEvent) + Send + Sync + 'static,
+    impl Fn(atomic_core::EmbeddingEvent) + Send + Sync + Clone + 'static,
     EventRx,
 ) {
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
@@ -350,7 +384,10 @@ pub async fn await_pipeline(rx: &mut EventRx, atom_id: &str) -> Vec<atomic_core:
             | EmbeddingEvent::TaggingComplete { atom_id: id, .. }
             | EmbeddingEvent::TaggingSkipped { atom_id: id }
             | EmbeddingEvent::TaggingFailed { atom_id: id, .. } => id == atom_id,
-            EmbeddingEvent::BatchProgress { .. } => false,
+            EmbeddingEvent::BatchProgress { .. }
+            | EmbeddingEvent::PipelineQueueStarted { .. }
+            | EmbeddingEvent::PipelineQueueProgress { .. }
+            | EmbeddingEvent::PipelineQueueCompleted { .. } => false,
         };
 
         if matches_target {

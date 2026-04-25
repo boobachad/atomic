@@ -590,15 +590,62 @@ async fn execute_create_atom(
         cache.invalidate();
     }
 
-    crate::embedding::spawn_embedding_task_single_with_settings(
-        storage.clone(),
-        id,
-        content,
-        move |event| on_embedding_event(event),
+    enqueue_and_process_agent_pipeline(
+        storage,
+        &id,
+        "agent_create_atom",
         external_settings,
-    );
+        canvas_cache,
+        on_embedding_event,
+    )
+    .await?;
 
     Ok(atom)
+}
+
+async fn enqueue_and_process_agent_pipeline(
+    storage: &StorageBackend,
+    atom_id: &str,
+    reason: &str,
+    external_settings: Option<std::collections::HashMap<String, String>>,
+    canvas_cache: Option<&crate::CanvasCache>,
+    on_embedding_event: Arc<dyn Fn(EmbeddingEvent) + Send + Sync + 'static>,
+) -> Result<(), String> {
+    let job = crate::models::AtomPipelineJobRequest {
+        atom_id: atom_id.to_string(),
+        embed_requested: true,
+        tag_requested: true,
+        not_before: None,
+        reason: reason.to_string(),
+    };
+    storage
+        .enqueue_pipeline_jobs_sync(&[job])
+        .await
+        .map_err(|e| e.to_string())?;
+    let callback = {
+        let on_embedding_event = Arc::clone(&on_embedding_event);
+        move |event| on_embedding_event(event)
+    };
+    match external_settings {
+        Some(settings) => {
+            crate::embedding::process_queued_pipeline_jobs_with_settings(
+                storage.clone(),
+                callback,
+                settings,
+                canvas_cache.cloned(),
+            )
+            .await?;
+        }
+        None => {
+            crate::embedding::process_queued_pipeline_jobs(
+                storage.clone(),
+                callback,
+                canvas_cache.cloned(),
+            )
+            .await?;
+        }
+    }
+    Ok(())
 }
 
 async fn execute_update_atom(
@@ -651,13 +698,15 @@ async fn execute_update_atom(
         cache.invalidate();
     }
 
-    crate::embedding::spawn_embedding_task_single_with_settings(
-        storage.clone(),
-        atom_id.to_string(),
-        content,
-        move |event| on_embedding_event(event),
+    enqueue_and_process_agent_pipeline(
+        storage,
+        atom_id,
+        "agent_update_atom",
         external_settings,
-    );
+        canvas_cache,
+        on_embedding_event,
+    )
+    .await?;
 
     Ok(Some(atom))
 }
@@ -783,13 +832,15 @@ async fn execute_edit_atom(
         cache.invalidate();
     }
 
-    crate::embedding::spawn_embedding_task_single_with_settings(
-        storage.clone(),
-        atom_id.to_string(),
-        content,
-        move |event| on_embedding_event(event),
+    enqueue_and_process_agent_pipeline(
+        storage,
+        atom_id,
+        "agent_edit_atom",
         external_settings,
-    );
+        canvas_cache,
+        on_embedding_event,
+    )
+    .await?;
 
     Ok(Some(atom))
 }

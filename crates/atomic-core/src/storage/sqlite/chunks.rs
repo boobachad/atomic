@@ -110,6 +110,70 @@ impl SqliteStorage {
         Self::save_chunks_for_atom(&conn, atom_id, chunks)
     }
 
+    pub(crate) fn get_chunks_for_atoms_sync(
+        &self,
+        atom_ids: &[String],
+    ) -> StorageResult<Vec<ExistingAtomChunk>> {
+        if atom_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let conn = self.db.read_conn()?;
+        let placeholders = atom_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let sql = format!(
+            "SELECT id, atom_id, chunk_index, content
+             FROM atom_chunks
+             WHERE atom_id IN ({})
+             ORDER BY atom_id, chunk_index",
+            placeholders
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let chunks = stmt
+            .query_map(rusqlite::params_from_iter(atom_ids.iter()), |row| {
+                Ok(ExistingAtomChunk {
+                    id: row.get(0)?,
+                    atom_id: row.get(1)?,
+                    chunk_index: row.get(2)?,
+                    content: row.get(3)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(chunks)
+    }
+
+    pub(crate) fn update_chunk_embeddings_sync(
+        &self,
+        chunks: &[(String, Vec<f32>)],
+    ) -> StorageResult<()> {
+        if chunks.is_empty() {
+            return Ok(());
+        }
+        let mut conn = self
+            .db
+            .conn
+            .lock()
+            .map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+        let tx = conn
+            .transaction()
+            .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+
+        for (chunk_id, embedding_vec) in chunks {
+            let embedding_blob = embedding::f32_vec_to_blob_public(embedding_vec);
+            tx.execute(
+                "UPDATE atom_chunks SET embedding = ?1 WHERE id = ?2",
+                rusqlite::params![&embedding_blob, chunk_id],
+            )?;
+            tx.execute("DELETE FROM vec_chunks WHERE chunk_id = ?1", [chunk_id])?;
+            tx.execute(
+                "INSERT INTO vec_chunks (chunk_id, embedding) VALUES (?1, ?2)",
+                rusqlite::params![chunk_id, &embedding_blob],
+            )?;
+        }
+
+        tx.commit()
+            .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+        Ok(())
+    }
+
     /// Save chunks and embeddings for multiple atoms in a single transaction.
     /// Each atom is wrapped in a SAVEPOINT so a mid-atom failure rolls back
     /// only that atom's partial state (DELETEs + INSERTs), not the whole batch.
@@ -277,6 +341,41 @@ impl SqliteStorage {
         )?;
 
         Ok((embedding_count + tagging_count) as i32)
+    }
+
+    pub(crate) fn reset_failed_embedding_statuses_sync(&self) -> StorageResult<i32> {
+        let conn = self
+            .db
+            .conn
+            .lock()
+            .map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+
+        let count = conn.execute(
+            "UPDATE atoms
+             SET embedding_status = 'pending', embedding_error = NULL
+             WHERE embedding_status = 'failed'",
+            [],
+        )?;
+
+        Ok(count as i32)
+    }
+
+    pub(crate) fn reset_failed_tagging_statuses_sync(&self) -> StorageResult<i32> {
+        let conn = self
+            .db
+            .conn
+            .lock()
+            .map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+
+        let count = conn.execute(
+            "UPDATE atoms
+             SET tagging_status = 'pending', tagging_error = NULL
+             WHERE tagging_status = 'failed'
+               AND embedding_status = 'complete'",
+            [],
+        )?;
+
+        Ok(count as i32)
     }
 
     pub(crate) fn rebuild_semantic_edges_sync(&self) -> StorageResult<i32> {
@@ -707,6 +806,220 @@ impl SqliteStorage {
         Ok(results)
     }
 
+    pub(crate) fn enqueue_pipeline_jobs_sync(
+        &self,
+        jobs: &[AtomPipelineJobRequest],
+    ) -> StorageResult<i32> {
+        if jobs.is_empty() {
+            return Ok(0);
+        }
+        let mut conn = self
+            .db
+            .conn
+            .lock()
+            .map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+        let tx = conn
+            .transaction()
+            .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+        let now = chrono::Utc::now().to_rfc3339();
+        let mut count = 0i32;
+
+        for job in jobs {
+            if !job.embed_requested && !job.tag_requested {
+                continue;
+            }
+            let not_before = job.not_before.as_deref().unwrap_or(&now);
+            let changed = tx.execute(
+                "INSERT INTO atom_pipeline_jobs (
+                    atom_id, embed_requested, tag_requested, reason, not_before,
+                    state, lease_until, attempts, atom_updated_at, last_error,
+                    created_at, updated_at
+                 )
+                 SELECT id, ?2, ?3, ?4, ?5, 'pending', NULL, 0, updated_at, NULL, ?6, ?6
+                 FROM atoms
+                 WHERE id = ?1
+                 ON CONFLICT(atom_id) DO UPDATE SET
+                    embed_requested = MAX(atom_pipeline_jobs.embed_requested, excluded.embed_requested),
+                    tag_requested = MAX(atom_pipeline_jobs.tag_requested, excluded.tag_requested),
+                    reason = excluded.reason,
+                    not_before = MIN(atom_pipeline_jobs.not_before, excluded.not_before),
+                    state = 'pending',
+                    lease_until = NULL,
+                    atom_updated_at = excluded.atom_updated_at,
+                    last_error = NULL,
+                    updated_at = excluded.updated_at",
+                rusqlite::params![
+                    &job.atom_id,
+                    if job.embed_requested { 1 } else { 0 },
+                    if job.tag_requested { 1 } else { 0 },
+                    &job.reason,
+                    not_before,
+                    &now,
+                ],
+            )?;
+            count += changed as i32;
+        }
+
+        tx.commit()
+            .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+        Ok(count)
+    }
+
+    pub(crate) fn enqueue_pipeline_jobs_from_statuses_sync(
+        &self,
+        max_updated_at: Option<&str>,
+    ) -> StorageResult<i32> {
+        let conn = self
+            .db
+            .conn
+            .lock()
+            .map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+        let now = chrono::Utc::now().to_rfc3339();
+
+        let sql = if max_updated_at.is_some() {
+            "INSERT INTO atom_pipeline_jobs (
+                atom_id, embed_requested, tag_requested, reason, not_before,
+                state, lease_until, attempts, atom_updated_at, last_error,
+                created_at, updated_at
+             )
+             SELECT id,
+                    CASE WHEN embedding_status = 'pending' THEN 1 ELSE 0 END,
+                    CASE WHEN tagging_status = 'pending' THEN 1 ELSE 0 END,
+                    'status-backfill',
+                    ?1,
+                    'pending',
+                    NULL,
+                    0,
+                    updated_at,
+                    NULL,
+                    ?1,
+                    ?1
+             FROM atoms
+             WHERE updated_at <= ?2
+               AND (
+                 embedding_status = 'pending'
+                 OR (embedding_status = 'complete' AND tagging_status = 'pending')
+               )
+             ON CONFLICT(atom_id) DO UPDATE SET
+                embed_requested = MAX(atom_pipeline_jobs.embed_requested, excluded.embed_requested),
+                tag_requested = MAX(atom_pipeline_jobs.tag_requested, excluded.tag_requested),
+                reason = excluded.reason,
+                not_before = MIN(atom_pipeline_jobs.not_before, excluded.not_before),
+                state = 'pending',
+                lease_until = NULL,
+                atom_updated_at = excluded.atom_updated_at,
+                last_error = NULL,
+                updated_at = excluded.updated_at"
+        } else {
+            "INSERT INTO atom_pipeline_jobs (
+                atom_id, embed_requested, tag_requested, reason, not_before,
+                state, lease_until, attempts, atom_updated_at, last_error,
+                created_at, updated_at
+             )
+             SELECT id,
+                    CASE WHEN embedding_status = 'pending' THEN 1 ELSE 0 END,
+                    CASE WHEN tagging_status = 'pending' THEN 1 ELSE 0 END,
+                    'status-backfill',
+                    ?1,
+                    'pending',
+                    NULL,
+                    0,
+                    updated_at,
+                    NULL,
+                    ?1,
+                    ?1
+             FROM atoms
+             WHERE embedding_status = 'pending'
+                OR (embedding_status = 'complete' AND tagging_status = 'pending')
+             ON CONFLICT(atom_id) DO UPDATE SET
+                embed_requested = MAX(atom_pipeline_jobs.embed_requested, excluded.embed_requested),
+                tag_requested = MAX(atom_pipeline_jobs.tag_requested, excluded.tag_requested),
+                reason = excluded.reason,
+                not_before = MIN(atom_pipeline_jobs.not_before, excluded.not_before),
+                state = 'pending',
+                lease_until = NULL,
+                atom_updated_at = excluded.atom_updated_at,
+                last_error = NULL,
+                updated_at = excluded.updated_at"
+        };
+
+        let count = match max_updated_at {
+            Some(cutoff) => conn.execute(sql, rusqlite::params![&now, cutoff])?,
+            None => conn.execute(sql, rusqlite::params![&now])?,
+        };
+        Ok(count as i32)
+    }
+
+    pub(crate) fn claim_pipeline_jobs_sync(
+        &self,
+        limit: i32,
+        lease_until: &str,
+        now: &str,
+    ) -> StorageResult<Vec<AtomPipelineJob>> {
+        let conn = self
+            .db
+            .conn
+            .lock()
+            .map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+        let mut stmt = conn.prepare(
+            "UPDATE atom_pipeline_jobs
+             SET state = 'processing',
+                 lease_until = ?1,
+                 attempts = attempts + 1,
+                 updated_at = ?2
+             WHERE atom_id IN (
+                 SELECT j.atom_id
+                 FROM atom_pipeline_jobs j
+                 INNER JOIN atoms a ON a.id = j.atom_id
+                 WHERE (j.state = 'pending'
+                        OR (j.state = 'processing' AND j.lease_until IS NOT NULL AND j.lease_until <= ?2))
+                   AND j.not_before <= ?2
+                   AND (j.embed_requested = 1
+                        OR (j.tag_requested = 1 AND a.embedding_status = 'complete'))
+                 ORDER BY j.updated_at ASC
+                 LIMIT ?3
+             )
+             RETURNING atom_id, embed_requested, tag_requested, atom_updated_at",
+        )?;
+        let jobs = stmt
+            .query_map((lease_until, now, limit), |row| {
+                Ok(AtomPipelineJob {
+                    atom_id: row.get(0)?,
+                    embed_requested: row.get::<_, i32>(1)? != 0,
+                    tag_requested: row.get::<_, i32>(2)? != 0,
+                    atom_updated_at: row.get(3)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(jobs)
+    }
+
+    pub(crate) fn clear_pipeline_jobs_sync(&self, atom_ids: &[String]) -> StorageResult<()> {
+        if atom_ids.is_empty() {
+            return Ok(());
+        }
+        let conn = self
+            .db
+            .conn
+            .lock()
+            .map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+        let placeholders = atom_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let sql = format!(
+            "DELETE FROM atom_pipeline_jobs WHERE atom_id IN ({})",
+            placeholders
+        );
+        conn.execute(&sql, rusqlite::params_from_iter(atom_ids.iter()))?;
+        Ok(())
+    }
+
+    pub(crate) fn count_pipeline_jobs_sync(&self) -> StorageResult<i32> {
+        let conn = self.db.read_conn()?;
+        conn.query_row("SELECT COUNT(*) FROM atom_pipeline_jobs", [], |row| {
+            row.get(0)
+        })
+        .map_err(AtomicCoreError::from)
+    }
+
     pub(crate) fn get_embedding_dimension_sync(&self) -> StorageResult<Option<usize>> {
         let conn = self.db.read_conn()?;
         let dim = conn
@@ -810,6 +1123,26 @@ impl SqliteStorage {
             [],
             |r| r.get(0),
         )?;
+        let tagging_pending: i32 = conn.query_row(
+            "SELECT COUNT(*) FROM atoms WHERE tagging_status = 'pending'",
+            [],
+            |r| r.get(0),
+        )?;
+        let tagging_processing: i32 = conn.query_row(
+            "SELECT COUNT(*) FROM atoms WHERE tagging_status = 'processing'",
+            [],
+            |r| r.get(0),
+        )?;
+        let tagging_complete: i32 = conn.query_row(
+            "SELECT COUNT(*) FROM atoms WHERE tagging_status = 'complete'",
+            [],
+            |r| r.get(0),
+        )?;
+        let tagging_skipped: i32 = conn.query_row(
+            "SELECT COUNT(*) FROM atoms WHERE tagging_status = 'skipped'",
+            [],
+            |r| r.get(0),
+        )?;
 
         let mut stmt = conn.prepare(
             "SELECT id, title, snippet, tagging_error, updated_at FROM atoms WHERE tagging_status = 'failed' ORDER BY updated_at DESC LIMIT 100",
@@ -832,6 +1165,10 @@ impl SqliteStorage {
             complete,
             failed_count,
             failed,
+            tagging_pending,
+            tagging_processing,
+            tagging_complete,
+            tagging_skipped,
             tagging_failed_count,
             tagging_failed,
         })
@@ -870,6 +1207,17 @@ impl ChunkStore for SqliteStorage {
         self.save_chunks_and_embeddings_sync(atom_id, chunks)
     }
 
+    async fn get_chunks_for_atoms(
+        &self,
+        atom_ids: &[String],
+    ) -> StorageResult<Vec<ExistingAtomChunk>> {
+        self.get_chunks_for_atoms_sync(atom_ids)
+    }
+
+    async fn update_chunk_embeddings(&self, chunks: &[(String, Vec<f32>)]) -> StorageResult<()> {
+        self.update_chunk_embeddings_sync(chunks)
+    }
+
     async fn delete_chunks(&self, atom_id: &str) -> StorageResult<()> {
         self.delete_chunks_sync(atom_id)
     }
@@ -880,6 +1228,14 @@ impl ChunkStore for SqliteStorage {
 
     async fn reset_failed_embeddings(&self) -> StorageResult<i32> {
         self.reset_failed_embeddings_sync()
+    }
+
+    async fn reset_failed_embedding_statuses(&self) -> StorageResult<i32> {
+        self.reset_failed_embedding_statuses_sync()
+    }
+
+    async fn reset_failed_tagging_statuses(&self) -> StorageResult<i32> {
+        self.reset_failed_tagging_statuses_sync()
     }
 
     async fn rebuild_semantic_edges(&self) -> StorageResult<i32> {
@@ -988,5 +1344,33 @@ impl ChunkStore for SqliteStorage {
 
     async fn count_pending_edges(&self) -> StorageResult<i32> {
         self.count_pending_edges_sync()
+    }
+
+    async fn enqueue_pipeline_jobs(&self, jobs: &[AtomPipelineJobRequest]) -> StorageResult<i32> {
+        self.enqueue_pipeline_jobs_sync(jobs)
+    }
+
+    async fn enqueue_pipeline_jobs_from_statuses(
+        &self,
+        max_updated_at: Option<&str>,
+    ) -> StorageResult<i32> {
+        self.enqueue_pipeline_jobs_from_statuses_sync(max_updated_at)
+    }
+
+    async fn claim_pipeline_jobs(
+        &self,
+        limit: i32,
+        lease_until: &str,
+        now: &str,
+    ) -> StorageResult<Vec<AtomPipelineJob>> {
+        self.claim_pipeline_jobs_sync(limit, lease_until, now)
+    }
+
+    async fn clear_pipeline_jobs(&self, atom_ids: &[String]) -> StorageResult<()> {
+        self.clear_pipeline_jobs_sync(atom_ids)
+    }
+
+    async fn count_pipeline_jobs(&self) -> StorageResult<i32> {
+        self.count_pipeline_jobs_sync()
     }
 }

@@ -175,6 +175,14 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
         web::post().to(embedding::retry_tagging),
     );
     cfg.route(
+        "/embeddings/retry-failed",
+        web::post().to(embedding::retry_failed_embeddings),
+    );
+    cfg.route(
+        "/tagging/retry-failed",
+        web::post().to(embedding::retry_failed_tagging),
+    );
+    cfg.route(
         "/embeddings/reembed-all",
         web::post().to(embedding::reembed_all_atoms),
     );
@@ -185,6 +193,10 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
     cfg.route(
         "/embeddings/status",
         web::get().to(embedding::get_pipeline_status),
+    );
+    cfg.route(
+        "/embeddings/status/all",
+        web::get().to(embedding::get_all_pipeline_statuses),
     );
 
     // Canvas

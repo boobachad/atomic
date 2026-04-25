@@ -2,6 +2,7 @@ import { lazy, Suspense } from 'react';
 import { Route, Routes } from 'react-router-dom';
 import { Toaster } from 'sonner';
 import { Layout } from './components/layout';
+import { EmbeddingProgressBanner } from './components/ui/EmbeddingProgressBanner';
 import { useEmbeddingEvents } from './hooks';
 
 // Standalone /editor-harness page used during the CodeMirror editor
@@ -40,6 +41,7 @@ function App() {
         />
         <Route path="*" element={<Layout />} />
       </Routes>
+      <EmbeddingProgressBanner />
     </>
   );
 }

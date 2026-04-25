@@ -56,6 +56,14 @@ export function normalizeServerEvent(data: Record<string, unknown>): NormalizedE
       return { event: 'feed-poll-failed', payload: { feed_id: data.feed_id, error: data.error } };
     case 'BatchProgress':
       return { event: 'batch-progress', payload: { batch_id: data.batch_id, phase: data.phase, completed: data.completed, total: data.total } };
+    case 'PipelineQueueStarted':
+      return { event: 'pipeline-queue-started', payload: { run_id: data.run_id, total_jobs: data.total_jobs, embedding_total: data.embedding_total } };
+    case 'PipelineQueueProgress':
+      return { event: 'pipeline-queue-progress', payload: { run_id: data.run_id, stage: data.stage, completed: data.completed, total: data.total } };
+    case 'PipelineQueueCompleted':
+      return { event: 'pipeline-queue-completed', payload: { run_id: data.run_id, total_jobs: data.total_jobs, failed_jobs: data.failed_jobs } };
+    case 'EventsLagged':
+      return { event: 'server-events-lagged', payload: { skipped: data.skipped } };
     case 'BriefingReady':
       return { event: 'briefing-ready', payload: { db_id: data.db_id, briefing_id: data.briefing_id } };
     default:

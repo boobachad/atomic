@@ -141,6 +141,7 @@ const turndown = new TurndownService({
 turndown.remove(['script', 'style', 'nav', 'footer', 'aside', 'sup', 'figure']);
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const DEFAULT_AUTOTAG_TARGETS = ['Topics', 'People', 'Locations', 'Organizations', 'Events'];
 
 async function fetchArticleHtml(title) {
   try {
@@ -257,6 +258,14 @@ async function fetchArticles(count, mode) {
 
   const elapsed = (Date.now() - startTime) / 1000;
   return { articles, fetchTime: elapsed };
+}
+
+async function seedDefaultAutoTagTargets(api, log) {
+  await api('POST', '/api/tags/configure-autotag-targets', {
+    keep_defaults: DEFAULT_AUTOTAG_TARGETS,
+    add_custom: [],
+  });
+  log(`Seeded auto-tag targets: ${DEFAULT_AUTOTAG_TARGETS.join(', ')}`);
 }
 
 // --- Pipeline tracker ---
@@ -409,6 +418,15 @@ async function main() {
 
   // Create DB-scoped client
   const dbApi = createClient(opts.server, opts.token, dbId);
+
+  if (!opts.skipCreateDb) {
+    try {
+      await seedDefaultAutoTagTargets(dbApi, log);
+    } catch (err) {
+      console.error(`Failed to seed auto-tag targets: ${err.message}`);
+      process.exit(1);
+    }
+  }
 
   // 3. Connect WebSocket
   let tracker = null;

@@ -33,9 +33,55 @@ export async function retryTagging(atomId: string): Promise<void> {
   return getTransport().invoke('retry_tagging', { atomId });
 }
 
+export interface FailedPipelineAtom {
+  atom_id: string;
+  title: string;
+  snippet: string;
+  error: string | null;
+  updated_at: string;
+}
+
+export interface PipelineStatus {
+  pending: number;
+  processing: number;
+  complete: number;
+  failed_count: number;
+  failed: FailedPipelineAtom[];
+  tagging_pending: number;
+  tagging_processing: number;
+  tagging_complete: number;
+  tagging_skipped: number;
+  tagging_failed_count: number;
+  tagging_failed: FailedPipelineAtom[];
+}
+
+export interface DatabasePipelineStatus {
+  database: {
+    id: string;
+    name: string;
+    is_default: boolean;
+    created_at: string;
+    last_opened_at: string | null;
+  };
+  status: PipelineStatus;
+}
+
+export async function getAllPipelineStatuses(): Promise<DatabasePipelineStatus[]> {
+  const result = await getTransport().invoke<{ databases: DatabasePipelineStatus[] }>('get_all_pipeline_statuses');
+  return result.databases;
+}
+
+export async function retryFailedEmbeddings(dbId: string): Promise<number> {
+  return getTransport().invoke('retry_failed_embeddings', { dbId });
+}
+
+export async function retryFailedTagging(dbId: string): Promise<number> {
+  return getTransport().invoke('retry_failed_tagging', { dbId });
+}
+
 // Re-embed all atoms
-export async function reembedAllAtoms(): Promise<number> {
-  return getTransport().invoke('reembed_all_atoms');
+export async function reembedAllAtoms(dbId?: string): Promise<number> {
+  return getTransport().invoke('reembed_all_atoms', dbId ? { dbId } : undefined);
 }
 
 // Reset atoms stuck in 'processing' state (call on app startup)
