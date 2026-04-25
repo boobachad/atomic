@@ -469,8 +469,9 @@ pub trait ChunkStore: Send + Sync {
     ) -> StorageResult<Vec<AtomPipelineJob>>;
 
     /// Clear claimed pipeline jobs after their requested stages reached terminal
-    /// status (success, skipped, or failed).
-    async fn clear_pipeline_jobs(&self, atom_ids: &[String]) -> StorageResult<()>;
+    /// status (success, skipped, or failed). The claimed row snapshot prevents
+    /// an older worker from deleting a newer pending job or refreshed lease.
+    async fn clear_pipeline_jobs(&self, jobs: &[AtomPipelineJob]) -> StorageResult<()>;
 
     /// Count active durable pipeline jobs for this database.
     async fn count_pipeline_jobs(&self) -> StorageResult<i32>;

@@ -479,7 +479,7 @@ dispatch! {
         => sqlite: enqueue_pipeline_jobs_from_statuses_sync, pg_trait: ChunkStore, pg_method: enqueue_pipeline_jobs_from_statuses;
     fn claim_pipeline_jobs_sync(&self, limit: i32, lease_until: &str, now: &str) -> Result<Vec<AtomPipelineJob>, AtomicCoreError>
         => sqlite: claim_pipeline_jobs_sync, pg_trait: ChunkStore, pg_method: claim_pipeline_jobs;
-    fn clear_pipeline_jobs_sync(&self, atom_ids: &[String]) -> Result<(), AtomicCoreError>
+    fn clear_pipeline_jobs_sync(&self, jobs: &[AtomPipelineJob]) -> Result<(), AtomicCoreError>
         => sqlite: clear_pipeline_jobs_sync, pg_trait: ChunkStore, pg_method: clear_pipeline_jobs;
     fn count_pipeline_jobs_sync(&self) -> Result<i32, AtomicCoreError>
         => sqlite: count_pipeline_jobs_sync, pg_trait: ChunkStore, pg_method: count_pipeline_jobs;

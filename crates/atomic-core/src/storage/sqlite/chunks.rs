@@ -979,7 +979,7 @@ impl SqliteStorage {
                  ORDER BY j.updated_at ASC
                  LIMIT ?3
              )
-             RETURNING atom_id, embed_requested, tag_requested, atom_updated_at",
+             RETURNING atom_id, embed_requested, tag_requested, atom_updated_at, attempts",
         )?;
         let jobs = stmt
             .query_map((lease_until, now, limit), |row| {
@@ -988,27 +988,43 @@ impl SqliteStorage {
                     embed_requested: row.get::<_, i32>(1)? != 0,
                     tag_requested: row.get::<_, i32>(2)? != 0,
                     atom_updated_at: row.get(3)?,
+                    attempts: row.get(4)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(jobs)
     }
 
-    pub(crate) fn clear_pipeline_jobs_sync(&self, atom_ids: &[String]) -> StorageResult<()> {
-        if atom_ids.is_empty() {
+    pub(crate) fn clear_pipeline_jobs_sync(&self, jobs: &[AtomPipelineJob]) -> StorageResult<()> {
+        if jobs.is_empty() {
             return Ok(());
         }
-        let conn = self
+        let mut conn = self
             .db
             .conn
             .lock()
             .map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
-        let placeholders = atom_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-        let sql = format!(
-            "DELETE FROM atom_pipeline_jobs WHERE atom_id IN ({})",
-            placeholders
-        );
-        conn.execute(&sql, rusqlite::params_from_iter(atom_ids.iter()))?;
+        let tx = conn
+            .transaction()
+            .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+        {
+            let mut stmt = tx.prepare(
+                "DELETE FROM atom_pipeline_jobs
+                 WHERE atom_id = ?1
+                   AND atom_updated_at = ?2
+                   AND attempts = ?3
+                   AND state = 'processing'",
+            )?;
+            for job in jobs {
+                stmt.execute(rusqlite::params![
+                    &job.atom_id,
+                    &job.atom_updated_at,
+                    job.attempts
+                ])?;
+            }
+        }
+        tx.commit()
+            .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
         Ok(())
     }
 
@@ -1118,6 +1134,17 @@ impl SqliteStorage {
             })?
             .collect::<Result<Vec<_>, _>>()?;
 
+        let queued_embedding: i32 = conn.query_row(
+            "SELECT COUNT(*) FROM atom_pipeline_jobs WHERE embed_requested = 1",
+            [],
+            |r| r.get(0),
+        )?;
+        let queued_tagging: i32 = conn.query_row(
+            "SELECT COUNT(*) FROM atom_pipeline_jobs WHERE tag_requested = 1",
+            [],
+            |r| r.get(0),
+        )?;
+
         let tagging_failed_count: i32 = conn.query_row(
             "SELECT COUNT(*) FROM atoms WHERE tagging_status = 'failed'",
             [],
@@ -1165,6 +1192,8 @@ impl SqliteStorage {
             complete,
             failed_count,
             failed,
+            queued_embedding,
+            queued_tagging,
             tagging_pending,
             tagging_processing,
             tagging_complete,
@@ -1366,11 +1395,125 @@ impl ChunkStore for SqliteStorage {
         self.claim_pipeline_jobs_sync(limit, lease_until, now)
     }
 
-    async fn clear_pipeline_jobs(&self, atom_ids: &[String]) -> StorageResult<()> {
-        self.clear_pipeline_jobs_sync(atom_ids)
+    async fn clear_pipeline_jobs(&self, jobs: &[AtomPipelineJob]) -> StorageResult<()> {
+        self.clear_pipeline_jobs_sync(jobs)
     }
 
     async fn count_pipeline_jobs(&self) -> StorageResult<i32> {
         self.count_pipeline_jobs_sync()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{AtomicCore, CreateAtomRequest};
+    use tempfile::TempDir;
+
+    #[tokio::test]
+    async fn clear_pipeline_jobs_keeps_newer_pending_job_for_same_atom() {
+        let dir = TempDir::new().expect("create tempdir");
+        let core = AtomicCore::open_or_create(dir.path().join("pipeline.db"))
+            .expect("open sqlite test db");
+        let created = core
+            .create_atom(
+                CreateAtomRequest {
+                    content: String::new(),
+                    ..Default::default()
+                },
+                |_| {},
+            )
+            .await
+            .expect("create atom")
+            .expect("atom inserted");
+
+        let initial_job = crate::models::AtomPipelineJobRequest {
+            atom_id: created.atom.id.clone(),
+            embed_requested: true,
+            tag_requested: true,
+            not_before: None,
+            reason: "initial".to_string(),
+        };
+        core.storage()
+            .enqueue_pipeline_jobs_sync(&[initial_job])
+            .await
+            .expect("enqueue initial job");
+
+        let claimed = core
+            .storage()
+            .claim_pipeline_jobs_sync(10, "2099-01-01T00:30:00+00:00", "2099-01-01T00:00:00+00:00")
+            .await
+            .expect("claim job");
+        assert_eq!(claimed.len(), 1);
+
+        let newer_updated_at = "2026-01-01T00:00:01+00:00";
+        let conn = rusqlite::Connection::open(core.db_path()).expect("open sqlite db");
+        conn.execute(
+            "UPDATE atoms SET updated_at = ?1, embedding_status = 'pending', tagging_status = 'pending' WHERE id = ?2",
+            rusqlite::params![newer_updated_at, &created.atom.id],
+        )
+        .expect("advance atom timestamp");
+
+        let newer_job = crate::models::AtomPipelineJobRequest {
+            atom_id: created.atom.id.clone(),
+            embed_requested: true,
+            tag_requested: true,
+            not_before: None,
+            reason: "newer".to_string(),
+        };
+        core.storage()
+            .enqueue_pipeline_jobs_sync(&[newer_job])
+            .await
+            .expect("enqueue newer job");
+
+        core.storage()
+            .clear_pipeline_jobs_sync(&claimed)
+            .await
+            .expect("clear original claim");
+
+        let row: (String, String) = conn
+            .query_row(
+                "SELECT state, atom_updated_at FROM atom_pipeline_jobs WHERE atom_id = ?1",
+                [&created.atom.id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("newer pipeline job should remain");
+        assert_eq!(row.0, "pending");
+        assert_eq!(row.1, newer_updated_at);
+    }
+
+    #[tokio::test]
+    async fn draft_pending_status_is_not_counted_as_queued_pipeline_work() {
+        let dir = TempDir::new().expect("create tempdir");
+        let core = AtomicCore::open_or_create(dir.path().join("pipeline.db"))
+            .expect("open sqlite test db");
+        let created = core
+            .create_atom(
+                CreateAtomRequest {
+                    content: String::new(),
+                    ..Default::default()
+                },
+                |_| {},
+            )
+            .await
+            .expect("create atom")
+            .expect("atom inserted");
+
+        core.update_atom_content_only(
+            &created.atom.id,
+            crate::UpdateAtomRequest {
+                content: "draft content still being edited".to_string(),
+                source_url: None,
+                published_at: None,
+                tag_ids: None,
+            },
+        )
+        .await
+        .expect("draft save");
+
+        let status = core.get_pipeline_status().await.expect("pipeline status");
+        assert_eq!(status.pending, 1);
+        assert_eq!(status.tagging_pending, 1);
+        assert_eq!(status.queued_embedding, 0);
+        assert_eq!(status.queued_tagging, 0);
     }
 }

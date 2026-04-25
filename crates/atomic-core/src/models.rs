@@ -815,6 +815,8 @@ pub struct PipelineStatus {
     pub complete: i32,
     pub failed_count: i32,
     pub failed: Vec<FailedAtom>,
+    pub queued_embedding: i32,
+    pub queued_tagging: i32,
     pub tagging_pending: i32,
     pub tagging_processing: i32,
     pub tagging_complete: i32,
@@ -840,6 +842,7 @@ pub struct AtomPipelineJob {
     pub embed_requested: bool,
     pub tag_requested: bool,
     pub atom_updated_at: String,
+    pub attempts: i32,
 }
 
 /// Stage flags to enqueue for an atom-level pipeline job.

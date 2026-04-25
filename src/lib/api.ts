@@ -47,6 +47,8 @@ export interface PipelineStatus {
   complete: number;
   failed_count: number;
   failed: FailedPipelineAtom[];
+  queued_embedding: number;
+  queued_tagging: number;
   tagging_pending: number;
   tagging_processing: number;
   tagging_complete: number;

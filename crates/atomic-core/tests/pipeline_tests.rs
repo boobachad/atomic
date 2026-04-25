@@ -15,6 +15,7 @@ use support::{
     await_pipeline, event_collector, setup_core, Backend, EventRx, MockAiServer,
     EDGE_SIMILARITY_THRESHOLD,
 };
+use tempfile::TempDir;
 
 #[tokio::test]
 async fn full_pipeline_sqlite() {
@@ -189,6 +190,67 @@ async fn await_queue_completed(rx: &mut EventRx) -> Vec<EmbeddingEvent> {
 }
 
 // ==================== Queue modes and progress ====================
+
+#[tokio::test]
+async fn queued_embedding_missing_provider_marks_failed_sqlite() {
+    let dir = TempDir::new().expect("create tempdir");
+    let core =
+        AtomicCore::open_or_create(dir.path().join("pipeline.db")).expect("open sqlite test db");
+
+    let (cb, mut rx) = event_collector();
+    let created = core
+        .create_atom(
+            CreateAtomRequest {
+                content: "embedding should fail before provider call".to_string(),
+                ..Default::default()
+            },
+            cb,
+        )
+        .await
+        .expect("create_atom")
+        .expect("atom inserted");
+    let events = await_queue_completed(&mut rx).await;
+
+    assert!(
+        events.iter().any(|ev| matches!(
+            ev,
+            EmbeddingEvent::EmbeddingFailed { atom_id, .. } if atom_id == &created.atom.id
+        )),
+        "missing OpenRouter key should emit an embedding failure: {:?}",
+        events
+    );
+    assert!(
+        events.iter().any(|ev| matches!(
+            ev,
+            EmbeddingEvent::PipelineQueueCompleted {
+                total_jobs: 1,
+                failed_jobs: 1,
+                ..
+            }
+        )),
+        "queue completion should count the early provider exit as failed: {:?}",
+        events
+    );
+
+    let after = core
+        .get_atom(&created.atom.id)
+        .await
+        .expect("get atom")
+        .expect("atom exists");
+    assert_eq!(after.atom.embedding_status, "failed");
+    assert!(
+        after.atom.embedding_error.is_some(),
+        "failed embedding status should persist an error"
+    );
+
+    let conn = rusqlite::Connection::open(core.db_path()).expect("open sqlite db");
+    let queued: i64 = conn
+        .query_row("SELECT COUNT(*) FROM atom_pipeline_jobs", [], |row| {
+            row.get(0)
+        })
+        .expect("count pipeline jobs");
+    assert_eq!(queued, 0, "terminal failed job should be cleared");
+}
 
 #[tokio::test]
 async fn queue_progress_reports_tagging_only_after_embedding_sqlite() {

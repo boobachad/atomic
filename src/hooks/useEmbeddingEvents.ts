@@ -39,6 +39,8 @@ interface PipelineQueueCompletedPayload {
 interface PipelineStatusSnapshot {
   pending: number;
   processing: number;
+  queued_embedding?: number;
+  queued_tagging?: number;
   tagging_pending: number;
   tagging_processing: number;
 }
@@ -76,8 +78,10 @@ export function useEmbeddingEvents() {
           .then((payload) => {
             const totals = payload.databases.reduce(
               (acc, item) => {
-                acc.embedding += item.status.pending + item.status.processing;
-                acc.tagging += item.status.tagging_pending + item.status.tagging_processing;
+                acc.embedding += item.status.queued_embedding
+                  ?? (item.status.pending + item.status.processing);
+                acc.tagging += item.status.queued_tagging
+                  ?? (item.status.tagging_pending + item.status.tagging_processing);
                 return acc;
               },
               { embedding: 0, tagging: 0 },

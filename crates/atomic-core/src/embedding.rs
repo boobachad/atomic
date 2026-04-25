@@ -1842,7 +1842,7 @@ async fn process_pipeline_jobs_batch<F>(
     let mut embed_and_tag_ids = Vec::new();
     let mut tag_after_embed_ids = HashSet::new();
     let mut tag_only_ids = Vec::new();
-    let job_ids: Vec<String> = jobs.iter().map(|job| job.atom_id.clone()).collect();
+    let claimed_jobs = jobs.clone();
 
     for job in jobs {
         if job.embed_requested {
@@ -1884,15 +1884,24 @@ async fn process_pipeline_jobs_batch<F>(
                     );
                 }
 
+                let requested_embed_ids = embed_ids.clone();
+                let terminal_embed_ids = Arc::new(std::sync::Mutex::new(HashSet::new()));
                 let progress_on_event = {
                     let on_event = on_event.clone();
                     let progress = progress.clone();
+                    let terminal_embed_ids = terminal_embed_ids.clone();
                     move |event: EmbeddingEvent| {
                         match &event {
-                            EmbeddingEvent::EmbeddingComplete { .. } => {
+                            EmbeddingEvent::EmbeddingComplete { atom_id } => {
+                                if let Ok(mut ids) = terminal_embed_ids.lock() {
+                                    ids.insert(atom_id.clone());
+                                }
                                 progress.record_embedding_done(embedding_total, &on_event);
                             }
-                            EmbeddingEvent::EmbeddingFailed { .. } => {
+                            EmbeddingEvent::EmbeddingFailed { atom_id, .. } => {
+                                if let Ok(mut ids) = terminal_embed_ids.lock() {
+                                    ids.insert(atom_id.clone());
+                                }
                                 progress.record_failed_job();
                                 progress.record_embedding_done(embedding_total, &on_event);
                             }
@@ -1922,6 +1931,51 @@ async fn process_pipeline_jobs_batch<F>(
                     )
                     .await
                 };
+
+                for atom_id in &completed_embed_ids {
+                    let already_terminal = terminal_embed_ids
+                        .lock()
+                        .map(|ids| ids.contains(atom_id))
+                        .unwrap_or(false);
+                    if !already_terminal {
+                        if let Ok(mut ids) = terminal_embed_ids.lock() {
+                            ids.insert(atom_id.clone());
+                        }
+                        progress.record_embedding_done(embedding_total, &on_event);
+                        on_event(EmbeddingEvent::EmbeddingComplete {
+                            atom_id: atom_id.clone(),
+                        });
+                    }
+                }
+
+                let terminal_snapshot = terminal_embed_ids
+                    .lock()
+                    .map(|ids| ids.clone())
+                    .unwrap_or_default();
+                let silently_failed_ids: Vec<String> = requested_embed_ids
+                    .iter()
+                    .filter(|atom_id| !terminal_snapshot.contains(*atom_id))
+                    .cloned()
+                    .collect();
+                if !silently_failed_ids.is_empty() {
+                    let error = "Embedding provider was not configured or returned no result";
+                    storage
+                        .set_embedding_status_batch_sync(
+                            &silently_failed_ids,
+                            "failed",
+                            Some(error),
+                        )
+                        .await
+                        .ok();
+                    for atom_id in silently_failed_ids {
+                        progress.record_failed_job();
+                        progress.record_embedding_done(embedding_total, &on_event);
+                        on_event(EmbeddingEvent::EmbeddingFailed {
+                            atom_id,
+                            error: error.to_string(),
+                        });
+                    }
+                }
 
                 completed_embed_ids
                     .into_iter()
@@ -1971,7 +2025,7 @@ async fn process_pipeline_jobs_batch<F>(
         .await;
     }
 
-    if let Err(e) = storage.clear_pipeline_jobs_sync(&job_ids).await {
+    if let Err(e) = storage.clear_pipeline_jobs_sync(&claimed_jobs).await {
         tracing::warn!(error = %e, "Failed to clear processed pipeline jobs");
     }
 }

@@ -1279,7 +1279,7 @@ impl ChunkStore for PostgresStorage {
         lease_until: &str,
         now: &str,
     ) -> StorageResult<Vec<AtomPipelineJob>> {
-        let rows: Vec<(String, bool, bool, String)> = sqlx::query_as(
+        let rows: Vec<(String, bool, bool, String, i32)> = sqlx::query_as(
             "WITH claimed AS (
                 SELECT j.atom_id, j.db_id
                 FROM atom_pipeline_jobs j
@@ -1305,7 +1305,7 @@ impl ChunkStore for PostgresStorage {
                  updated_at = $3
              FROM claimed c
              WHERE j.atom_id = c.atom_id AND j.db_id = c.db_id
-             RETURNING j.atom_id, j.embed_requested, j.tag_requested, j.atom_updated_at",
+             RETURNING j.atom_id, j.embed_requested, j.tag_requested, j.atom_updated_at, j.attempts",
         )
         .bind(&self.db_id)
         .bind(limit as i64)
@@ -1320,28 +1320,48 @@ impl ChunkStore for PostgresStorage {
         Ok(rows
             .into_iter()
             .map(
-                |(atom_id, embed_requested, tag_requested, atom_updated_at)| AtomPipelineJob {
-                    atom_id,
-                    embed_requested,
-                    tag_requested,
-                    atom_updated_at,
+                |(atom_id, embed_requested, tag_requested, atom_updated_at, attempts)| {
+                    AtomPipelineJob {
+                        atom_id,
+                        embed_requested,
+                        tag_requested,
+                        atom_updated_at,
+                        attempts,
+                    }
                 },
             )
             .collect())
     }
 
-    async fn clear_pipeline_jobs(&self, atom_ids: &[String]) -> StorageResult<()> {
-        if atom_ids.is_empty() {
+    async fn clear_pipeline_jobs(&self, jobs: &[AtomPipelineJob]) -> StorageResult<()> {
+        if jobs.is_empty() {
             return Ok(());
         }
-        sqlx::query("DELETE FROM atom_pipeline_jobs WHERE atom_id = ANY($1) AND db_id = $2")
-            .bind(atom_ids)
+        let mut tx = self.pool.begin().await.map_err(|e| {
+            AtomicCoreError::DatabaseOperation(format!("Failed to begin transaction: {}", e))
+        })?;
+        for job in jobs {
+            sqlx::query(
+                "DELETE FROM atom_pipeline_jobs
+                 WHERE atom_id = $1
+                   AND db_id = $2
+                   AND atom_updated_at = $3
+                   AND attempts = $4
+                   AND state = 'processing'",
+            )
+            .bind(&job.atom_id)
             .bind(&self.db_id)
-            .execute(&self.pool)
+            .bind(&job.atom_updated_at)
+            .bind(job.attempts)
+            .execute(&mut *tx)
             .await
             .map_err(|e| {
-                AtomicCoreError::DatabaseOperation(format!("Failed to clear pipeline jobs: {}", e))
+                AtomicCoreError::DatabaseOperation(format!("Failed to clear pipeline job: {}", e))
             })?;
+        }
+        tx.commit().await.map_err(|e| {
+            AtomicCoreError::DatabaseOperation(format!("Failed to commit transaction: {}", e))
+        })?;
         Ok(())
     }
 
@@ -1407,6 +1427,21 @@ impl PostgresStorage {
             })
             .collect();
 
+        let queued_embedding: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM atom_pipeline_jobs WHERE embed_requested AND db_id = $1",
+        )
+        .bind(&self.db_id)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+        let queued_tagging: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM atom_pipeline_jobs WHERE tag_requested AND db_id = $1",
+        )
+        .bind(&self.db_id)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+
         let count_tagging_by_status = |status: &'static str| async move {
             let count: i64 = sqlx::query_scalar(
                 "SELECT COUNT(*) FROM atoms WHERE tagging_status = $1 AND db_id = $2",
@@ -1453,6 +1488,8 @@ impl PostgresStorage {
             complete,
             failed_count,
             failed,
+            queued_embedding: queued_embedding as i32,
+            queued_tagging: queued_tagging as i32,
             tagging_pending,
             tagging_processing,
             tagging_complete,
