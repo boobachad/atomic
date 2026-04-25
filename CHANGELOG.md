@@ -2,6 +2,10 @@
 
 All notable changes to Atomic are documented here.
 
+## v1.28.1 — 2026-04-25
+
+- Bundle all web fonts locally so the app renders correctly offline without needing to reach Google Fonts or Fontshare on launch
+
 ## v1.28.0 — 2026-04-24
 
 - Add chat tools for creating, updating, and editing atoms — the chat agent can now create new notes, replace content, or apply targeted edits (replace, insert, append) when you ask it to
