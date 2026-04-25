@@ -287,6 +287,16 @@ pub trait ChunkStore: Send + Sync {
         chunks: &[(String, Vec<f32>)], // (chunk_content, embedding)
     ) -> StorageResult<()>;
 
+    /// Load existing chunks for atoms so embed-only jobs can recalculate
+    /// embeddings without rechunking unchanged content.
+    async fn get_chunks_for_atoms(
+        &self,
+        atom_ids: &[String],
+    ) -> StorageResult<Vec<ExistingAtomChunk>>;
+
+    /// Update embeddings for existing chunks, preserving chunk ids/content.
+    async fn update_chunk_embeddings(&self, chunks: &[(String, Vec<f32>)]) -> StorageResult<()>;
+
     /// Save chunks and embeddings for multiple atoms in a single transaction.
     async fn save_chunks_and_embeddings_batch(
         &self,
@@ -313,6 +323,12 @@ pub trait ChunkStore: Send + Sync {
 
     /// Reset failed embedding atoms back to pending (for auto-retry on config fix).
     async fn reset_failed_embeddings(&self) -> StorageResult<i32>;
+
+    /// Reset only failed embedding atoms back to pending.
+    async fn reset_failed_embedding_statuses(&self) -> StorageResult<i32>;
+
+    /// Reset only failed tagging atoms back to pending when embeddings are complete.
+    async fn reset_failed_tagging_statuses(&self) -> StorageResult<i32>;
 
     /// Rebuild semantic edges between all atoms with embeddings.
     async fn rebuild_semantic_edges(&self) -> StorageResult<i32>;
@@ -412,7 +428,8 @@ pub trait ChunkStore: Send + Sync {
     /// Returns None if the vector index doesn't exist or dimension can't be determined.
     async fn get_embedding_dimension(&self) -> StorageResult<Option<usize>>;
 
-    /// Drop and recreate the vector index with a new dimension, resetting all embedding state.
+    /// Recreate vector storage with a new dimension, clear old vectors, and
+    /// reset embedding state while preserving chunk ids/content where possible.
     async fn recreate_vector_index(&self, dimension: usize) -> StorageResult<()>;
 
     /// Claim pending/processing atoms for re-embedding after dimension change.
@@ -432,6 +449,32 @@ pub trait ChunkStore: Send + Sync {
 
     /// Count atoms with pending edge computation.
     async fn count_pending_edges(&self) -> StorageResult<i32>;
+
+    /// Upsert atom-level pipeline jobs, coalescing stage flags by atom.
+    async fn enqueue_pipeline_jobs(&self, jobs: &[AtomPipelineJobRequest]) -> StorageResult<i32>;
+
+    /// Enqueue jobs from legacy/status-column pending state. Used by startup,
+    /// manual retry commands, and the draft scheduler during the queue rollout.
+    async fn enqueue_pipeline_jobs_from_statuses(
+        &self,
+        max_updated_at: Option<&str>,
+    ) -> StorageResult<i32>;
+
+    /// Atomically claim due pipeline jobs. Expired leases are claimable again.
+    async fn claim_pipeline_jobs(
+        &self,
+        limit: i32,
+        lease_until: &str,
+        now: &str,
+    ) -> StorageResult<Vec<AtomPipelineJob>>;
+
+    /// Clear claimed pipeline jobs after their requested stages reached terminal
+    /// status (success, skipped, or failed). The claimed row snapshot prevents
+    /// an older worker from deleting a newer pending job or refreshed lease.
+    async fn clear_pipeline_jobs(&self, jobs: &[AtomPipelineJob]) -> StorageResult<()>;
+
+    /// Count active durable pipeline jobs for this database.
+    async fn count_pipeline_jobs(&self) -> StorageResult<i32>;
 }
 
 // ==================== Search Storage ====================

@@ -82,6 +82,25 @@ pub enum ServerEvent {
         completed: usize,
         total: usize,
     },
+    PipelineQueueStarted {
+        run_id: String,
+        total_jobs: usize,
+        embedding_total: usize,
+    },
+    PipelineQueueProgress {
+        run_id: String,
+        stage: String,
+        completed: usize,
+        total: usize,
+    },
+    PipelineQueueCompleted {
+        run_id: String,
+        total_jobs: usize,
+        failed_jobs: usize,
+    },
+    EventsLagged {
+        skipped: u64,
+    },
 
     // Atom lifecycle events
     AtomCreated {
@@ -219,6 +238,35 @@ impl From<atomic_core::EmbeddingEvent> for ServerEvent {
                 phase,
                 completed,
                 total,
+            },
+            atomic_core::EmbeddingEvent::PipelineQueueStarted {
+                run_id,
+                total_jobs,
+                embedding_total,
+            } => ServerEvent::PipelineQueueStarted {
+                run_id,
+                total_jobs,
+                embedding_total,
+            },
+            atomic_core::EmbeddingEvent::PipelineQueueProgress {
+                run_id,
+                stage,
+                completed,
+                total,
+            } => ServerEvent::PipelineQueueProgress {
+                run_id,
+                stage,
+                completed,
+                total,
+            },
+            atomic_core::EmbeddingEvent::PipelineQueueCompleted {
+                run_id,
+                total_jobs,
+                failed_jobs,
+            } => ServerEvent::PipelineQueueCompleted {
+                run_id,
+                total_jobs,
+                failed_jobs,
             },
         }
     }

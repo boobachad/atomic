@@ -20,6 +20,10 @@ pub const DEFAULT_SETTINGS: &[(&str, &str)] = &[
     ("openrouter_context_length", ""),
     ("embedding_model", "openai/text-embedding-3-small"),
     ("tagging_model", "openai/gpt-4o-mini"),
+    // Pipeline strategy defaults. These are intentionally conservative: whole-atom
+    // rechunking and cost-bounded full-content tagging with truncation.
+    ("embedding_strategy", "rechunk_whole_atom"),
+    ("tagging_strategy", "truncated_full_content"),
     ("wiki_model", "anthropic/claude-sonnet-4.6"),
     ("wiki_strategy", "centroid"),
     ("chat_model", "anthropic/claude-sonnet-4.6"),

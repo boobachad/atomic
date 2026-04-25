@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { toast } from 'sonner';
 import {
@@ -21,6 +21,7 @@ import { Button } from '../ui/Button';
 import { CustomSelect } from '../ui/CustomSelect';
 import { SearchableSelect } from '../ui/SearchableSelect';
 import { ConnectionStatus } from '../ui/ConnectionStatus';
+import { Modal } from '../ui/Modal';
 import { useSettingsStore } from '../../stores/settings';
 import { useAtomsStore } from '../../stores/atoms';
 import { useTagsStore, type TagWithCount } from '../../stores/tags';
@@ -51,7 +52,11 @@ import {
   type ApiTokenInfo,
   type CreateTokenResponse,
   type Feed,
+  getAllPipelineStatuses,
+  retryFailedEmbeddings,
+  retryFailedTagging,
   reembedAllAtoms,
+  type DatabasePipelineStatus,
   exportLogs,
   type IngestionResult,
   type FeedPollResult,
@@ -67,14 +72,13 @@ const MACOS_FULL_DISK_ACCESS_URL =
 import { formatRelativeDate } from '../../lib/date';
 import { useDatabasesStore, type DatabaseInfo, type DatabaseStats } from '../../stores/databases';
 
-export type SettingsTab = 'general' | 'ai' | 'tag-categories' | 'connection' | 'feeds' | 'integrations' | 'databases';
+export type SettingsTab = 'general' | 'ai' | 'tag-categories' | 'connection' | 'integrations' | 'databases';
 
 const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
   { id: 'general', label: 'General' },
   { id: 'ai', label: 'AI Models' },
   { id: 'tag-categories', label: 'Tags' },
   { id: 'connection', label: 'Connection' },
-  { id: 'feeds', label: 'Feeds' },
   { id: 'integrations', label: 'Integrations' },
   { id: 'databases', label: 'Databases' },
 ];
@@ -228,6 +232,90 @@ function TagCategoriesTab() {
   );
 }
 
+function pipelineSummary(status?: DatabasePipelineStatus['status']) {
+  if (!status) {
+    return {
+      tone: 'muted' as const,
+      label: 'Loading',
+      detail: 'Checking AI pipeline state...',
+    };
+  }
+
+  const failed = status.failed_count + status.tagging_failed_count;
+  const pending = status.pending + status.tagging_pending;
+  const processing = status.processing + status.tagging_processing;
+
+  if (failed > 0) {
+    const parts = [
+      status.failed_count > 0 ? `${status.failed_count} embedding` : null,
+      status.tagging_failed_count > 0 ? `${status.tagging_failed_count} tagging` : null,
+    ].filter(Boolean);
+    return {
+      tone: 'error' as const,
+      label: 'Needs attention',
+      detail: `${parts.join(', ')} failed`,
+    };
+  }
+
+  if (processing > 0 || pending > 0) {
+    const parts = [
+      pending > 0 ? `${pending} pending` : null,
+      processing > 0 ? `${processing} processing` : null,
+    ].filter(Boolean);
+    return {
+      tone: 'working' as const,
+      label: 'Working',
+      detail: parts.join(', '),
+    };
+  }
+
+  return {
+    tone: 'healthy' as const,
+    label: 'Healthy',
+    detail: `${status.complete} embedded · ${status.tagging_complete} tagged${status.tagging_skipped > 0 ? ` · ${status.tagging_skipped} skipped` : ''}`,
+  };
+}
+
+function PipelineDetailCounts({ status }: { status: DatabasePipelineStatus['status'] }) {
+  const cellClass = 'px-2 py-1.5 text-right tabular-nums';
+  const labelClass = 'px-2 py-1.5 text-left font-medium text-[var(--color-text-secondary)]';
+
+  return (
+    <div className="overflow-x-auto rounded border border-[var(--color-border)] bg-[var(--color-bg-panel)]">
+      <table className="w-full min-w-[560px] text-xs">
+        <thead className="text-[var(--color-text-tertiary)]">
+          <tr className="border-b border-[var(--color-border)]">
+            <th className={labelClass}>Stage</th>
+            <th className={cellClass}>Pending</th>
+            <th className={cellClass}>Processing</th>
+            <th className={cellClass}>Complete</th>
+            <th className={cellClass}>Skipped</th>
+            <th className={cellClass}>Failed</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr className="border-b border-[var(--color-border)]">
+            <td className={labelClass}>Embeddings</td>
+            <td className={cellClass}>{status.pending}</td>
+            <td className={cellClass}>{status.processing}</td>
+            <td className={cellClass}>{status.complete}</td>
+            <td className={cellClass}>-</td>
+            <td className={`${cellClass} ${status.failed_count > 0 ? 'text-red-300 font-medium' : ''}`}>{status.failed_count}</td>
+          </tr>
+          <tr>
+            <td className={labelClass}>Tagging</td>
+            <td className={cellClass}>{status.tagging_pending}</td>
+            <td className={cellClass}>{status.tagging_processing}</td>
+            <td className={cellClass}>{status.tagging_complete}</td>
+            <td className={cellClass}>{status.tagging_skipped}</td>
+            <td className={`${cellClass} ${status.tagging_failed_count > 0 ? 'text-red-300 font-medium' : ''}`}>{status.tagging_failed_count}</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 function DatabasesTab() {
   const { databases, activeId, fetchDatabases, renameDatabase, deleteDatabase, setDefaultDatabase, getDatabaseStats } = useDatabasesStore();
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -236,10 +324,66 @@ function DatabasesTab() {
   const [deleteStats, setDeleteStats] = useState<DatabaseStats | null>(null);
   const [isLoadingStats, setIsLoadingStats] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [pipelineItems, setPipelineItems] = useState<DatabasePipelineStatus[]>([]);
+  const [pipelineLoading, setPipelineLoading] = useState(false);
+  const [pipelineError, setPipelineError] = useState<string | null>(null);
+  const [retrying, setRetrying] = useState<string | null>(null);
+  const [reembeddingDb, setReembeddingDb] = useState<string | null>(null);
+  const [confirmReembedDb, setConfirmReembedDb] = useState<DatabaseInfo | null>(null);
+  const [expandedPipeline, setExpandedPipeline] = useState<string | null>(null);
+  const liveRefreshTimer = useRef<ReturnType<typeof setTimeout>>();
+
+  const pipelineByDb = useMemo(() => {
+    return new Map(pipelineItems.map(item => [item.database.id, item.status]));
+  }, [pipelineItems]);
 
   useEffect(() => {
     fetchDatabases();
   }, [fetchDatabases]);
+
+  const loadPipelineStatuses = useCallback(async (silent = false) => {
+    if (!silent) setPipelineLoading(true);
+    setPipelineError(null);
+    try {
+      setPipelineItems(await getAllPipelineStatuses());
+    } catch (e) {
+      setPipelineError(String(e));
+    } finally {
+      if (!silent) setPipelineLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadPipelineStatuses();
+  }, [loadPipelineStatuses]);
+
+  useEffect(() => {
+    const transport = getTransport();
+    const scheduleRefresh = () => {
+      clearTimeout(liveRefreshTimer.current);
+      liveRefreshTimer.current = setTimeout(() => {
+        void loadPipelineStatuses(true);
+      }, 600);
+    };
+
+    const events = [
+      'atom-created',
+      'atom-updated',
+      'embedding-started',
+      'embedding-complete',
+      'tagging-complete',
+      'embeddings-reset',
+      'pipeline-queue-started',
+      'pipeline-queue-progress',
+      'pipeline-queue-completed',
+    ];
+    const unsubs = events.map(event => transport.subscribe(event, scheduleRefresh));
+
+    return () => {
+      clearTimeout(liveRefreshTimer.current);
+      unsubs.forEach(unsub => unsub());
+    };
+  }, [loadPipelineStatuses]);
 
   const handleRename = async (id: string) => {
     const trimmed = editName.trim();
@@ -278,6 +422,40 @@ function DatabasesTab() {
     await setDefaultDatabase(id);
   };
 
+  const retryFailed = async (dbId: string, stage: 'embedding' | 'tagging') => {
+    const key = `${dbId}:${stage}`;
+    setRetrying(key);
+    setPipelineError(null);
+    try {
+      const count = stage === 'embedding'
+        ? await retryFailedEmbeddings(dbId)
+        : await retryFailedTagging(dbId);
+      toast.success(`Queued ${count} failed ${stage === 'embedding' ? 'embedding' : 'tagging'} ${count === 1 ? 'job' : 'jobs'}`);
+      await loadPipelineStatuses();
+    } catch (e) {
+      setPipelineError(String(e));
+    } finally {
+      setRetrying(null);
+    }
+  };
+
+  const handleConfirmReembedAll = async () => {
+    if (!confirmReembedDb || reembeddingDb) return;
+    const db = confirmReembedDb;
+    setReembeddingDb(db.id);
+    setPipelineError(null);
+    try {
+      const count = await reembedAllAtoms(db.id);
+      toast.success(`Queued ${count} ${count === 1 ? 'atom' : 'atoms'} for re-embedding`);
+      setConfirmReembedDb(null);
+      await loadPipelineStatuses();
+    } catch (e) {
+      setPipelineError(String(e));
+    } finally {
+      setReembeddingDb(null);
+    }
+  };
+
   return (
     <>
       <div className="space-y-1">
@@ -287,116 +465,244 @@ function DatabasesTab() {
         </p>
       </div>
 
-      <div className="space-y-1">
-        {databases.map(db => (
-          <div
-            key={db.id}
-            className="flex items-center gap-3 px-3 py-2.5 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-main)]"
-          >
-            {editingId === db.id ? (
-              <input
-                autoFocus
-                className="flex-1 bg-transparent border border-[var(--color-accent)] rounded px-2 py-1 text-sm text-[var(--color-text-primary)] outline-none"
-                value={editName}
-                onChange={e => setEditName(e.target.value)}
-                onKeyDown={e => {
-                  if (e.key === 'Enter') handleRename(db.id);
-                  if (e.key === 'Escape') setEditingId(null);
-                }}
-                onBlur={() => handleRename(db.id)}
-              />
-            ) : (
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-2">
-                  <span className="text-sm text-[var(--color-text-primary)] truncate">{db.name}</span>
-                  {db.is_default && (
-                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--color-accent)]/20 text-[var(--color-accent)] font-medium">
-                      Default
-                    </span>
-                  )}
-                  {db.id === activeId && (
-                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-green-500/20 text-green-400 font-medium">
-                      Active
-                    </span>
+      <div className="space-y-2">
+        {databases.map(db => {
+          const status = pipelineByDb.get(db.id);
+          const summary = pipelineSummary(status);
+          const embeddingRetryKey = `${db.id}:embedding`;
+          const taggingRetryKey = `${db.id}:tagging`;
+          const isExpanded = expandedPipeline === db.id;
+          const summaryClass = summary.tone === 'error'
+            ? 'text-red-300'
+            : summary.tone === 'working'
+              ? 'text-amber-300'
+              : summary.tone === 'healthy'
+                ? 'text-green-300'
+                : 'text-[var(--color-text-secondary)]';
+
+          return (
+            <div
+              key={db.id}
+              className="rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-main)]"
+            >
+              <div className="flex items-start gap-3 px-3 py-2.5">
+                {editingId === db.id ? (
+                  <input
+                    autoFocus
+                    className="flex-1 bg-transparent border border-[var(--color-accent)] rounded px-2 py-1 text-sm text-[var(--color-text-primary)] outline-none"
+                    value={editName}
+                    onChange={e => setEditName(e.target.value)}
+                    onKeyDown={e => {
+                      if (e.key === 'Enter') handleRename(db.id);
+                      if (e.key === 'Escape') setEditingId(null);
+                    }}
+                    onBlur={() => handleRename(db.id)}
+                  />
+                ) : (
+                  <div className="flex-1 min-w-0 space-y-1">
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm text-[var(--color-text-primary)] truncate font-medium">{db.name}</span>
+                      {db.is_default && (
+                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--color-accent)]/20 text-[var(--color-accent)] font-medium">
+                          Default
+                        </span>
+                      )}
+                      {db.id === activeId && (
+                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-green-500/20 text-green-400 font-medium">
+                          Active
+                        </span>
+                      )}
+                    </div>
+                    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
+                      <span className={`font-medium ${summaryClass}`}>{summary.label}</span>
+                      <span className="text-[var(--color-text-secondary)]">{summary.detail}</span>
+                    </div>
+                  </div>
+                )}
+
+                {editingId !== db.id && (
+                  <div className="flex items-center gap-1 flex-shrink-0">
+                    {status && status.failed_count > 0 && (
+                      <button
+                        onClick={() => retryFailed(db.id, 'embedding')}
+                        disabled={retrying === embeddingRetryKey}
+                        className="inline-flex items-center gap-1 rounded px-2 py-1 text-[11px] text-red-300 hover:bg-red-500/10 disabled:opacity-50"
+                        title="Retry failed embeddings"
+                      >
+                        {retrying === embeddingRetryKey ? <Loader2 className="w-3.5 h-3.5 animate-spin" strokeWidth={2} /> : <RefreshCw className="w-3.5 h-3.5" strokeWidth={2} />}
+                        Emb
+                      </button>
+                    )}
+                    {status && status.tagging_failed_count > 0 && (
+                      <button
+                        onClick={() => retryFailed(db.id, 'tagging')}
+                        disabled={retrying === taggingRetryKey}
+                        className="inline-flex items-center gap-1 rounded px-2 py-1 text-[11px] text-red-300 hover:bg-red-500/10 disabled:opacity-50"
+                        title="Retry failed tagging"
+                      >
+                        {retrying === taggingRetryKey ? <Loader2 className="w-3.5 h-3.5 animate-spin" strokeWidth={2} /> : <RefreshCw className="w-3.5 h-3.5" strokeWidth={2} />}
+                        Tag
+                      </button>
+                    )}
+                    {status && (
+                      <button
+                        onClick={() => setExpandedPipeline(isExpanded ? null : db.id)}
+                        className="px-2 py-1 text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-hover)] rounded transition-colors"
+                      >
+                        {isExpanded ? 'Hide' : 'Details'}
+                      </button>
+                    )}
+                    {!db.is_default && (
+                      <button
+                        onClick={() => handleSetDefault(db.id)}
+                        className="px-2 py-1 text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-hover)] rounded transition-colors"
+                        title="Set as default"
+                      >
+                        Set default
+                      </button>
+                    )}
+                    <button
+                      onClick={() => { setEditingId(db.id); setEditName(db.name); }}
+                      className="p-1.5 text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-hover)] rounded transition-colors"
+                      title="Rename"
+                    >
+                      <Pencil width="14" height="14" strokeWidth={2} />
+                    </button>
+                    {!db.is_default && (
+                      <button
+                        onClick={() => handleStartDelete(db)}
+                        className="p-1.5 text-[var(--color-text-tertiary)] hover:text-red-400 hover:bg-[var(--color-bg-hover)] rounded transition-colors"
+                        title="Delete database"
+                      >
+                        <Trash2 width="14" height="14" strokeWidth={2} />
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {isExpanded && status && (
+                <div className="px-3 pb-3 space-y-3">
+                  <PipelineDetailCounts status={status} />
+                  {status.complete > 0 && (
+                    <div className="flex items-center justify-between gap-3 rounded border border-[var(--color-border)] bg-[var(--color-bg-panel)] px-3 py-2">
+                      <div className="min-w-0">
+                        <div className="text-xs font-medium text-[var(--color-text-primary)]">Recalculate embeddings</div>
+                        <div className="text-[11px] text-[var(--color-text-secondary)]">
+                          Queues embed-only work for this database while preserving tags and chunk content.
+                        </div>
+                      </div>
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        onClick={() => setConfirmReembedDb(db)}
+                        disabled={reembeddingDb === db.id}
+                        title="Re-embed all atoms in this database"
+                        className="flex-shrink-0 gap-1"
+                      >
+                        {reembeddingDb === db.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" strokeWidth={2} /> : <RefreshCw className="w-3.5 h-3.5" strokeWidth={2} />}
+                        Re-embed
+                      </Button>
+                    </div>
                   )}
                 </div>
-              </div>
-            )}
-
-            {editingId !== db.id && (
-              <div className="flex items-center gap-1">
-                {!db.is_default && (
-                  <button
-                    onClick={() => handleSetDefault(db.id)}
-                    className="px-2 py-1 text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-hover)] rounded transition-colors"
-                    title="Set as default"
-                  >
-                    Set default
-                  </button>
-                )}
-                <button
-                  onClick={() => { setEditingId(db.id); setEditName(db.name); }}
-                  className="p-1.5 text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-hover)] rounded transition-colors"
-                  title="Rename"
-                >
-                  <Pencil width="14" height="14" strokeWidth={2} />
-                </button>
-                {!db.is_default && (
-                  <button
-                    onClick={() => handleStartDelete(db)}
-                    className="p-1.5 text-[var(--color-text-tertiary)] hover:text-red-400 hover:bg-[var(--color-bg-hover)] rounded transition-colors"
-                    title="Delete database"
-                  >
-                    <Trash2 width="14" height="14" strokeWidth={2} />
-                  </button>
-                )}
-              </div>
-            )}
-          </div>
-        ))}
+              )}
+            </div>
+          );
+        })}
       </div>
 
       {databases.length === 0 && (
         <p className="text-sm text-[var(--color-text-secondary)] text-center py-4">No databases found.</p>
       )}
 
-      {/* Delete confirmation dialog */}
-      {confirmDeleteDb && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 safe-area-padding">
-          <div className="bg-[var(--color-bg-panel)] border border-[var(--color-border)] rounded-lg shadow-xl p-6 mx-4 max-w-sm w-full space-y-4">
-            <div className="space-y-2">
-              <h3 className="text-sm font-semibold text-[var(--color-text-primary)]">Delete database?</h3>
-              <p className="text-xs text-[var(--color-text-secondary)]">
-                This will permanently delete <span className="font-medium text-[var(--color-text-primary)]">"{confirmDeleteDb.name}"</span>
-                {isLoadingStats ? (
-                  <span> and all its data.</span>
-                ) : deleteStats && deleteStats.atom_count >= 0 ? (
-                  <span> and its <span className="font-medium text-[var(--color-text-primary)]">{deleteStats.atom_count} atom{deleteStats.atom_count !== 1 ? 's' : ''}</span>. </span>
-                ) : (
-                  <span> and all its data. </span>
-                )}
-                This action cannot be undone.
-              </p>
-            </div>
-            <div className="flex gap-2 justify-end">
-              <button
-                onClick={() => setConfirmDeleteDb(null)}
-                disabled={isDeleting}
-                className="px-3 py-1.5 text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-hover)] rounded transition-colors"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleConfirmDelete}
-                disabled={isDeleting || isLoadingStats}
-                className="px-3 py-1.5 text-xs bg-red-600 hover:bg-red-700 text-white rounded transition-colors disabled:opacity-50"
-              >
-                {isDeleting ? 'Deleting...' : 'Delete'}
-              </button>
-            </div>
-          </div>
+      {pipelineError && (
+        <div className="p-3 bg-red-500/10 border border-red-500/30 rounded-md text-sm text-red-300">
+          {pipelineError}
         </div>
       )}
+
+      {pipelineLoading && databases.length > 0 && (
+        <div className="flex items-center gap-2 text-xs text-[var(--color-text-secondary)]">
+          <Loader2 className="w-3.5 h-3.5 animate-spin" strokeWidth={2} />
+          Checking AI pipeline status...
+        </div>
+      )}
+
+      {/* Delete confirmation dialog */}
+      <Modal
+        isOpen={!!confirmDeleteDb}
+        onClose={() => {
+          if (!isDeleting) setConfirmDeleteDb(null);
+        }}
+        title="Delete database?"
+        showFooter={false}
+      >
+        <div className="space-y-4">
+          <p className="text-xs text-[var(--color-text-secondary)]">
+            This will permanently delete <span className="font-medium text-[var(--color-text-primary)]">"{confirmDeleteDb?.name}"</span>
+            {isLoadingStats ? (
+              <span> and all its data.</span>
+            ) : deleteStats && deleteStats.atom_count >= 0 ? (
+              <span> and its <span className="font-medium text-[var(--color-text-primary)]">{deleteStats.atom_count} atom{deleteStats.atom_count !== 1 ? 's' : ''}</span>. </span>
+            ) : (
+              <span> and all its data. </span>
+            )}
+            This action cannot be undone.
+          </p>
+          <div className="flex gap-2 justify-end">
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => setConfirmDeleteDb(null)}
+              disabled={isDeleting}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="danger"
+              size="sm"
+              onClick={handleConfirmDelete}
+              disabled={isDeleting || isLoadingStats}
+            >
+              {isDeleting ? 'Deleting...' : 'Delete'}
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
+      <Modal
+        isOpen={!!confirmReembedDb}
+        onClose={() => {
+          if (!reembeddingDb) setConfirmReembedDb(null);
+        }}
+        title="Re-embed database?"
+        showFooter={false}
+      >
+        <div className="space-y-4">
+          <p className="text-xs text-[var(--color-text-secondary)]">
+            This clears embedding status for <span className="font-medium text-[var(--color-text-primary)]">"{confirmReembedDb?.name}"</span> and queues embed-only work for its atoms.
+            Existing tags and chunk content are preserved.
+          </p>
+          <div className="flex gap-2 justify-end">
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => setConfirmReembedDb(null)}
+              disabled={!!reembeddingDb}
+            >
+              Cancel
+            </Button>
+            <Button
+              size="sm"
+              onClick={handleConfirmReembedAll}
+              disabled={!!reembeddingDb}
+            >
+              {reembeddingDb === confirmReembedDb?.id ? 'Queuing...' : 'Re-embed'}
+            </Button>
+          </div>
+        </div>
+      </Modal>
     </>
   );
 }
@@ -530,12 +836,6 @@ export function SettingsModal({ isOpen, onClose, initialTab }: SettingsModalProp
   const [ingesting, setIngesting] = useState(false);
   const [ingestResult, setIngestResult] = useState<IngestionResult | null>(null);
   const [ingestError, setIngestError] = useState<string | null>(null);
-
-  // Re-embed state
-  const [showReembedConfirm, setShowReembedConfirm] = useState(false);
-  const [reembedding, setReembedding] = useState(false);
-  const [reembedResult, setReembedResult] = useState<number | null>(null);
-  const [reembedError, setReembedError] = useState<string | null>(null);
 
   // Feed action state
   const [pollingFeedId, setPollingFeedId] = useState<string | null>(null);
@@ -832,11 +1132,11 @@ export function SettingsModal({ isOpen, onClose, initialTab }: SettingsModalProp
     }
   }, [isOpen, fetchSettings, loadApiTokens]);
 
-  // Load feeds when feeds tab is active
+  // Load feeds when integrations tab is active.
   useEffect(() => {
-    if (isOpen && activeTab === 'feeds' && getTransport().isConnected()) {
+    if (isOpen && activeTab === 'integrations' && getTransport().isConnected()) {
       loadFeeds();
-      // Reset ingest state when switching to feeds tab
+      // Reset ingest state when switching to integrations tab
       setIngestResult(null);
       setIngestError(null);
       setPollResult(null);
@@ -885,6 +1185,7 @@ export function SettingsModal({ isOpen, onClose, initialTab }: SettingsModalProp
   useEffect(() => {
     const handleEscape = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
+        if (document.querySelector('[data-modal="true"]')) return;
         onClose();
       }
     };
@@ -1150,42 +1451,60 @@ export function SettingsModal({ isOpen, onClose, initialTab }: SettingsModalProp
       onClick={handleOverlayClick}
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm safe-area-padding"
     >
-      <div className="relative bg-[var(--color-bg-panel)] rounded-lg shadow-xl border border-[var(--color-border)] w-full max-w-2xl mx-4 h-[80vh] flex flex-col animate-in fade-in zoom-in-95 duration-200">
+      <div className="relative bg-[var(--color-bg-panel)] rounded-lg shadow-xl border border-[var(--color-border)] w-[min(1120px,calc(100vw-2rem))] h-[84vh] flex flex-col animate-in fade-in zoom-in-95 duration-200">
         {/* Header */}
-        <div className="px-6 py-4 border-b border-[var(--color-border)]">
-          <div className="flex items-center justify-between">
-            <div>
-              <h2 className="text-lg font-semibold text-[var(--color-text-primary)]">
-                Settings
-              </h2>
-            </div>
-            <button
-              onClick={onClose}
-              className="text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] transition-colors"
-            >
-              <X className="w-5 h-5" strokeWidth={2} />
-            </button>
-          </div>
+        <div className="px-5 py-3 border-b border-[var(--color-border)] flex items-center justify-between">
+          <h2 className="text-base font-semibold text-[var(--color-text-primary)]">
+            Settings
+          </h2>
+          <button
+            onClick={onClose}
+            className="p-1.5 text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-hover)] rounded transition-colors"
+            title="Close"
+          >
+            <X className="w-5 h-5" strokeWidth={2} />
+          </button>
+        </div>
 
-          <div className="flex gap-1 mt-4 -mb-4 px-0 overflow-x-auto">
+        <div className="flex min-h-0 flex-1 flex-col md:flex-row">
+          <nav className="md:hidden border-b border-[var(--color-border)] bg-[var(--color-bg-main)]/35 overflow-x-auto">
+            <div className="flex gap-1 p-2 min-w-max">
               {SETTINGS_TABS.map((tab) => (
                 <button
                   key={tab.id}
                   onClick={() => setActiveTab(tab.id)}
-                  className={`px-3 py-2 text-sm font-medium rounded-t-md transition-colors whitespace-nowrap flex-shrink-0 ${
+                  className={`px-3 py-2 text-sm rounded-md transition-colors whitespace-nowrap ${
                     activeTab === tab.id
-                      ? 'bg-[var(--color-bg-main)] text-[var(--color-text-primary)] border border-b-0 border-[var(--color-border)]'
-                      : 'text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-hover)]'
+                      ? 'bg-[var(--color-bg-hover)] text-[var(--color-text-primary)]'
+                      : 'text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-hover)]/70'
                   }`}
                 >
                   {tab.label}
                 </button>
               ))}
             </div>
-        </div>
+          </nav>
 
-        {/* Content */}
-        <div className="px-6 py-4 space-y-6 overflow-y-auto flex-1">
+          <nav className="hidden md:block w-48 flex-shrink-0 border-r border-[var(--color-border)] bg-[var(--color-bg-main)]/35 p-2 overflow-y-auto">
+            <div className="space-y-1">
+              {SETTINGS_TABS.map((tab) => (
+                <button
+                  key={tab.id}
+                  onClick={() => setActiveTab(tab.id)}
+                  className={`w-full px-3 py-2 text-left text-sm rounded-md transition-colors ${
+                    activeTab === tab.id
+                      ? 'bg-[var(--color-bg-hover)] text-[var(--color-text-primary)]'
+                      : 'text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-hover)]/70'
+                  }`}
+                >
+                  {tab.label}
+                </button>
+              ))}
+            </div>
+          </nav>
+
+          {/* Content */}
+          <div className="px-4 py-4 md:px-6 md:py-5 space-y-6 overflow-y-auto flex-1 min-w-0">
               {/* ===== GENERAL TAB ===== */}
               {activeTab === 'general' && (
                 <>
@@ -1846,79 +2165,6 @@ export function SettingsModal({ isOpen, onClose, initialTab }: SettingsModalProp
                       </div>
                     </>
                   )}
-                  {/* Re-embed All Section */}
-                  <div className="space-y-3 pt-4 border-t border-[var(--color-border)]">
-                    <div className="space-y-1">
-                      <label className="block text-sm font-medium text-[var(--color-text-primary)]">
-                        Re-embed All Atoms
-                      </label>
-                      <p className="text-xs text-[var(--color-text-secondary)]">
-                        Regenerate embeddings for every atom in the current database. Useful after changing providers or if embeddings were interrupted.
-                      </p>
-                    </div>
-
-                    {!showReembedConfirm ? (
-                      <Button
-                        variant="secondary"
-                        onClick={() => { setShowReembedConfirm(true); setReembedResult(null); setReembedError(null); }}
-                        disabled={reembedding}
-                      >
-                        Re-embed All Atoms
-                      </Button>
-                    ) : (
-                      <div className="p-3 bg-yellow-500/10 border border-yellow-500/30 rounded-md space-y-3">
-                        <p className="text-sm text-yellow-200">
-                          This will re-embed <strong>all</strong> atoms in the current database. This is a bulk operation that may take a while depending on how many atoms you have and your provider's rate limits.
-                        </p>
-                        <div className="flex gap-2">
-                          <Button
-                            onClick={async () => {
-                              setReembedding(true);
-                              setShowReembedConfirm(false);
-                              setReembedResult(null);
-                              setReembedError(null);
-                              try {
-                                const count = await reembedAllAtoms();
-                                setReembedResult(count);
-                              } catch (e) {
-                                setReembedError(String(e));
-                              } finally {
-                                setReembedding(false);
-                              }
-                            }}
-                            disabled={reembedding}
-                          >
-                            {reembedding ? (
-                              <>
-                                <Loader2 className="w-4 h-4 animate-spin mr-1" strokeWidth={2} />
-                                Starting...
-                              </>
-                            ) : 'Confirm Re-embed'}
-                          </Button>
-                          <Button
-                            variant="secondary"
-                            onClick={() => setShowReembedConfirm(false)}
-                          >
-                            Cancel
-                          </Button>
-                        </div>
-                      </div>
-                    )}
-
-                    {reembedResult !== null && (
-                      <div className="p-3 bg-green-500/10 border border-green-500/30 rounded-md text-sm">
-                        <div className="text-green-400 font-medium">Queued {reembedResult} atoms for re-embedding</div>
-                        <div className="text-[var(--color-text-secondary)]">Embeddings are being generated in the background.</div>
-                      </div>
-                    )}
-
-                    {reembedError && (
-                      <div className="p-3 bg-red-500/10 border border-red-500/30 rounded-md text-sm">
-                        <div className="text-red-400 font-medium">Re-embedding failed</div>
-                        <div className="text-[var(--color-text-secondary)]">{reembedError}</div>
-                      </div>
-                    )}
-                  </div>
                 </>
               )}
 
@@ -2194,8 +2440,8 @@ export function SettingsModal({ isOpen, onClose, initialTab }: SettingsModalProp
                 </>
               )}
 
-              {/* ===== FEEDS TAB ===== */}
-              {activeTab === 'feeds' && (
+              {/* ===== INTEGRATIONS TAB ===== */}
+              {activeTab === 'integrations' && (
                 <>
                   {/* Ingest URL Section */}
                   <div className="space-y-3">
@@ -2377,12 +2623,7 @@ export function SettingsModal({ isOpen, onClose, initialTab }: SettingsModalProp
                       </Button>
                     </div>
                   </div>
-                </>
-              )}
 
-              {/* ===== INTEGRATIONS TAB ===== */}
-              {activeTab === 'integrations' && (
-                <>
                   {/* Shared import status (used by both Markdown and Apple Notes) */}
                   {(importResult || importError) && (
                     <div className="space-y-2">
@@ -2679,6 +2920,7 @@ export function SettingsModal({ isOpen, onClose, initialTab }: SettingsModalProp
               {activeTab === 'databases' && (
                 <DatabasesTab />
               )}
+          </div>
         </div>
 
         {saveError && (
@@ -2690,24 +2932,18 @@ export function SettingsModal({ isOpen, onClose, initialTab }: SettingsModalProp
           </div>
         )}
 
-        {/* Re-embedding confirmation dialog */}
-        {pendingEmbeddingChange && (
-          <div className="absolute inset-0 z-10 flex items-center justify-center bg-black/40 rounded-lg">
-            <div className="bg-[var(--color-bg-panel)] border border-[var(--color-border)] rounded-lg shadow-xl p-6 mx-8 max-w-sm space-y-4">
-              <div className="space-y-2">
-                <h3 className="text-sm font-semibold text-[var(--color-text-primary)]">Re-embed all atoms?</h3>
-                <p className="text-xs text-[var(--color-text-secondary)]">
-                  Changing the embedding model to <span className="font-medium text-[var(--color-text-primary)]">{pendingEmbeddingChange.label}</span> will
-                  re-embed all atoms. This may take a while and will use API credits.
-                </p>
-              </div>
-              <div className="flex justify-end gap-2">
-                <Button variant="secondary" onClick={cancelEmbeddingChange}>Cancel</Button>
-                <Button onClick={confirmEmbeddingChange}>Re-embed</Button>
-              </div>
-            </div>
-          </div>
-        )}
+        <Modal
+          isOpen={!!pendingEmbeddingChange}
+          onClose={cancelEmbeddingChange}
+          title="Re-embed all atoms?"
+          confirmLabel="Re-embed"
+          onConfirm={confirmEmbeddingChange}
+        >
+          <p className="text-sm text-[var(--color-text-secondary)]">
+            Changing the embedding model to <span className="font-medium text-[var(--color-text-primary)]">{pendingEmbeddingChange?.label}</span> will
+            re-embed all atoms. This may take a while and will use API credits.
+          </p>
+        </Modal>
       </div>
     </div>,
     document.body

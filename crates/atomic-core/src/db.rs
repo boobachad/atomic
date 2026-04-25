@@ -199,7 +199,7 @@ impl Database {
     ///   1. Add a new `if version < N` block at the end (before the virtual-table section)
     ///   2. End the block with `PRAGMA user_version = N;`
     ///   3. Bump LATEST_VERSION
-    const LATEST_VERSION: i32 = 13;
+    const LATEST_VERSION: i32 = 14;
 
     pub fn run_migrations(conn: &Connection) -> Result<(), AtomicCoreError> {
         let version: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
@@ -704,6 +704,35 @@ impl Database {
             conn.execute_batch("PRAGMA user_version = 13;")?;
         }
 
+        // --- V13 → V14: Durable atom pipeline queue ---
+        if version < 14 {
+            conn.execute_batch(
+                r#"
+                CREATE TABLE IF NOT EXISTS atom_pipeline_jobs (
+                    atom_id TEXT PRIMARY KEY REFERENCES atoms(id) ON DELETE CASCADE,
+                    embed_requested INTEGER NOT NULL DEFAULT 0,
+                    tag_requested INTEGER NOT NULL DEFAULT 0,
+                    reason TEXT NOT NULL,
+                    not_before TEXT NOT NULL,
+                    state TEXT NOT NULL DEFAULT 'pending',
+                    lease_until TEXT,
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    atom_updated_at TEXT NOT NULL,
+                    last_error TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_atom_pipeline_jobs_claim
+                    ON atom_pipeline_jobs(state, not_before, updated_at);
+                CREATE INDEX IF NOT EXISTS idx_atom_pipeline_jobs_lease
+                    ON atom_pipeline_jobs(state, lease_until);
+
+                PRAGMA user_version = 14;
+                "#,
+            )?;
+        }
+
         // --- Triggers (recreated every startup to stay current) ---
         conn.execute_batch(
             "DROP TRIGGER IF EXISTS atom_tags_insert_count;
@@ -925,7 +954,9 @@ pub fn will_dimension_change(conn: &Connection, key: &str, new_value: &str) -> (
     (current_dim != new_dim, new_dim)
 }
 
-/// Recreate vec_chunks table with a new dimension and reset embedding status
+/// Recreate vec_chunks table with a new dimension and reset embedding status.
+/// Chunk rows are preserved so embed-only re-embedding can reuse the existing
+/// markdown-aware chunk boundaries.
 pub fn recreate_vec_chunks_with_dimension(
     conn: &Connection,
     dimension: usize,
@@ -944,17 +975,11 @@ pub fn recreate_vec_chunks_with_dimension(
     // Set tagging_status to 'skipped' - existing tags are preserved
     conn.execute("UPDATE atoms SET tagging_status = 'skipped'", [])?;
 
-    // Clear all existing chunk data
-    conn.execute("DELETE FROM atom_chunks", [])?;
-
-    // Clear FTS5 table
-    conn.execute("DELETE FROM atom_chunks_fts", [])?;
+    // Clear old chunk vectors while preserving chunk ids/content.
+    conn.execute("UPDATE atom_chunks SET embedding = NULL", [])?;
 
     // Clear semantic edges
     conn.execute("DELETE FROM semantic_edges", [])?;
-
-    // Clear canvas positions
-    conn.execute("DELETE FROM atom_positions", [])?;
 
     // Clear tag embeddings and recreate vec_tags with new dimension
     conn.execute("DELETE FROM tag_embeddings", []).ok();

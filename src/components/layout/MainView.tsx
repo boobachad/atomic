@@ -31,7 +31,6 @@ import { LocalGraphView } from '../canvas/LocalGraphView';
 import { DashboardView } from '../dashboard/DashboardView';
 import { FAB } from '../ui/FAB';
 import { Modal } from '../ui/Modal';
-import { EmbeddingProgressBanner } from '../ui/EmbeddingProgressBanner';
 import { WikiFullView } from '../wiki/WikiFullView';
 import { WikiReader } from '../wiki/WikiReader';
 import { ChatViewer } from '../chat/ChatViewer';
@@ -671,9 +670,6 @@ export function MainView() {
 
       {/* FAB — on atoms + dashboard views, and only when no overlay is open */}
       {(viewMode === 'atoms' || viewMode === 'dashboard') && !readerState.atomId && !wikiReaderState.tagId && !localGraph.isOpen && <FAB onClick={handleNewAtom} title="Create new atom" />}
-
-      {/* Embedding progress overlay */}
-      <EmbeddingProgressBanner />
 
       {/* Delete confirmation modal for reader */}
       <Modal

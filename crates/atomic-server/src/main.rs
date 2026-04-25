@@ -225,8 +225,10 @@ async fn run_server(
         Err(e) => tracing::warn!(error = %e, "failed to check tokens"),
     }
 
-    // Create broadcast channel for WebSocket events (buffer 256 events)
-    let (event_tx, _) = tokio::sync::broadcast::channel(256);
+    // Create broadcast channel for WebSocket events. Bulk imports can produce
+    // dense atom + pipeline bursts, so keep enough room for slower clients to
+    // avoid losing the first queue status events.
+    let (event_tx, _) = tokio::sync::broadcast::channel(4096);
 
     let app_state = web::Data::new(AppState {
         manager: Arc::clone(&manager),
@@ -428,7 +430,7 @@ async fn run_server(
         });
     }
 
-    // Spawn scheduled-tasks runner (ticks every 60 seconds across all databases).
+    // Spawn scheduled-tasks runner (ticks every 15 seconds across all databases).
     // Each registered task checks its own due-ness and state; we just hand it
     // a core + context. A per-(task, db) lock in the registry prevents the
     // next tick from re-entering a still-running task.
@@ -439,9 +441,12 @@ async fn run_server(
             let mut registry = atomic_core::scheduler::TaskRegistry::new();
             registry.register(Arc::new(atomic_core::briefing::DailyBriefingTask));
             registry.register(Arc::new(atomic_core::pipeline_task::DraftPipelineTask));
+            registry.register(Arc::new(
+                atomic_core::graph_maintenance::GraphMaintenanceTask,
+            ));
             let registry = Arc::new(registry);
 
-            let mut interval = tokio::time::interval(Duration::from_secs(60));
+            let mut interval = tokio::time::interval(Duration::from_secs(15));
             interval.tick().await;
             loop {
                 interval.tick().await;

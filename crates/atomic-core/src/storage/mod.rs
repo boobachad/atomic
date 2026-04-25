@@ -417,12 +417,20 @@ dispatch! {
         => sqlite: set_tagging_status_sync, pg_trait: ChunkStore, pg_method: set_tagging_status;
     fn save_chunks_and_embeddings_sync(&self, atom_id: &str, chunks: &[(String, Vec<f32>)]) -> Result<(), AtomicCoreError>
         => sqlite: save_chunks_and_embeddings_sync, pg_trait: ChunkStore, pg_method: save_chunks_and_embeddings;
+    fn get_chunks_for_atoms_sync(&self, atom_ids: &[String]) -> Result<Vec<ExistingAtomChunk>, AtomicCoreError>
+        => sqlite: get_chunks_for_atoms_sync, pg_trait: ChunkStore, pg_method: get_chunks_for_atoms;
+    fn update_chunk_embeddings_sync(&self, chunks: &[(String, Vec<f32>)]) -> Result<(), AtomicCoreError>
+        => sqlite: update_chunk_embeddings_sync, pg_trait: ChunkStore, pg_method: update_chunk_embeddings;
     fn save_chunks_and_embeddings_batch_sync(&self, atoms: &[(String, Vec<(String, Vec<f32>)>)]) -> Result<Vec<String>, AtomicCoreError>
         => sqlite: save_chunks_and_embeddings_batch_sync, pg_trait: ChunkStore, pg_method: save_chunks_and_embeddings_batch;
     fn reset_stuck_processing_sync(&self) -> Result<i32, AtomicCoreError>
         => sqlite: reset_stuck_processing_sync, pg_trait: ChunkStore, pg_method: reset_stuck_processing;
     fn reset_failed_embeddings_sync(&self) -> Result<i32, AtomicCoreError>
         => sqlite: reset_failed_embeddings_sync, pg_trait: ChunkStore, pg_method: reset_failed_embeddings;
+    fn reset_failed_embedding_statuses_sync(&self) -> Result<i32, AtomicCoreError>
+        => sqlite: reset_failed_embedding_statuses_sync, pg_trait: ChunkStore, pg_method: reset_failed_embedding_statuses;
+    fn reset_failed_tagging_statuses_sync(&self) -> Result<i32, AtomicCoreError>
+        => sqlite: reset_failed_tagging_statuses_sync, pg_trait: ChunkStore, pg_method: reset_failed_tagging_statuses;
     fn rebuild_semantic_edges_sync(&self) -> Result<i32, AtomicCoreError>
         => sqlite: rebuild_semantic_edges_sync, pg_trait: ChunkStore, pg_method: rebuild_semantic_edges;
     fn get_semantic_edges_sync(&self, min_similarity: f32) -> Result<Vec<SemanticEdge>, AtomicCoreError>
@@ -465,6 +473,16 @@ dispatch! {
         => sqlite: set_edges_status_batch_sync, pg_trait: ChunkStore, pg_method: set_edges_status_batch;
     fn count_pending_edges_sync(&self) -> Result<i32, AtomicCoreError>
         => sqlite: count_pending_edges_sync, pg_trait: ChunkStore, pg_method: count_pending_edges;
+    fn enqueue_pipeline_jobs_sync(&self, jobs: &[AtomPipelineJobRequest]) -> Result<i32, AtomicCoreError>
+        => sqlite: enqueue_pipeline_jobs_sync, pg_trait: ChunkStore, pg_method: enqueue_pipeline_jobs;
+    fn enqueue_pipeline_jobs_from_statuses_sync(&self, max_updated_at: Option<&str>) -> Result<i32, AtomicCoreError>
+        => sqlite: enqueue_pipeline_jobs_from_statuses_sync, pg_trait: ChunkStore, pg_method: enqueue_pipeline_jobs_from_statuses;
+    fn claim_pipeline_jobs_sync(&self, limit: i32, lease_until: &str, now: &str) -> Result<Vec<AtomPipelineJob>, AtomicCoreError>
+        => sqlite: claim_pipeline_jobs_sync, pg_trait: ChunkStore, pg_method: claim_pipeline_jobs;
+    fn clear_pipeline_jobs_sync(&self, jobs: &[AtomPipelineJob]) -> Result<(), AtomicCoreError>
+        => sqlite: clear_pipeline_jobs_sync, pg_trait: ChunkStore, pg_method: clear_pipeline_jobs;
+    fn count_pipeline_jobs_sync(&self) -> Result<i32, AtomicCoreError>
+        => sqlite: count_pipeline_jobs_sync, pg_trait: ChunkStore, pg_method: count_pipeline_jobs;
 
     // ---- SearchStore ----
     fn vector_search_sync(&self, query_embedding: &[f32], limit: i32, threshold: f32, tag_id: Option<&str>, created_after: Option<&str>) -> Result<Vec<SemanticSearchResult>, AtomicCoreError>

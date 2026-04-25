@@ -799,6 +799,7 @@ pub struct SourceInfo {
 /// Result of changing a provider-related setting
 #[derive(Debug, Clone, Serialize)]
 pub struct SettingChangeResult {
+    pub embedding_space_changed: bool,
     pub dimension_changed: bool,
     pub old_dim: usize,
     pub new_dim: usize,
@@ -814,6 +815,12 @@ pub struct PipelineStatus {
     pub complete: i32,
     pub failed_count: i32,
     pub failed: Vec<FailedAtom>,
+    pub queued_embedding: i32,
+    pub queued_tagging: i32,
+    pub tagging_pending: i32,
+    pub tagging_processing: i32,
+    pub tagging_complete: i32,
+    pub tagging_skipped: i32,
     pub tagging_failed_count: i32,
     pub tagging_failed: Vec<FailedAtom>,
 }
@@ -826,4 +833,33 @@ pub struct FailedAtom {
     pub snippet: String,
     pub error: Option<String>,
     pub updated_at: String,
+}
+
+/// Durable atom-level pipeline job claimed by the background worker.
+#[derive(Debug, Clone)]
+pub struct AtomPipelineJob {
+    pub atom_id: String,
+    pub embed_requested: bool,
+    pub tag_requested: bool,
+    pub atom_updated_at: String,
+    pub attempts: i32,
+}
+
+/// Stage flags to enqueue for an atom-level pipeline job.
+#[derive(Debug, Clone)]
+pub struct AtomPipelineJobRequest {
+    pub atom_id: String,
+    pub embed_requested: bool,
+    pub tag_requested: bool,
+    pub not_before: Option<String>,
+    pub reason: String,
+}
+
+/// Existing chunk content reused by embed-only re-embedding.
+#[derive(Debug, Clone)]
+pub struct ExistingAtomChunk {
+    pub id: String,
+    pub atom_id: String,
+    pub chunk_index: i32,
+    pub content: String,
 }

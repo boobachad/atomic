@@ -207,9 +207,19 @@ export const COMMAND_MAP: Record<string, CommandSpec> = {
     method: 'POST',
     path: (a) => `/api/tagging/retry/${encodeURIComponent(a.atomId as string)}`,
   },
+  retry_failed_embeddings: {
+    method: 'POST',
+    path: (a) => `/api/embeddings/retry-failed${a.dbId ? `?db=${encodeURIComponent(a.dbId as string)}` : ''}`,
+    transformResponse: (d: any) => d.count as number,
+  },
+  retry_failed_tagging: {
+    method: 'POST',
+    path: (a) => `/api/tagging/retry-failed${a.dbId ? `?db=${encodeURIComponent(a.dbId as string)}` : ''}`,
+    transformResponse: (d: any) => d.count as number,
+  },
   reembed_all_atoms: {
     method: 'POST',
-    path: '/api/embeddings/reembed-all',
+    path: (a) => `/api/embeddings/reembed-all${a.dbId ? `?db=${encodeURIComponent(a.dbId as string)}` : ''}`,
     transformResponse: (d: any) => d.count as number,
   },
   reset_stuck_processing: {
@@ -221,6 +231,10 @@ export const COMMAND_MAP: Record<string, CommandSpec> = {
     method: 'GET',
     path: (a) => `/api/atoms/${encodeURIComponent(a.atomId as string)}/embedding-status`,
     transformResponse: (d: any) => d.status as string,
+  },
+  get_all_pipeline_statuses: {
+    method: 'GET',
+    path: '/api/embeddings/status/all',
   },
 
   // ==================== Briefings ====================

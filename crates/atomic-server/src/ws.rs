@@ -1,6 +1,6 @@
 //! WebSocket endpoint for real-time event streaming
 
-use crate::state::AppState;
+use crate::state::{AppState, ServerEvent};
 use actix_web::{web, HttpRequest, HttpResponse};
 use tokio::sync::broadcast;
 
@@ -41,6 +41,12 @@ pub async fn ws_handler(
                 }
                 Err(broadcast::error::RecvError::Lagged(n)) => {
                     eprintln!("WebSocket client lagged, skipped {} events", n);
+                    let event = ServerEvent::EventsLagged { skipped: n };
+                    if let Ok(json) = serde_json::to_string(&event) {
+                        if session.text(json).await.is_err() {
+                            break;
+                        }
+                    }
                     continue;
                 }
                 Err(broadcast::error::RecvError::Closed) => break,

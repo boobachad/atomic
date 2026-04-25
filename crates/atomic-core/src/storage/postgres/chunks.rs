@@ -116,6 +116,65 @@ impl ChunkStore for PostgresStorage {
         Ok(())
     }
 
+    async fn get_chunks_for_atoms(
+        &self,
+        atom_ids: &[String],
+    ) -> StorageResult<Vec<ExistingAtomChunk>> {
+        if atom_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let rows: Vec<(String, String, i32, String)> = sqlx::query_as(
+            "SELECT id, atom_id, chunk_index, content
+             FROM atom_chunks
+             WHERE atom_id = ANY($1) AND db_id = $2
+             ORDER BY atom_id, chunk_index",
+        )
+        .bind(atom_ids)
+        .bind(&self.db_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| {
+            AtomicCoreError::DatabaseOperation(format!("Failed to fetch existing chunks: {}", e))
+        })?;
+        Ok(rows
+            .into_iter()
+            .map(|(id, atom_id, chunk_index, content)| ExistingAtomChunk {
+                id,
+                atom_id,
+                chunk_index,
+                content,
+            })
+            .collect())
+    }
+
+    async fn update_chunk_embeddings(&self, chunks: &[(String, Vec<f32>)]) -> StorageResult<()> {
+        if chunks.is_empty() {
+            return Ok(());
+        }
+        let mut tx = self.pool.begin().await.map_err(|e| {
+            AtomicCoreError::DatabaseOperation(format!("Failed to begin transaction: {}", e))
+        })?;
+        for (chunk_id, embedding_vec) in chunks {
+            let pg_embedding = Vector::from(embedding_vec.clone());
+            sqlx::query("UPDATE atom_chunks SET embedding = $1 WHERE id = $2 AND db_id = $3")
+                .bind(&pg_embedding)
+                .bind(chunk_id)
+                .bind(&self.db_id)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| {
+                    AtomicCoreError::DatabaseOperation(format!(
+                        "Failed to update chunk embedding: {}",
+                        e
+                    ))
+                })?;
+        }
+        tx.commit().await.map_err(|e| {
+            AtomicCoreError::DatabaseOperation(format!("Failed to commit transaction: {}", e))
+        })?;
+        Ok(())
+    }
+
     async fn delete_chunks(&self, atom_id: &str) -> StorageResult<()> {
         sqlx::query("DELETE FROM atom_chunks WHERE atom_id = $1 AND db_id = $2")
             .bind(atom_id)
@@ -201,6 +260,40 @@ impl ChunkStore for PostgresStorage {
         })?;
 
         Ok((embedding_result.rows_affected() + tagging_result.rows_affected()) as i32)
+    }
+
+    async fn reset_failed_embedding_statuses(&self) -> StorageResult<i32> {
+        let result = sqlx::query(
+            "UPDATE atoms
+             SET embedding_status = 'pending', embedding_error = NULL
+             WHERE embedding_status = 'failed' AND db_id = $1",
+        )
+        .bind(&self.db_id)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| {
+            AtomicCoreError::DatabaseOperation(format!("Failed to reset failed embeddings: {}", e))
+        })?;
+
+        Ok(result.rows_affected() as i32)
+    }
+
+    async fn reset_failed_tagging_statuses(&self) -> StorageResult<i32> {
+        let result = sqlx::query(
+            "UPDATE atoms
+             SET tagging_status = 'pending', tagging_error = NULL
+             WHERE tagging_status = 'failed'
+               AND embedding_status = 'complete'
+               AND db_id = $1",
+        )
+        .bind(&self.db_id)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| {
+            AtomicCoreError::DatabaseOperation(format!("Failed to reset failed tagging: {}", e))
+        })?;
+
+        Ok(result.rows_affected() as i32)
     }
 
     async fn rebuild_semantic_edges(&self) -> StorageResult<i32> {
@@ -913,9 +1006,15 @@ impl ChunkStore for PostgresStorage {
 
     async fn recreate_vector_index(&self, dimension: usize) -> StorageResult<()> {
         // Embedding model is a global setting — dimension change affects all databases.
-        // ALTER the column type globally, then reset ALL atoms for re-embedding.
+        // Clear old vectors before ALTER so existing chunk rows can be preserved
+        // even when their previous embedding dimension differs from the new one.
+        sqlx::query("UPDATE atom_chunks SET embedding = NULL")
+            .execute(&self.pool)
+            .await
+            .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+
         sqlx::query(&format!(
-            "ALTER TABLE atom_chunks ALTER COLUMN embedding TYPE vector({})",
+            "ALTER TABLE atom_chunks ALTER COLUMN embedding TYPE vector({}) USING NULL",
             dimension
         ))
         .execute(&self.pool)
@@ -924,19 +1023,23 @@ impl ChunkStore for PostgresStorage {
             AtomicCoreError::DatabaseOperation(format!("Failed to alter vector dimension: {}", e))
         })?;
 
-        // Delete all chunks (global — old dimension data is invalid)
-        sqlx::query("DELETE FROM atom_chunks")
-            .execute(&self.pool)
-            .await
-            .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
-
-        // Reset all atoms across all databases for re-embedding
+        // Reset all atoms across all databases for embed-only re-embedding.
         sqlx::query("UPDATE atoms SET embedding_status = 'pending'")
             .execute(&self.pool)
             .await
             .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
 
         sqlx::query("UPDATE atoms SET tagging_status = 'skipped'")
+            .execute(&self.pool)
+            .await
+            .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+
+        sqlx::query("DELETE FROM semantic_edges")
+            .execute(&self.pool)
+            .await
+            .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+
+        sqlx::query("DELETE FROM tag_embeddings")
             .execute(&self.pool)
             .await
             .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
@@ -1009,6 +1112,273 @@ impl ChunkStore for PostgresStorage {
         .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
         Ok(row.0 as i32)
     }
+
+    async fn enqueue_pipeline_jobs(&self, jobs: &[AtomPipelineJobRequest]) -> StorageResult<i32> {
+        if jobs.is_empty() {
+            return Ok(0);
+        }
+
+        let mut tx = self.pool.begin().await.map_err(|e| {
+            AtomicCoreError::DatabaseOperation(format!("Failed to begin transaction: {}", e))
+        })?;
+        let now = chrono::Utc::now().to_rfc3339();
+        let mut count = 0i32;
+
+        for job in jobs {
+            if !job.embed_requested && !job.tag_requested {
+                continue;
+            }
+            let not_before = job.not_before.as_deref().unwrap_or(&now);
+            let result = sqlx::query(
+                "INSERT INTO atom_pipeline_jobs (
+                    atom_id, db_id, embed_requested, tag_requested, reason, not_before,
+                    state, lease_until, attempts, atom_updated_at, last_error,
+                    created_at, updated_at
+                 )
+                 SELECT id, db_id, $3, $4, $5, $6, 'pending', NULL, 0, updated_at, NULL, $7, $7
+                 FROM atoms
+                 WHERE id = $1 AND db_id = $2
+                 ON CONFLICT(atom_id, db_id) DO UPDATE SET
+                    embed_requested = atom_pipeline_jobs.embed_requested OR EXCLUDED.embed_requested,
+                    tag_requested = atom_pipeline_jobs.tag_requested OR EXCLUDED.tag_requested,
+                    reason = EXCLUDED.reason,
+                    not_before = LEAST(atom_pipeline_jobs.not_before, EXCLUDED.not_before),
+                    state = 'pending',
+                    lease_until = NULL,
+                    atom_updated_at = EXCLUDED.atom_updated_at,
+                    last_error = NULL,
+                    updated_at = EXCLUDED.updated_at",
+            )
+            .bind(&job.atom_id)
+            .bind(&self.db_id)
+            .bind(job.embed_requested)
+            .bind(job.tag_requested)
+            .bind(&job.reason)
+            .bind(not_before)
+            .bind(&now)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| {
+                AtomicCoreError::DatabaseOperation(format!(
+                    "Failed to enqueue pipeline job: {}",
+                    e
+                ))
+            })?;
+            count += result.rows_affected() as i32;
+        }
+
+        tx.commit().await.map_err(|e| {
+            AtomicCoreError::DatabaseOperation(format!("Failed to commit transaction: {}", e))
+        })?;
+        Ok(count)
+    }
+
+    async fn enqueue_pipeline_jobs_from_statuses(
+        &self,
+        max_updated_at: Option<&str>,
+    ) -> StorageResult<i32> {
+        let now = chrono::Utc::now().to_rfc3339();
+        let result = if let Some(cutoff) = max_updated_at {
+            sqlx::query(
+                "INSERT INTO atom_pipeline_jobs (
+                    atom_id, db_id, embed_requested, tag_requested, reason, not_before,
+                    state, lease_until, attempts, atom_updated_at, last_error,
+                    created_at, updated_at
+                 )
+                 SELECT id,
+                        db_id,
+                        embedding_status = 'pending',
+                        tagging_status = 'pending',
+                        'status-backfill',
+                        $2,
+                        'pending',
+                        NULL,
+                        0,
+                        updated_at,
+                        NULL,
+                        $2,
+                        $2
+                 FROM atoms
+                 WHERE db_id = $1
+                   AND updated_at <= $3
+                   AND (
+                     embedding_status = 'pending'
+                     OR (embedding_status = 'complete' AND tagging_status = 'pending')
+                   )
+                 ON CONFLICT(atom_id, db_id) DO UPDATE SET
+                    embed_requested = atom_pipeline_jobs.embed_requested OR EXCLUDED.embed_requested,
+                    tag_requested = atom_pipeline_jobs.tag_requested OR EXCLUDED.tag_requested,
+                    reason = EXCLUDED.reason,
+                    not_before = LEAST(atom_pipeline_jobs.not_before, EXCLUDED.not_before),
+                    state = 'pending',
+                    lease_until = NULL,
+                    atom_updated_at = EXCLUDED.atom_updated_at,
+                    last_error = NULL,
+                    updated_at = EXCLUDED.updated_at",
+            )
+            .bind(&self.db_id)
+            .bind(&now)
+            .bind(cutoff)
+            .execute(&self.pool)
+            .await
+        } else {
+            sqlx::query(
+                "INSERT INTO atom_pipeline_jobs (
+                    atom_id, db_id, embed_requested, tag_requested, reason, not_before,
+                    state, lease_until, attempts, atom_updated_at, last_error,
+                    created_at, updated_at
+                 )
+                 SELECT id,
+                        db_id,
+                        embedding_status = 'pending',
+                        tagging_status = 'pending',
+                        'status-backfill',
+                        $2,
+                        'pending',
+                        NULL,
+                        0,
+                        updated_at,
+                        NULL,
+                        $2,
+                        $2
+                 FROM atoms
+                 WHERE db_id = $1
+                   AND (
+                     embedding_status = 'pending'
+                     OR (embedding_status = 'complete' AND tagging_status = 'pending')
+                   )
+                 ON CONFLICT(atom_id, db_id) DO UPDATE SET
+                    embed_requested = atom_pipeline_jobs.embed_requested OR EXCLUDED.embed_requested,
+                    tag_requested = atom_pipeline_jobs.tag_requested OR EXCLUDED.tag_requested,
+                    reason = EXCLUDED.reason,
+                    not_before = LEAST(atom_pipeline_jobs.not_before, EXCLUDED.not_before),
+                    state = 'pending',
+                    lease_until = NULL,
+                    atom_updated_at = EXCLUDED.atom_updated_at,
+                    last_error = NULL,
+                    updated_at = EXCLUDED.updated_at",
+            )
+            .bind(&self.db_id)
+            .bind(&now)
+            .execute(&self.pool)
+            .await
+        }
+        .map_err(|e| {
+            AtomicCoreError::DatabaseOperation(format!(
+                "Failed to enqueue pipeline jobs from statuses: {}",
+                e
+            ))
+        })?;
+
+        Ok(result.rows_affected() as i32)
+    }
+
+    async fn claim_pipeline_jobs(
+        &self,
+        limit: i32,
+        lease_until: &str,
+        now: &str,
+    ) -> StorageResult<Vec<AtomPipelineJob>> {
+        let rows: Vec<(String, bool, bool, String, i32)> = sqlx::query_as(
+            "WITH claimed AS (
+                SELECT j.atom_id, j.db_id
+                FROM atom_pipeline_jobs j
+                INNER JOIN atoms a ON a.id = j.atom_id AND a.db_id = j.db_id
+                WHERE j.db_id = $1
+                  AND (
+                    j.state = 'pending'
+                    OR (j.state = 'processing' AND j.lease_until IS NOT NULL AND j.lease_until <= $3)
+                  )
+                  AND j.not_before <= $3
+                  AND (
+                    j.embed_requested
+                    OR (j.tag_requested AND a.embedding_status = 'complete')
+                  )
+                ORDER BY j.updated_at ASC
+                LIMIT $2
+                FOR UPDATE SKIP LOCKED
+             )
+             UPDATE atom_pipeline_jobs j
+             SET state = 'processing',
+                 lease_until = $4,
+                 attempts = attempts + 1,
+                 updated_at = $3
+             FROM claimed c
+             WHERE j.atom_id = c.atom_id AND j.db_id = c.db_id
+             RETURNING j.atom_id, j.embed_requested, j.tag_requested, j.atom_updated_at, j.attempts",
+        )
+        .bind(&self.db_id)
+        .bind(limit as i64)
+        .bind(now)
+        .bind(lease_until)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| {
+            AtomicCoreError::DatabaseOperation(format!("Failed to claim pipeline jobs: {}", e))
+        })?;
+
+        Ok(rows
+            .into_iter()
+            .map(
+                |(atom_id, embed_requested, tag_requested, atom_updated_at, attempts)| {
+                    AtomPipelineJob {
+                        atom_id,
+                        embed_requested,
+                        tag_requested,
+                        atom_updated_at,
+                        attempts,
+                    }
+                },
+            )
+            .collect())
+    }
+
+    async fn clear_pipeline_jobs(&self, jobs: &[AtomPipelineJob]) -> StorageResult<()> {
+        if jobs.is_empty() {
+            return Ok(());
+        }
+        let mut tx = self.pool.begin().await.map_err(|e| {
+            AtomicCoreError::DatabaseOperation(format!("Failed to begin transaction: {}", e))
+        })?;
+        for job in jobs {
+            sqlx::query(
+                "DELETE FROM atom_pipeline_jobs
+                 WHERE atom_id = $1
+                   AND db_id = $2
+                   AND atom_updated_at = $3
+                   AND attempts = $4
+                   AND state = 'processing'",
+            )
+            .bind(&job.atom_id)
+            .bind(&self.db_id)
+            .bind(&job.atom_updated_at)
+            .bind(job.attempts)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| {
+                AtomicCoreError::DatabaseOperation(format!("Failed to clear pipeline job: {}", e))
+            })?;
+        }
+        tx.commit().await.map_err(|e| {
+            AtomicCoreError::DatabaseOperation(format!("Failed to commit transaction: {}", e))
+        })?;
+        Ok(())
+    }
+
+    async fn count_pipeline_jobs(&self) -> StorageResult<i32> {
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM atom_pipeline_jobs WHERE db_id = $1")
+                .bind(&self.db_id)
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|e| {
+                    AtomicCoreError::DatabaseOperation(format!(
+                        "Failed to count pipeline jobs: {}",
+                        e
+                    ))
+                })?;
+        Ok(count as i32)
+    }
 }
 
 // ==================== Pipeline status ====================
@@ -1057,13 +1427,38 @@ impl PostgresStorage {
             })
             .collect();
 
-        let tagging_failed_count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM atoms WHERE tagging_status = 'failed' AND db_id = $1",
+        let queued_embedding: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM atom_pipeline_jobs WHERE embed_requested AND db_id = $1",
         )
         .bind(&self.db_id)
         .fetch_one(&self.pool)
         .await
         .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+        let queued_tagging: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM atom_pipeline_jobs WHERE tag_requested AND db_id = $1",
+        )
+        .bind(&self.db_id)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+
+        let count_tagging_by_status = |status: &'static str| async move {
+            let count: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM atoms WHERE tagging_status = $1 AND db_id = $2",
+            )
+            .bind(status)
+            .bind(&self.db_id)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+            Ok::<i32, AtomicCoreError>(count as i32)
+        };
+
+        let tagging_pending = count_tagging_by_status("pending").await?;
+        let tagging_processing = count_tagging_by_status("processing").await?;
+        let tagging_complete = count_tagging_by_status("complete").await?;
+        let tagging_skipped = count_tagging_by_status("skipped").await?;
+        let tagging_failed_count = count_tagging_by_status("failed").await?;
 
         let tagging_failed: Vec<FailedAtom> =
             sqlx::query_as::<_, (String, String, String, Option<String>, String)>(
@@ -1093,7 +1488,13 @@ impl PostgresStorage {
             complete,
             failed_count,
             failed,
-            tagging_failed_count: tagging_failed_count as i32,
+            queued_embedding: queued_embedding as i32,
+            queued_tagging: queued_tagging as i32,
+            tagging_pending,
+            tagging_processing,
+            tagging_complete,
+            tagging_skipped,
+            tagging_failed_count,
             tagging_failed,
         })
     }

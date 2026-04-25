@@ -1,7 +1,7 @@
 //! End-to-end pipeline tests.
 //!
-//! One atom creation → chunk → embed (via mock HTTP) → build semantic edges
-//! → auto-tag (via mock HTTP). Verifies every persisted artifact at the end.
+//! One atom creation → chunk → embed (via mock HTTP) → auto-tag (via mock HTTP)
+//! → deferred graph maintenance. Verifies every persisted artifact at the end.
 //!
 //! The same test body runs against both storage backends:
 //!   - SQLite: always runs (uses a tempfile DB).
@@ -10,10 +10,12 @@
 
 mod support;
 
-use atomic_core::{AtomicCore, CreateAtomRequest, UpdateAtomRequest};
+use atomic_core::{AtomicCore, CreateAtomRequest, EmbeddingEvent, UpdateAtomRequest};
 use support::{
-    await_pipeline, event_collector, setup_core, Backend, MockAiServer, EDGE_SIMILARITY_THRESHOLD,
+    await_pipeline, event_collector, setup_core, Backend, EventRx, MockAiServer,
+    EDGE_SIMILARITY_THRESHOLD,
 };
+use tempfile::TempDir;
 
 #[tokio::test]
 async fn full_pipeline_sqlite() {
@@ -52,6 +54,16 @@ async fn run_full_pipeline(backend: Backend) {
         "quantum physics explores particles waves and the strange behavior of atomic systems",
     )
     .await;
+    let deferred_edges = core
+        .get_semantic_edges(EDGE_SIMILARITY_THRESHOLD)
+        .await
+        .unwrap();
+    assert!(
+        deferred_edges.is_empty(),
+        "semantic edges should wait for graph maintenance; got {:?}",
+        deferred_edges
+    );
+    run_graph_maintenance(core).await;
 
     // --- Embedding phase: status flipped to complete on both atoms ---
     let fetched_a = core
@@ -142,6 +154,391 @@ async fn create_and_await(core: &AtomicCore, content: &str) -> String {
     created.atom.id
 }
 
+async fn run_graph_maintenance(core: &AtomicCore) {
+    core.process_graph_maintenance()
+        .await
+        .expect("graph maintenance");
+}
+
+async fn await_queue_completed(rx: &mut EventRx) -> Vec<EmbeddingEvent> {
+    let mut captured = Vec::new();
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(15);
+
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            panic!(
+                "queue did not complete within 15s. Captured: {:?}",
+                captured
+            );
+        }
+
+        let ev = match tokio::time::timeout(remaining, rx.recv()).await {
+            Ok(Some(ev)) => ev,
+            Ok(None) => panic!("event channel closed before queue completed"),
+            Err(_) => panic!(
+                "timed out waiting for queue completion. Captured: {:?}",
+                captured
+            ),
+        };
+        let completed = matches!(ev, EmbeddingEvent::PipelineQueueCompleted { .. });
+        captured.push(ev);
+        if completed {
+            return captured;
+        }
+    }
+}
+
+// ==================== Queue modes and progress ====================
+
+#[tokio::test]
+async fn queued_embedding_missing_provider_marks_failed_sqlite() {
+    let dir = TempDir::new().expect("create tempdir");
+    let core =
+        AtomicCore::open_or_create(dir.path().join("pipeline.db")).expect("open sqlite test db");
+
+    let (cb, mut rx) = event_collector();
+    let created = core
+        .create_atom(
+            CreateAtomRequest {
+                content: "embedding should fail before provider call".to_string(),
+                ..Default::default()
+            },
+            cb,
+        )
+        .await
+        .expect("create_atom")
+        .expect("atom inserted");
+    let events = await_queue_completed(&mut rx).await;
+
+    assert!(
+        events.iter().any(|ev| matches!(
+            ev,
+            EmbeddingEvent::EmbeddingFailed { atom_id, .. } if atom_id == &created.atom.id
+        )),
+        "missing OpenRouter key should emit an embedding failure: {:?}",
+        events
+    );
+    assert!(
+        events.iter().any(|ev| matches!(
+            ev,
+            EmbeddingEvent::PipelineQueueCompleted {
+                total_jobs: 1,
+                failed_jobs: 1,
+                ..
+            }
+        )),
+        "queue completion should count the early provider exit as failed: {:?}",
+        events
+    );
+
+    let after = core
+        .get_atom(&created.atom.id)
+        .await
+        .expect("get atom")
+        .expect("atom exists");
+    assert_eq!(after.atom.embedding_status, "failed");
+    assert!(
+        after.atom.embedding_error.is_some(),
+        "failed embedding status should persist an error"
+    );
+
+    let conn = rusqlite::Connection::open(core.db_path()).expect("open sqlite db");
+    let queued: i64 = conn
+        .query_row("SELECT COUNT(*) FROM atom_pipeline_jobs", [], |row| {
+            row.get(0)
+        })
+        .expect("count pipeline jobs");
+    assert_eq!(queued, 0, "terminal failed job should be cleared");
+}
+
+#[tokio::test]
+async fn queue_progress_reports_tagging_only_after_embedding_sqlite() {
+    let mock = MockAiServer::start().await;
+    let handle = setup_core(Backend::Sqlite, &mock.base_url())
+        .await
+        .expect("test harness setup");
+    let core = &handle.core;
+
+    let (cb, mut rx) = event_collector();
+    let result = core
+        .create_atoms_bulk(
+            vec![
+                CreateAtomRequest {
+                    content: "quantum particles waves".to_string(),
+                    ..Default::default()
+                },
+                CreateAtomRequest {
+                    content: "biology cells dna".to_string(),
+                    ..Default::default()
+                },
+                CreateAtomRequest {
+                    content: "cooking pasta sauce".to_string(),
+                    ..Default::default()
+                },
+            ],
+            cb,
+        )
+        .await
+        .expect("bulk create");
+    assert_eq!(result.count, 3);
+
+    let events = await_queue_completed(&mut rx).await;
+    assert!(
+        events.iter().any(|ev| matches!(
+            ev,
+            EmbeddingEvent::PipelineQueueStarted {
+                total_jobs: 3,
+                embedding_total: 3,
+                ..
+            }
+        )),
+        "queue start event should report 3 total jobs and 3 embedding jobs: {:?}",
+        events
+    );
+
+    let embedding_done_index = events
+        .iter()
+        .position(|ev| {
+            matches!(
+                ev,
+                EmbeddingEvent::PipelineQueueProgress {
+                    stage,
+                    completed: 3,
+                    total: 3,
+                    ..
+                } if stage == "embedding"
+            )
+        })
+        .expect("expected terminal embedding progress");
+    let first_tagging_index = events
+        .iter()
+        .position(|ev| {
+            matches!(
+                ev,
+                EmbeddingEvent::PipelineQueueProgress {
+                    stage,
+                    total: 3,
+                    ..
+                } if stage == "tagging"
+            )
+        })
+        .expect("expected tagging progress");
+    assert!(
+        first_tagging_index > embedding_done_index,
+        "tagging progress should be announced after embedding finishes: {:?}",
+        events
+    );
+    assert!(
+        events.iter().any(|ev| matches!(
+            ev,
+            EmbeddingEvent::PipelineQueueProgress {
+                stage,
+                completed: 3,
+                total: 3,
+                ..
+            } if stage == "tagging"
+        )),
+        "tagging should complete 3/3 after eligible atoms are known: {:?}",
+        events
+    );
+    assert!(
+        events.iter().any(|ev| matches!(
+            ev,
+            EmbeddingEvent::PipelineQueueCompleted {
+                total_jobs: 3,
+                failed_jobs: 0,
+                ..
+            }
+        )),
+        "queue completion should report no failures: {:?}",
+        events
+    );
+}
+
+#[tokio::test]
+async fn reembed_all_is_embedding_only_sqlite() {
+    let mock = MockAiServer::start().await;
+    let handle = setup_core(Backend::Sqlite, &mock.base_url())
+        .await
+        .expect("test harness setup");
+    let core = &handle.core;
+    let atom_id = create_and_await(core, "quantum mechanics particles waves").await;
+    let before = core.get_atom(&atom_id).await.unwrap().expect("atom exists");
+    assert!(
+        before.tags.iter().any(|tag| tag.name == "Physics"),
+        "initial auto-tagging should apply Physics: {:?}",
+        before.tags
+    );
+    let chunk_ids_before = sqlite_chunk_ids(core, &atom_id);
+
+    mock.reset_counts();
+    let (cb, mut rx) = event_collector();
+    let queued = core.reembed_all_atoms(cb).await.expect("reembed all");
+    assert_eq!(queued, 1);
+    let events = await_queue_completed(&mut rx).await;
+
+    assert!(
+        mock.embedding_request_count() > 0,
+        "re-embedding should call the embedding provider"
+    );
+    assert_eq!(
+        mock.chat_request_count(),
+        0,
+        "embed-only re-embedding must not call the tagging LLM"
+    );
+    assert!(
+        events.iter().all(|ev| {
+            !matches!(
+                ev,
+                EmbeddingEvent::TaggingComplete { .. }
+                    | EmbeddingEvent::TaggingSkipped { .. }
+                    | EmbeddingEvent::TaggingFailed { .. }
+            ) && !matches!(
+                ev,
+                EmbeddingEvent::PipelineQueueProgress { stage, .. } if stage == "tagging"
+            )
+        }),
+        "embed-only re-embedding should not emit tagging progress or events: {:?}",
+        events
+    );
+
+    let after = core.get_atom(&atom_id).await.unwrap().expect("atom exists");
+    assert_eq!(after.atom.embedding_status, "complete");
+    assert_eq!(after.atom.tagging_status, "complete");
+    assert!(
+        after.tags.iter().any(|tag| tag.name == "Physics"),
+        "existing tags should be preserved by embed-only re-embedding: {:?}",
+        after.tags
+    );
+    assert_eq!(
+        sqlite_chunk_ids(core, &atom_id),
+        chunk_ids_before,
+        "embed-only re-embedding should preserve existing chunk rows"
+    );
+}
+
+#[tokio::test]
+async fn embedding_model_change_reembeds_existing_chunks_sqlite() {
+    let mock = MockAiServer::start().await;
+    let handle = setup_core(Backend::Sqlite, &mock.base_url())
+        .await
+        .expect("test harness setup");
+    let core = &handle.core;
+    let atom_id = create_and_await(core, "quantum mechanics particles waves").await;
+    let chunk_ids_before = sqlite_chunk_ids(core, &atom_id);
+
+    mock.reset_counts();
+    let (cb, mut rx) = event_collector();
+    let result = core
+        .set_setting_with_reembed("openai_compat_embedding_model", "mock-embed-v2", cb)
+        .await
+        .expect("change embedding model");
+    assert!(result.embedding_space_changed);
+    assert!(!result.dimension_changed);
+    assert_eq!(result.total_atom_count, 1);
+    let events = await_queue_completed(&mut rx).await;
+
+    assert!(
+        mock.embedding_request_count() > 0,
+        "embedding model changes should re-embed existing chunks"
+    );
+    assert_eq!(
+        mock.chat_request_count(),
+        0,
+        "embedding model changes should not re-run auto-tagging"
+    );
+    assert!(
+        events.iter().any(|ev| matches!(
+            ev,
+            EmbeddingEvent::PipelineQueueCompleted {
+                total_jobs: 1,
+                failed_jobs: 0,
+                ..
+            }
+        )),
+        "embedding model change should complete one embed-only queue job: {:?}",
+        events
+    );
+    assert_eq!(
+        sqlite_chunk_ids(core, &atom_id),
+        chunk_ids_before,
+        "embedding model changes should preserve existing chunk rows"
+    );
+}
+
+fn sqlite_chunk_ids(core: &AtomicCore, atom_id: &str) -> Vec<String> {
+    let conn = rusqlite::Connection::open(core.db_path()).expect("open sqlite db");
+    let mut stmt = conn
+        .prepare("SELECT id FROM atom_chunks WHERE atom_id = ?1 ORDER BY chunk_index")
+        .expect("prepare chunk query");
+    stmt.query_map([atom_id], |row| row.get::<_, String>(0))
+        .expect("query chunk ids")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("collect chunk ids")
+}
+
+#[tokio::test]
+async fn retry_tagging_is_tagging_only_sqlite() {
+    let mock = MockAiServer::start().await;
+    let handle = setup_core(Backend::Sqlite, &mock.base_url())
+        .await
+        .expect("test harness setup");
+    let core = &handle.core;
+    let atom_id = create_and_await(core, "biology cells dna evolution").await;
+
+    mock.reset_counts();
+    let (cb, mut rx) = event_collector();
+    core.retry_tagging(&atom_id, cb)
+        .await
+        .expect("retry tagging");
+    let events = await_queue_completed(&mut rx).await;
+
+    assert_eq!(
+        mock.embedding_request_count(),
+        0,
+        "tagging-only retry must not call the embedding provider"
+    );
+    assert!(
+        mock.chat_request_count() > 0,
+        "tagging-only retry should call the tagging LLM"
+    );
+    assert!(
+        events.iter().any(|ev| matches!(
+            ev,
+            EmbeddingEvent::PipelineQueueStarted {
+                total_jobs: 1,
+                embedding_total: 0,
+                ..
+            }
+        )),
+        "tag-only queue run should report zero embedding work: {:?}",
+        events
+    );
+    assert!(
+        events.iter().any(|ev| matches!(
+            ev,
+            EmbeddingEvent::PipelineQueueProgress {
+                stage,
+                completed: 1,
+                total: 1,
+                ..
+            } if stage == "tagging"
+        )),
+        "tagging-only run should report 1/1 tagging progress: {:?}",
+        events
+    );
+
+    let after = core.get_atom(&atom_id).await.unwrap().expect("atom exists");
+    assert_eq!(after.atom.embedding_status, "complete");
+    assert_eq!(after.atom.tagging_status, "complete");
+    assert!(
+        after.tags.iter().any(|tag| tag.name == "Biology"),
+        "tagging retry should apply the content-derived Biology tag: {:?}",
+        after.tags
+    );
+}
+
 // ==================== Update lifecycle ====================
 
 #[tokio::test]
@@ -173,6 +570,7 @@ async fn run_update_lifecycle(backend: Backend) {
     // Vocabulary A — atoms a and b land near each other.
     let a = create_and_await(core, "quantum mechanics particles waves atomic scales").await;
     let b = create_and_await(core, "quantum waves physics atomic particles systems").await;
+    run_graph_maintenance(core).await;
 
     // Sanity: edge exists before update so the delete-after-update
     // assertion is actually meaningful.
@@ -203,6 +601,7 @@ async fn run_update_lifecycle(backend: Backend) {
     .await
     .expect("update_atom");
     await_pipeline(&mut rx, &a).await;
+    run_graph_maintenance(core).await;
 
     let a_after = core.get_atom(&a).await.unwrap().expect("a still exists");
     assert_eq!(a_after.atom.content, new_content);
@@ -317,6 +716,7 @@ async fn run_delete_cascade(backend: Backend) {
 
     let a = create_and_await(core, "apple banana cherry mango lychee").await;
     let b = create_and_await(core, "apple banana cherry dragonfruit lychee").await;
+    run_graph_maintenance(core).await;
 
     // Capture the Physics tag id off one of the atoms before deletion so we
     // can check the tag row itself survives. `get_all_tags` only returns
