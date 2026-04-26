@@ -2,6 +2,10 @@
 
 All notable changes to Atomic are documented here.
 
+## v1.32.3 — 2026-04-26
+
+- Rebuild the neighborhood graph view with Sigma — concentric layout sorted by similarity, always-visible title and tag labels, color-coded edges by relationship type (tag-only, semantic, or both), and hover dimming of non-neighbors
+
 ## v1.32.2 — 2026-04-26
 
 - Add comprehensive user documentation covering concepts, getting started, guides, self-hosting, and API reference
