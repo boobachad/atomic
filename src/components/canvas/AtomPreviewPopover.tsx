@@ -71,15 +71,34 @@ export function AtomPreviewPopover({ atomId, anchorRect, onClose, onViewAtom }: 
 
   useKeyboard('Escape', onClose, true);
 
-  // Click outside dismisses the popover and unselects the node on the canvas.
+  // Click outside dismisses the popover, but a canvas pan (mousedown-drag-mouseup
+  // outside) must NOT dismiss it. We treat it as a click only when the cursor
+  // moved less than a few px between down and up.
   useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
-      if (popoverRef.current && !popoverRef.current.contains(event.target as Node)) {
+    let downX = 0;
+    let downY = 0;
+    let downOutside = false;
+    const handleDown = (e: MouseEvent) => {
+      downOutside = !!popoverRef.current && !popoverRef.current.contains(e.target as Node);
+      downX = e.clientX;
+      downY = e.clientY;
+    };
+    const handleUp = (e: MouseEvent) => {
+      if (!downOutside) return;
+      downOutside = false;
+      const dx = e.clientX - downX;
+      const dy = e.clientY - downY;
+      if (dx * dx + dy * dy > 25) return; // > 5px = drag, not a click
+      if (popoverRef.current && !popoverRef.current.contains(e.target as Node)) {
         onClose();
       }
     };
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
+    document.addEventListener('mousedown', handleDown);
+    document.addEventListener('mouseup', handleUp);
+    return () => {
+      document.removeEventListener('mousedown', handleDown);
+      document.removeEventListener('mouseup', handleUp);
+    };
   }, [onClose]);
 
   // Fetch atom data

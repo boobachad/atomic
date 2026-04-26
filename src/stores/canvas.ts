@@ -1,9 +1,17 @@
 import { create } from 'zustand';
 import type { GlobalCanvasData } from '../lib/api';
 
+export interface CanvasCameraState {
+  x: number;
+  y: number;
+  ratio: number;
+  angle: number;
+}
+
 export interface CanvasController {
   zoomToCluster: (label: string) => void;
   focusAtom: (atomId: string) => void;
+  getCameraState: () => CanvasCameraState | null;
 }
 
 interface CanvasStore {
@@ -23,12 +31,19 @@ interface CanvasStore {
   // Canvas data (clusters for chat context)
   canvasData: GlobalCanvasData | null;
   setCanvasData: (data: GlobalCanvasData) => void;
+
+  // Camera state to apply to the next-mounted main canvas. Set when the user
+  // clicks the dashboard preview so the main view opens at the same framing
+  // they were already looking at. Consumed (cleared) on apply.
+  pendingCamera: CanvasCameraState | null;
+  setPendingCamera: (state: CanvasCameraState | null) => void;
 }
 
 export const useCanvasStore = create<CanvasStore>()((set) => ({
   controller: null,
   previewController: null,
   canvasData: null,
+  pendingCamera: null,
 
   registerController: (ctrl) => set({ controller: ctrl }),
   unregisterController: () => set({ controller: null }),
@@ -37,4 +52,6 @@ export const useCanvasStore = create<CanvasStore>()((set) => ({
   unregisterPreviewController: () => set({ previewController: null }),
 
   setCanvasData: (data) => set({ canvasData: data }),
+
+  setPendingCamera: (state) => set({ pendingCamera: state }),
 }));

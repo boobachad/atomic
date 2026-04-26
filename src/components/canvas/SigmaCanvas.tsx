@@ -404,12 +404,17 @@ export function SigmaCanvas({ mode = 'main', onPreviewClick }: SigmaCanvasProps 
       ctx.textBaseline = 'middle';
 
       const tagFilter = selectedTagRef.current;
+      // When a node is pinned, restrict labels to the pinned node + its
+      // neighbors so the highlighted subgraph is the only thing named.
+      const pinnedId = pinnedNodeRef.current;
+      const pinnedNeighbors = pinnedId ? neighborsRef.current.get(pinnedId) : null;
       const minRenderedSize = 4;
       const atomLabelPad = 20;
 
       type Cand = { vx: number; vy: number; rsize: number; label: string };
       const candidates: Cand[] = [];
-      graph!.forEachNode((_id, attrs) => {
+      graph!.forEachNode((id, attrs) => {
+        if (pinnedId && id !== pinnedId && !pinnedNeighbors?.has(id)) return;
         if (tagFilter) {
           const tagIds = (attrs as any).tagIds as string[] | undefined;
           if (!tagIds?.includes(tagFilter)) return;
@@ -438,7 +443,6 @@ export function SigmaCanvas({ mode = 'main', onPreviewClick }: SigmaCanvasProps 
       }
 
       // === Pinned-node ring (persists while a popover is open) ===
-      const pinnedId = pinnedNodeRef.current;
       if (pinnedId && graph!.hasNode(pinnedId)) {
         const pAttrs = graph!.getNodeAttributes(pinnedId);
         const pPos = sigma!.graphToViewport({ x: pAttrs.x as number, y: pAttrs.y as number });
@@ -448,6 +452,26 @@ export function SigmaCanvas({ mode = 'main', onPreviewClick }: SigmaCanvasProps 
         ctx.strokeStyle = 'rgba(255, 255, 255, 0.75)';
         ctx.lineWidth = 2;
         ctx.stroke();
+
+        // Keep the popover anchored to the node as the camera pans/zooms.
+        // The popover ignores these updates after the user manually drags it,
+        // so this doesn't fight with intentional repositioning.
+        const cRect = container!.getBoundingClientRect();
+        const aSize = (pAttrs.size as number) || 4;
+        const newAnchor = {
+          top: cRect.top + pPos.y - aSize,
+          left: cRect.left + pPos.x - aSize,
+          bottom: cRect.top + pPos.y + aSize,
+          width: aSize * 2,
+        };
+        setPreviewAnchorRect(prev => {
+          if (
+            prev &&
+            Math.abs(prev.top - newAnchor.top) < 0.5 &&
+            Math.abs(prev.left - newAnchor.left) < 0.5
+          ) return prev;
+          return newAnchor;
+        });
       }
 
       // === Hover pill + ring (drawn last so it paints above everything) ===
@@ -513,15 +537,23 @@ export function SigmaCanvas({ mode = 'main', onPreviewClick }: SigmaCanvasProps 
 
     // Animate nodes outward from center + fade edges in.
     // Preview mode skips the animation and snaps to final state so the thumbnail
-    // shows the real layout immediately on mount.
+    // shows the real layout immediately on mount. The main view also skips the
+    // animation when a pendingCamera is set — i.e. the user came from clicking
+    // the dashboard preview, and we want to land on the same framing they were
+    // already looking at without the layout-builds-up flourish.
     let cancelledAnim = false;
-    if (isPreview) {
+    const pendingCamera = !isPreview ? useCanvasStore.getState().pendingCamera : null;
+    if (isPreview || pendingCamera) {
       for (const [id, target] of Object.entries(targetPositions)) {
         if (!graph.hasNode(id)) continue;
         graph.setNodeAttribute(id, 'x', target.x);
         graph.setNodeAttribute(id, 'y', target.y);
       }
       edgeAnimProgress.current = 1;
+      if (pendingCamera) {
+        sigma.getCamera().setState(pendingCamera);
+        useCanvasStore.getState().setPendingCamera(null);
+      }
       sigma.refresh();
     } else {
       const animStart = performance.now();
@@ -621,6 +653,11 @@ export function SigmaCanvas({ mode = 'main', onPreviewClick }: SigmaCanvasProps 
         sigma.getCamera().animate({ x: cam.x, y: cam.y, ratio: 0.15 }, { duration: 600 });
         // Main view shows the popover after the camera settles; preview stays quiet.
         if (!isPreview) setTimeout(() => { pinNode(atomId); showAtomPreview(atomId); }, 650);
+      },
+      getCameraState: () => {
+        if (!sigma) return null;
+        const s = sigma.getCamera().getState();
+        return { x: s.x, y: s.y, ratio: s.ratio, angle: s.angle };
       },
     };
 
