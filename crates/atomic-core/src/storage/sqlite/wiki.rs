@@ -49,6 +49,15 @@ impl SqliteStorage {
         // we don't have link extraction context, so pass an empty slice.
         wiki::save_wiki_article(&conn, &article, citations, &[])
             .map_err(|e| AtomicCoreError::Wiki(e))?;
+        conn.execute("DELETE FROM wiki_articles_fts WHERE tag_id = ?1", [tag_id])?;
+        conn.execute(
+            "INSERT INTO wiki_articles_fts(id, tag_id, tag_name, content)
+             SELECT w.id, w.tag_id, t.name, w.content
+             FROM wiki_articles w
+             JOIN tags t ON t.id = w.tag_id
+             WHERE w.tag_id = ?1",
+            [tag_id],
+        )?;
 
         Ok(WikiArticleWithCitations {
             article,
@@ -68,7 +77,20 @@ impl SqliteStorage {
             .lock()
             .map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
         wiki::save_wiki_article(&conn, article, citations, links)
-            .map_err(|e| AtomicCoreError::Wiki(e))
+            .map_err(|e| AtomicCoreError::Wiki(e))?;
+        conn.execute(
+            "DELETE FROM wiki_articles_fts WHERE tag_id = ?1",
+            [&article.tag_id],
+        )?;
+        conn.execute(
+            "INSERT INTO wiki_articles_fts(id, tag_id, tag_name, content)
+             SELECT w.id, w.tag_id, t.name, w.content
+             FROM wiki_articles w
+             JOIN tags t ON t.id = w.tag_id
+             WHERE w.tag_id = ?1",
+            [&article.tag_id],
+        )?;
+        Ok(())
     }
 
     pub(crate) fn delete_wiki_sync(&self, tag_id: &str) -> StorageResult<()> {
@@ -77,7 +99,9 @@ impl SqliteStorage {
             .conn
             .lock()
             .map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
-        wiki::delete_article(&conn, tag_id).map_err(|e| AtomicCoreError::Wiki(e))
+        wiki::delete_article(&conn, tag_id).map_err(|e| AtomicCoreError::Wiki(e))?;
+        conn.execute("DELETE FROM wiki_articles_fts WHERE tag_id = ?1", [tag_id])?;
+        Ok(())
     }
 
     pub(crate) fn get_wiki_links_sync(&self, tag_id: &str) -> StorageResult<Vec<WikiLink>> {
@@ -122,29 +146,40 @@ impl SqliteStorage {
         let conn = self.db.read_conn()?;
 
         // Get all descendant tag IDs (including the tag itself)
-        let all_tag_ids = wiki::get_tag_hierarchy(&conn, tag_id)
-            .map_err(|e| AtomicCoreError::Wiki(e))?;
+        let all_tag_ids =
+            wiki::get_tag_hierarchy(&conn, tag_id).map_err(|e| AtomicCoreError::Wiki(e))?;
 
         if all_tag_ids.is_empty() {
-            return Err(AtomicCoreError::Wiki("No content found for this tag".to_string()));
+            return Err(AtomicCoreError::Wiki(
+                "No content found for this tag".to_string(),
+            ));
         }
 
         // Build scoped atom IDs
-        let placeholders = all_tag_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let placeholders = all_tag_ids
+            .iter()
+            .map(|_| "?")
+            .collect::<Vec<_>>()
+            .join(",");
         let atom_ids_query = format!(
             "SELECT DISTINCT atom_id FROM atom_tags WHERE tag_id IN ({})",
             placeholders
         );
-        let mut stmt = conn.prepare(&atom_ids_query)
-            .map_err(|e| AtomicCoreError::Wiki(format!("Failed to prepare atom_ids query: {}", e)))?;
+        let mut stmt = conn.prepare(&atom_ids_query).map_err(|e| {
+            AtomicCoreError::Wiki(format!("Failed to prepare atom_ids query: {}", e))
+        })?;
         let scoped_atom_ids: std::collections::HashSet<String> = stmt
-            .query_map(rusqlite::params_from_iter(all_tag_ids.iter()), |row| row.get(0))
+            .query_map(rusqlite::params_from_iter(all_tag_ids.iter()), |row| {
+                row.get(0)
+            })
             .map_err(|e| AtomicCoreError::Wiki(format!("Failed to query atom_ids: {}", e)))?
             .collect::<Result<std::collections::HashSet<_>, _>>()
             .map_err(|e| AtomicCoreError::Wiki(format!("Failed to collect atom_ids: {}", e)))?;
 
         if scoped_atom_ids.is_empty() {
-            return Err(AtomicCoreError::Wiki("No content found for this tag".to_string()));
+            return Err(AtomicCoreError::Wiki(
+                "No content found for this tag".to_string(),
+            ));
         }
 
         // Try centroid-ranked retrieval
@@ -157,16 +192,31 @@ impl SqliteStorage {
             .ok();
 
         let chunks = if let Some(ref centroid) = centroid_blob {
-            wiki::centroid::select_chunks_by_centroid(&conn, centroid, &scoped_atom_ids, max_source_tokens)
-                .map_err(|e| AtomicCoreError::Wiki(e))?
+            wiki::centroid::select_chunks_by_centroid(
+                &conn,
+                centroid,
+                &scoped_atom_ids,
+                max_source_tokens,
+            )
+            .map_err(|e| AtomicCoreError::Wiki(e))?
         } else {
-            tracing::debug!(tag_id, "[wiki/storage] No centroid for tag, falling back to unranked chunk selection");
-            wiki::centroid::select_chunks_unranked(&conn, &placeholders, &all_tag_ids, max_source_tokens)
-                .map_err(|e| AtomicCoreError::Wiki(e))?
+            tracing::debug!(
+                tag_id,
+                "[wiki/storage] No centroid for tag, falling back to unranked chunk selection"
+            );
+            wiki::centroid::select_chunks_unranked(
+                &conn,
+                &placeholders,
+                &all_tag_ids,
+                max_source_tokens,
+            )
+            .map_err(|e| AtomicCoreError::Wiki(e))?
         };
 
         if chunks.is_empty() {
-            return Err(AtomicCoreError::Wiki("No content found for this tag".to_string()));
+            return Err(AtomicCoreError::Wiki(
+                "No content found for this tag".to_string(),
+            ));
         }
 
         let atom_count = wiki::count_atoms_with_tags(&conn, &all_tag_ids)
@@ -190,7 +240,9 @@ impl SqliteStorage {
                  INNER JOIN atom_tags at ON a.id = at.atom_id
                  WHERE at.tag_id = ?1 AND a.created_at > ?2",
             )
-            .map_err(|e| AtomicCoreError::Wiki(format!("Failed to prepare new atoms query: {}", e)))?;
+            .map_err(|e| {
+                AtomicCoreError::Wiki(format!("Failed to prepare new atoms query: {}", e))
+            })?;
 
         let new_atom_ids: Vec<String> = new_atom_stmt
             .query_map(rusqlite::params![tag_id, last_update], |row| row.get(0))
@@ -214,8 +266,13 @@ impl SqliteStorage {
             .ok();
 
         let new_chunks = if let Some(ref centroid) = centroid_blob {
-            wiki::centroid::select_chunks_by_centroid(&conn, centroid, &new_atom_id_set, max_source_tokens)
-                .map_err(|e| AtomicCoreError::Wiki(e))?
+            wiki::centroid::select_chunks_by_centroid(
+                &conn,
+                centroid,
+                &new_atom_id_set,
+                max_source_tokens,
+            )
+            .map_err(|e| AtomicCoreError::Wiki(e))?
         } else {
             tracing::debug!(tag_id, "[wiki/storage] No centroid for tag, falling back to unranked update chunk selection");
             wiki::centroid::select_new_chunks_unranked(&conn, &new_atom_id_set, max_source_tokens)
@@ -237,10 +294,7 @@ impl SqliteStorage {
         Ok(Some((new_chunks, atom_count)))
     }
 
-    pub(crate) fn save_wiki_proposal_sync(
-        &self,
-        proposal: &WikiProposal,
-    ) -> StorageResult<()> {
+    pub(crate) fn save_wiki_proposal_sync(&self, proposal: &WikiProposal) -> StorageResult<()> {
         let conn = self
             .db
             .conn
@@ -363,10 +417,7 @@ impl SqliteStorage {
 
 #[async_trait]
 impl WikiStore for SqliteStorage {
-    async fn get_wiki(
-        &self,
-        tag_id: &str,
-    ) -> StorageResult<Option<WikiArticleWithCitations>> {
+    async fn get_wiki(&self, tag_id: &str) -> StorageResult<Option<WikiArticleWithCitations>> {
         let storage = self.clone();
         let tag_id = tag_id.to_string();
         tokio::task::spawn_blocking(move || storage.get_wiki_sync(&tag_id))

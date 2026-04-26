@@ -4,6 +4,7 @@
   <img alt="Atomic" src="./docs/images/logo.svg" width="300">
 </picture>
 
+[![Discord](https://img.shields.io/discord/1489017497200885800?label=discord&logo=discord&logoColor=white&color=5865F2)](https://discord.gg/fT4vTERhz3)
 [![Desktop App](https://img.shields.io/github/v/release/kenforthewin/atomic?label=desktop&logo=github)](https://github.com/kenforthewin/atomic/releases/latest)
 [![Server Image](https://img.shields.io/github/v/tag/kenforthewin/atomic?label=server&logo=docker)](https://github.com/kenforthewin/atomic/pkgs/container/atomic-server)
 [![Web Image](https://img.shields.io/github/v/tag/kenforthewin/atomic?label=web&logo=docker)](https://github.com/kenforthewin/atomic/pkgs/container/atomic-web)

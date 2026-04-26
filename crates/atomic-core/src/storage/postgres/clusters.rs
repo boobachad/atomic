@@ -40,13 +40,12 @@ struct TagTree {
 
 impl TagTree {
     async fn load(pool: &sqlx::PgPool, db_id: &str) -> Result<Self, AtomicCoreError> {
-        let all_tags: Vec<(String, String, Option<String>)> = sqlx::query_as(
-            "SELECT id, name, parent_id FROM tags WHERE db_id = $1 ORDER BY name",
-        )
-        .bind(db_id)
-        .fetch_all(pool)
-        .await
-        .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+        let all_tags: Vec<(String, String, Option<String>)> =
+            sqlx::query_as("SELECT id, name, parent_id FROM tags WHERE db_id = $1 ORDER BY name")
+                .bind(db_id)
+                .fetch_all(pool)
+                .await
+                .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
 
         let direct_count_rows: Vec<(String, i64)> = sqlx::query_as(
             "SELECT tag_id, COUNT(*) FROM atom_tags WHERE db_id = $1 GROUP BY tag_id",
@@ -64,10 +63,7 @@ impl TagTree {
         let mut children_map: HashMap<String, Vec<String>> = HashMap::new();
         for (id, _, parent) in &all_tags {
             if let Some(p) = parent {
-                children_map
-                    .entry(p.clone())
-                    .or_default()
-                    .push(id.clone());
+                children_map.entry(p.clone()).or_default().push(id.clone());
             }
         }
 
@@ -687,14 +683,13 @@ async fn build_breadcrumb(
     let mut current_id = Some(tag_id.to_string());
 
     while let Some(id) = current_id {
-        let row: Option<(String, Option<String>)> = sqlx::query_as(
-            "SELECT name, parent_id FROM tags WHERE id = $1 AND db_id = $2",
-        )
-        .bind(&id)
-        .bind(db_id)
-        .fetch_optional(pool)
-        .await
-        .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+        let row: Option<(String, Option<String>)> =
+            sqlx::query_as("SELECT name, parent_id FROM tags WHERE id = $1 AND db_id = $2")
+                .bind(&id)
+                .bind(db_id)
+                .fetch_optional(pool)
+                .await
+                .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
 
         match row {
             Some((name, parent_id)) => {
@@ -741,7 +736,9 @@ async fn build_root_level(
             clustered_atom_ids.insert(aid.clone());
         }
 
-        let dominant = get_dominant_tags_for_cluster(pool, group, db_id).await.unwrap_or_default();
+        let dominant = get_dominant_tags_for_cluster(pool, group, db_id)
+            .await
+            .unwrap_or_default();
 
         let label = if dominant.len() >= 2 {
             format!("{}, {}", dominant[0], dominant[1])
@@ -763,13 +760,12 @@ async fn build_root_level(
     }
 
     // Find unclustered atoms
-    let all_atom_ids: Vec<String> = sqlx::query_scalar(
-        "SELECT id FROM atoms WHERE db_id = $1 ORDER BY updated_at DESC",
-    )
-    .bind(db_id)
-    .fetch_all(pool)
-    .await
-    .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+    let all_atom_ids: Vec<String> =
+        sqlx::query_scalar("SELECT id FROM atoms WHERE db_id = $1 ORDER BY updated_at DESC")
+            .bind(db_id)
+            .fetch_all(pool)
+            .await
+            .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
 
     let unclustered_ids: Vec<String> = all_atom_ids
         .into_iter()
@@ -781,8 +777,9 @@ async fn build_root_level(
             let mut atom_nodes = build_flat_atom_nodes(pool, &unclustered_ids, db_id).await?;
             nodes.append(&mut atom_nodes);
         } else {
-            let dominant =
-                get_dominant_tags_for_atoms(pool, &unclustered_ids, db_id).await.unwrap_or_default();
+            let dominant = get_dominant_tags_for_atoms(pool, &unclustered_ids, db_id)
+                .await
+                .unwrap_or_default();
             nodes.push(CanvasNode {
                 id: "cluster:unclustered".to_string(),
                 node_type: CanvasNodeType::SemanticCluster,
@@ -817,23 +814,18 @@ async fn build_tag_level(
 
     let tree = TagTree::load(pool, db_id).await?;
 
-    let (parent_name, _parent_parent_id): (String, Option<String>) = sqlx::query_as(
-        "SELECT name, parent_id FROM tags WHERE id = $1 AND db_id = $2",
-    )
-    .bind(tag_id)
-    .bind(db_id)
-    .fetch_optional(pool)
-    .await
-    .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?
-    .ok_or_else(|| AtomicCoreError::NotFound(format!("Tag {} not found", tag_id)))?;
+    let (parent_name, _parent_parent_id): (String, Option<String>) =
+        sqlx::query_as("SELECT name, parent_id FROM tags WHERE id = $1 AND db_id = $2")
+            .bind(tag_id)
+            .bind(db_id)
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?
+            .ok_or_else(|| AtomicCoreError::NotFound(format!("Tag {} not found", tag_id)))?;
 
     let breadcrumb = build_breadcrumb(pool, tag_id, db_id).await?;
 
-    let child_ids: Vec<String> = tree
-        .children_map
-        .get(tag_id)
-        .cloned()
-        .unwrap_or_default();
+    let child_ids: Vec<String> = tree.children_map.get(tag_id).cloned().unwrap_or_default();
 
     if !child_ids.is_empty() {
         let mut tag_nodes: Vec<(CanvasNode, i32)> = child_ids
@@ -1023,14 +1015,13 @@ async fn build_hint_level(
     }
 
     // Check if hints are tags or atoms
-    let found_tags: Vec<(String, String)> = sqlx::query_as(
-        "SELECT id, name FROM tags WHERE id = ANY($1) AND db_id = $2",
-    )
-    .bind(hint_ids)
-    .bind(db_id)
-    .fetch_all(pool)
-    .await
-    .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+    let found_tags: Vec<(String, String)> =
+        sqlx::query_as("SELECT id, name FROM tags WHERE id = ANY($1) AND db_id = $2")
+            .bind(hint_ids)
+            .bind(db_id)
+            .fetch_all(pool)
+            .await
+            .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
 
     let found_tag_map: HashMap<String, String> = found_tags.into_iter().collect();
 
@@ -1038,7 +1029,9 @@ async fn build_hint_level(
         let parts: Vec<&str> = parent_id.split(':').collect();
         if parts.len() >= 2 {
             let ancestor_id = parts[1];
-            let mut bc = build_breadcrumb(pool, ancestor_id, db_id).await.unwrap_or_default();
+            let mut bc = build_breadcrumb(pool, ancestor_id, db_id)
+                .await
+                .unwrap_or_default();
             bc.push(BreadcrumbEntry {
                 id: parent_id.to_string(),
                 label: "Cluster".to_string(),
@@ -1048,7 +1041,9 @@ async fn build_hint_level(
             vec![]
         }
     } else {
-        build_breadcrumb(pool, parent_id, db_id).await.unwrap_or_default()
+        build_breadcrumb(pool, parent_id, db_id)
+            .await
+            .unwrap_or_default()
     };
 
     let parent_label = breadcrumb.last().map(|b| b.label.clone());
@@ -1171,8 +1166,9 @@ impl ClusterStore for PostgresStorage {
 
         let mut clusters: Vec<AtomCluster> = Vec::new();
         for (i, atom_ids) in groups.into_iter().enumerate() {
-            let dominant_tags =
-                get_dominant_tags_for_cluster(&self.pool, &atom_ids, &self.db_id).await.unwrap_or_default();
+            let dominant_tags = get_dominant_tags_for_cluster(&self.pool, &atom_ids, &self.db_id)
+                .await
+                .unwrap_or_default();
             clusters.push(AtomCluster {
                 cluster_id: i as i32,
                 atom_ids,
@@ -1240,10 +1236,10 @@ impl ClusterStore for PostgresStorage {
 
         let mut clusters: Vec<AtomCluster> = Vec::new();
         for (cluster_id, atom_ids_str) in rows {
-            let atom_ids: Vec<String> =
-                atom_ids_str.split(',').map(|s| s.to_string()).collect();
-            let dominant_tags =
-                get_dominant_tags_for_cluster(&self.pool, &atom_ids, &self.db_id).await.unwrap_or_default();
+            let atom_ids: Vec<String> = atom_ids_str.split(',').map(|s| s.to_string()).collect();
+            let dominant_tags = get_dominant_tags_for_cluster(&self.pool, &atom_ids, &self.db_id)
+                .await
+                .unwrap_or_default();
             clusters.push(AtomCluster {
                 cluster_id,
                 atom_ids,

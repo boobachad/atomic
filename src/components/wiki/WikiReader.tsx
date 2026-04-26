@@ -13,9 +13,10 @@ import { formatRelativeTime } from '../../lib/date';
 interface WikiReaderProps {
   tagId: string;
   tagName: string;
+  highlightText?: string | null;
 }
 
-export function WikiReader({ tagId, tagName }: WikiReaderProps) {
+export function WikiReader({ tagId, tagName, highlightText }: WikiReaderProps) {
   const currentArticle = useWikiStore(s => s.currentArticle);
   const articleStatus = useWikiStore(s => s.articleStatus);
   const relatedTags = useWikiStore(s => s.relatedTags);
@@ -107,8 +108,8 @@ export function WikiReader({ tagId, tagName }: WikiReaderProps) {
     proposeArticle(tagId, tagName);
   };
 
-  const handleViewAtom = (atomId: string) => {
-    overlayNavigate({ type: 'reader', atomId });
+  const handleViewAtom = (atomId: string, highlightText?: string) => {
+    overlayNavigate({ type: 'reader', atomId, highlightText });
   };
 
   const handleNavigateToArticle = (targetTagId: string, targetTagName: string) => {
@@ -216,6 +217,7 @@ export function WikiReader({ tagId, tagName }: WikiReaderProps) {
             tagName={tagName}
             updatedAt={selectedVersion ? selectedVersion.created_at : currentArticle.article.updated_at}
             sourceCount={displayCitations.length}
+            highlightText={highlightText}
             titleActions={
               <>
                 {/* Version history */}

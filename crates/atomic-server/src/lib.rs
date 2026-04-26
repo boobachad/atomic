@@ -7,6 +7,7 @@ pub mod auth;
 mod db_extractor;
 pub mod error;
 pub mod event_bridge;
+pub mod export_jobs;
 pub mod log_buffer;
 pub mod mcp;
 pub mod mcp_auth;
@@ -29,9 +30,12 @@ pub use utoipa_scalar::{Scalar, Servable};
         // Atoms
         routes::atoms::get_atoms,
         routes::atoms::get_atom,
+        routes::atoms::get_atom_links,
+        routes::atoms::get_atom_link_suggestions,
         routes::atoms::create_atom,
         routes::atoms::update_atom,
         routes::atoms::update_atom_content_only,
+        routes::atoms::process_atom_pipeline,
         routes::atoms::delete_atom,
         routes::atoms::bulk_create_atoms,
         routes::atoms::get_source_list,
@@ -70,9 +74,12 @@ pub use utoipa_scalar::{Scalar, Servable};
         routes::embedding::process_pending_embeddings,
         routes::embedding::process_pending_tagging,
         routes::embedding::retry_embedding,
+        routes::embedding::retry_failed_embeddings,
+        routes::embedding::retry_failed_tagging,
         routes::embedding::retry_tagging,
         routes::embedding::reembed_all_atoms,
         routes::embedding::reset_stuck_processing,
+        routes::embedding::get_all_pipeline_statuses,
         routes::embedding::get_embedding_status,
         // Canvas
         routes::canvas::get_positions,
@@ -117,6 +124,9 @@ pub use utoipa_scalar::{Scalar, Servable};
         routes::databases::rename_database,
         routes::databases::delete_database,
         routes::databases::activate_database,
+        routes::exports::start_markdown_export,
+        routes::exports::get_export_job,
+        routes::exports::cancel_or_delete_export_job,
         // Import
         routes::import::import_obsidian_vault,
         // Ingestion
@@ -133,6 +143,8 @@ pub use utoipa_scalar::{Scalar, Servable};
     components(schemas(
         // Core types
         atomic_core::Atom,
+        atomic_core::AtomLink,
+        atomic_core::AtomLinkSuggestion,
         atomic_core::Tag,
         atomic_core::AtomWithTags,
         atomic_core::AtomSummary,
@@ -243,11 +255,9 @@ impl utoipa::Modify for SecurityAddon {
         let components = openapi.components.get_or_insert_with(Default::default);
         components.add_security_scheme(
             "bearer_auth",
-            utoipa::openapi::security::SecurityScheme::Http(
-                utoipa::openapi::security::Http::new(
-                    utoipa::openapi::security::HttpAuthScheme::Bearer,
-                ),
-            ),
+            utoipa::openapi::security::SecurityScheme::Http(utoipa::openapi::security::Http::new(
+                utoipa::openapi::security::HttpAuthScheme::Bearer,
+            )),
         );
     }
 }

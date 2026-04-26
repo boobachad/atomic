@@ -104,7 +104,6 @@ pub async fn compact_tags(db: Db) -> HttpResponse {
                 "atoms_retagged": result.atoms_retagged
             }))
         }
-        Err(e) => HttpResponse::InternalServerError()
-            .json(serde_json::json!({"error": e})),
+        Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({"error": e})),
     }
 }

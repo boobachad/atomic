@@ -6,11 +6,11 @@ import { useUIStore } from '../../stores/ui';
 import { isTauri } from '../../lib/platform';
 
 const COLLAPSE_BREAKPOINT = 768;
-
 export function LeftPanel() {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [settingsInitialTab, setSettingsInitialTab] = useState<SettingsTab | undefined>(undefined);
   const leftPanelOpen = useUIStore(s => s.leftPanelOpen);
+  const leftPanelTransitionMode = useUIStore(s => s.leftPanelTransitionMode);
   const setLeftPanelOpen = useUIStore(s => s.setLeftPanelOpen);
   const panelRef = useRef<HTMLDivElement>(null);
 
@@ -57,14 +57,27 @@ export function LeftPanel() {
       <aside
         ref={panelRef}
         className={`
-          h-full bg-[var(--color-bg-panel)]/80 border-r border-[var(--color-border)] flex flex-col transition-all duration-300 ease-in-out backdrop-blur-xl z-10 overflow-hidden flex-shrink-0
+          relative h-full z-10 flex-shrink-0 overflow-hidden
+          ${
+            leftPanelTransitionMode === 'manual'
+              ? 'md:transition-[width,border-color] md:duration-300 md:ease-in-out'
+              : 'md:transition-[width,border-color] md:duration-180 md:ease-out md:delay-120'
+          }
+          max-md:transition-all max-md:duration-300 max-md:ease-in-out
           max-md:fixed max-md:top-0 max-md:left-0 max-md:z-40 max-md:shadow-2xl max-md:w-[250px]
           max-md:pt-[env(safe-area-inset-top)] max-md:pb-[env(safe-area-inset-bottom)] max-md:pl-[env(safe-area-inset-left)]
           ${leftPanelOpen ? 'max-md:translate-x-0' : 'max-md:-translate-x-full'}
-          ${leftPanelOpen ? 'md:w-[250px] md:border-r' : 'md:w-0 md:border-r-0'}
+          ${leftPanelOpen ? 'md:w-[250px]' : 'md:w-0'}
         `}
       >
-        <div className="w-[250px] h-full flex flex-col">
+        <div
+          className={`
+            h-full w-[250px] bg-[var(--color-bg-panel)]/80 border-r border-[var(--color-border)] backdrop-blur-xl flex flex-col overflow-hidden
+            md:absolute md:inset-y-0 md:left-0 md:duration-300 md:ease-in-out
+            ${leftPanelTransitionMode === 'overlay' ? 'md:transition-transform' : 'md:transition-none'}
+            ${leftPanelOpen || leftPanelTransitionMode === 'manual' ? 'md:translate-x-0 md:pointer-events-auto' : 'md:-translate-x-full md:pointer-events-none'}
+          `}
+        >
           {/* Titlebar row with settings button */}
           <div className={`h-[52px] flex items-center px-3 flex-shrink-0 gap-1 ${isTauri() ? 'pl-[78px]' : ''}`} data-tauri-drag-region>
             <DatabaseSwitcher />

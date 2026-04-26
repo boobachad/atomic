@@ -9,12 +9,10 @@ use utoipa::ToSchema;
 #[utoipa::path(get, path = "/api/databases", responses((status = 200, description = "List of databases with active ID")), tag = "databases")]
 pub async fn list_databases(state: web::Data<AppState>) -> HttpResponse {
     match state.manager.list_databases().await {
-        Ok((databases, active_id)) => {
-            HttpResponse::Ok().json(serde_json::json!({
-                "databases": databases,
-                "active_id": active_id,
-            }))
-        }
+        Ok((databases, active_id)) => HttpResponse::Ok().json(serde_json::json!({
+            "databases": databases,
+            "active_id": active_id,
+        })),
         Err(e) => crate::error::error_response(e),
     }
 }
@@ -58,10 +56,7 @@ pub async fn rename_database(
 }
 
 #[utoipa::path(delete, path = "/api/databases/{id}", params(("id" = String, Path, description = "Database ID")), responses((status = 200, description = "Database deleted"), (status = 400, description = "Cannot delete default database", body = ApiErrorResponse)), tag = "databases")]
-pub async fn delete_database(
-    state: web::Data<AppState>,
-    path: web::Path<String>,
-) -> HttpResponse {
+pub async fn delete_database(state: web::Data<AppState>, path: web::Path<String>) -> HttpResponse {
     let id = path.into_inner();
     match state.manager.delete_database(&id).await {
         Ok(()) => HttpResponse::Ok().json(serde_json::json!({"deleted": true})),
@@ -94,10 +89,7 @@ pub async fn set_default_database(
 }
 
 #[utoipa::path(get, path = "/api/databases/{id}/stats", params(("id" = String, Path, description = "Database ID")), responses((status = 200, description = "Database statistics")), tag = "databases")]
-pub async fn database_stats(
-    state: web::Data<AppState>,
-    path: web::Path<String>,
-) -> HttpResponse {
+pub async fn database_stats(state: web::Data<AppState>, path: web::Path<String>) -> HttpResponse {
     let id = path.into_inner();
     match state.manager.get_core(&id).await {
         Ok(core) => {

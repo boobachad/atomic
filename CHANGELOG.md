@@ -2,6 +2,90 @@
 
 All notable changes to Atomic are documented here.
 
+## v1.31.0 — 2026-04-26
+
+- Add database export as a markdown ZIP archive with progress tracking, available from the Databases tab in Settings
+- Fix toast notifications sometimes appearing behind other UI elements
+- Improve sidecar process logging for better diagnostics
+
+## v1.30.1 — 2026-04-26
+
+- Add Gemini Embedding 2 Preview, Perplexity Embed V1 4B, and NVIDIA Nemotron VL (free) to the embedding model picker; remove the unavailable Codestral Embed 2505
+
+## v1.30.0 — 2026-04-25
+
+- Unify embedding and tagging into a single pipeline queue with a simplified progress banner showing remaining counts instead of separate progress bars
+- Preserve existing text chunks when switching embedding models, making model changes faster by only re-embedding rather than re-chunking all atoms
+- Fix settings modal layout on mobile with a horizontal scrollable tab bar instead of the sidebar navigation
+- Automatically re-embed all databases when the embedding model or provider changes, not just when the vector dimension changes
+
+## v1.29.0 — 2026-04-25
+
+- Add atom links: type `[[` in the editor to insert Obsidian-style wiki links to other atoms, with autocomplete suggestions powered by title matching, keyword search, and semantic search fallback
+- Add clickable link resolution in the editor — wiki links display the target atom's title and open it on click
+- Add backend storage and API endpoints for atom links, automatically extracting and persisting `[[…]]` references when atoms are saved
+
+## v1.28.1 — 2026-04-25
+
+- Bundle all web fonts locally so the app renders correctly offline without needing to reach Google Fonts or Fontshare on launch
+
+## v1.28.0 — 2026-04-24
+
+- Add chat tools for creating, updating, and editing atoms — the chat agent can now create new notes, replace content, or apply targeted edits (replace, insert, append) when you ask it to
+- Render atom references in chat messages as clickable titled links instead of raw IDs
+- Refresh the open atom editor when content changes externally (e.g. after a chat agent edit) without disrupting in-progress typing
+- Improve search palette with compact match rows, right-aligned expand/collapse toggle, and more readable keyboard-shortcut hints
+
+## v1.27.2 — 2026-04-23
+
+- Add expandable match sub-rows in the search palette — keyword results with multiple hits can be drilled into to see each match in context
+- Improve keyboard navigation in the search palette: the selected row now stays in view during arrow-key scrolling, and hover highlights no longer flash on rows that slide past the cursor
+- Fix search results silently losing atom previews when a keyword snippet collided with the preview field
+- Fix match highlighting disappearing when search terms appear inside markdown links, images, or HTML content
+
+## v1.27.1 — 2026-04-23
+
+- Fix a crash in the editor when links or images contain multi-line titles
+
+## v1.27.0 — 2026-04-23
+
+- Add dedicated search palette (⌘P or /) that searches across atoms, wiki articles, chats, and tags with rich markdown snippets — the command palette for actions moves to ⌘⇧P
+- Improve search-to-editor flow: selecting a search result now scrolls to and briefly highlights the matching text in the editor instead of opening the find panel
+- Fix clicks near block widgets (e.g. tables) in the editor landing on the wrong line
+
+## v1.26.1 — 2026-04-22
+
+- Fix Docker build failing to resolve the @atomic/editor package introduced in v1.26.0
+
+## v1.26.0 — 2026-04-22
+
+- Replace the Milkdown/ProseMirror editor with a new CodeMirror 6 editor featuring Obsidian-style live preview — headings, emphasis, links, code blocks, and other markdown syntax render inline while editing, with raw tokens revealed only on the active line
+- Add syntax highlighting for fenced code blocks using a Material Palenight palette, with per-token CSS variable overrides via `--atomic-editor-hl-*`
+- Add WYSIWYG table rendering, inline image previews, task-list checkboxes, and bullet/ordered-list styling to the live-preview editor
+- Fix mid-typing emphasis flicker where bold, italic, and strikethrough formatting toggled on and off while typing between delimiter pairs
+- Improve editor performance: reduce bundle size from 2.66 MB to 1.12 MB by tree-shaking unused features and lazy-loading code-block grammars, and narrow widget invalidation so keystrokes in large documents no longer rebuild all decorations
+
+## v1.25.0 — 2026-04-20
+
+- Replace the CodeMirror markdown editor with Milkdown, a rich-text WYSIWYG editor built on ProseMirror — notes now render inline formatting, images, and code blocks live as you type
+- Add slash command menu (type `/`) to quickly insert headings, lists, blockquotes, code blocks, and horizontal rules
+- Add selection toolbar for toggling bold, italic, inline code, and links on highlighted text
+- Add in-editor find (Cmd/Ctrl+F) with match highlighting and next/previous navigation
+- Improve left panel transition animation when opening the note reader
+
+## v1.24.1 — 2026-04-20
+
+- Add manual "Auto-tag" button in the atom reader for tagless atoms, letting you trigger AI tagging on demand
+- Improve embedding and tagging pipeline so autosaved drafts are reliably picked up and processed in the background
+- Fix bug where editing an atom would not re-run AI tagging, leaving stale or missing tags after content changes
+- Fix new-atom button getting hidden behind the chat sidebar when it opens
+
+## v1.24.0 — 2026-04-19
+
+- Add Obsidian-style live-preview markdown editor — edit mode now renders headings, links, emphasis, images, and lists as formatted text; clicking a line reveals its raw markdown for editing, with scroll position preserved across view/edit toggles
+- Fix click-to-move-cursor and click-drag text selection in the editor, which previously landed on wrong positions in long documents
+- Fix blank lines not appearing when pressing Enter multiple times, and fix list exit so typing after leaving a list is no longer styled as a list item
+
 ## v1.23.3 — 2026-04-18
 
 - Improve diagnostic logging when auto-tagging is silently skipped due to missing API key, disabled setting, or no auto-tag targets configured

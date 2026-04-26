@@ -34,4 +34,3 @@ fn main() {
     // Re-run if resources change
     println!("cargo:rerun-if-changed=resources");
 }
-

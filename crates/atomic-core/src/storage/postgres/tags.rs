@@ -4,9 +4,9 @@ use crate::error::AtomicCoreError;
 use crate::models::*;
 use crate::storage::traits::*;
 use async_trait::async_trait;
+use chrono::Utc;
 use std::collections::HashMap;
 use uuid::Uuid;
-use chrono::Utc;
 
 impl PostgresStorage {
     /// Load all tags and their direct (denormalized) atom counts.
@@ -22,16 +22,18 @@ impl PostgresStorage {
         let mut direct_counts: HashMap<String, i32> = HashMap::new();
         let all_tags: Vec<Tag> = rows
             .into_iter()
-            .map(|(id, name, parent_id, created_at, count, is_autotag_target)| {
-                direct_counts.insert(id.clone(), count);
-                Tag {
-                    id,
-                    name,
-                    parent_id,
-                    created_at,
-                    is_autotag_target,
-                }
-            })
+            .map(
+                |(id, name, parent_id, created_at, count, is_autotag_target)| {
+                    direct_counts.insert(id.clone(), count);
+                    Tag {
+                        id,
+                        name,
+                        parent_id,
+                        created_at,
+                        is_autotag_target,
+                    }
+                },
+            )
             .collect();
 
         Ok((all_tags, direct_counts))
@@ -55,15 +57,14 @@ impl PostgresStorage {
             }
             visited.insert(current.clone());
 
-            let parent: Option<String> = sqlx::query_scalar(
-                "SELECT parent_id FROM tags WHERE id = $1 AND db_id = $2",
-            )
-            .bind(&current)
-            .bind(&self.db_id)
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?
-            .flatten();
+            let parent: Option<String> =
+                sqlx::query_scalar("SELECT parent_id FROM tags WHERE id = $1 AND db_id = $2")
+                    .bind(&current)
+                    .bind(&self.db_id)
+                    .fetch_optional(&self.pool)
+                    .await
+                    .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?
+                    .flatten();
 
             match parent {
                 Some(p) => current = p,
@@ -74,24 +75,22 @@ impl PostgresStorage {
 
     /// Look up a tag ID by its name (case-insensitive).
     async fn get_tag_id_by_name(&self, name: &str) -> StorageResult<Option<String>> {
-        let id: Option<String> = sqlx::query_scalar(
-            "SELECT id FROM tags WHERE LOWER(name) = LOWER($1) AND db_id = $2",
-        )
-        .bind(name.trim())
-        .bind(&self.db_id)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+        let id: Option<String> =
+            sqlx::query_scalar("SELECT id FROM tags WHERE LOWER(name) = LOWER($1) AND db_id = $2")
+                .bind(name.trim())
+                .bind(&self.db_id)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
 
         Ok(id)
     }
 
     /// Execute a single tag merge: move atoms from loser to winner, reparent children, delete loser.
-    async fn execute_tag_merge(
-        &self,
-        merge: &TagMerge,
-    ) -> Result<(bool, i32), String> {
-        let winner_id = match self.get_tag_id_by_name(&merge.winner_name).await
+    async fn execute_tag_merge(&self, merge: &TagMerge) -> Result<(bool, i32), String> {
+        let winner_id = match self
+            .get_tag_id_by_name(&merge.winner_name)
+            .await
             .map_err(|e| e.to_string())?
         {
             Some(id) => id,
@@ -101,7 +100,9 @@ impl PostgresStorage {
             }
         };
 
-        let loser_id = match self.get_tag_id_by_name(&merge.loser_name).await
+        let loser_id = match self
+            .get_tag_id_by_name(&merge.loser_name)
+            .await
             .map_err(|e| e.to_string())?
         {
             Some(id) => id,
@@ -120,7 +121,9 @@ impl PostgresStorage {
             return Ok((false, 0));
         }
 
-        if self.is_descendant_of(&loser_id, &winner_id).await
+        if self
+            .is_descendant_of(&loser_id, &winner_id)
+            .await
             .map_err(|e| e.to_string())?
         {
             tracing::warn!(
@@ -130,7 +133,9 @@ impl PostgresStorage {
             );
             return Ok((false, 0));
         }
-        if self.is_descendant_of(&winner_id, &loser_id).await
+        if self
+            .is_descendant_of(&winner_id, &loser_id)
+            .await
             .map_err(|e| e.to_string())?
         {
             tracing::warn!(
@@ -142,14 +147,13 @@ impl PostgresStorage {
         }
 
         // Get atoms tagged with the loser
-        let atoms_with_loser: Vec<String> = sqlx::query_scalar(
-            "SELECT atom_id FROM atom_tags WHERE tag_id = $1 AND db_id = $2",
-        )
-        .bind(&loser_id)
-        .bind(&self.db_id)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(|e| format!("Failed to query atoms: {}", e))?;
+        let atoms_with_loser: Vec<String> =
+            sqlx::query_scalar("SELECT atom_id FROM atom_tags WHERE tag_id = $1 AND db_id = $2")
+                .bind(&loser_id)
+                .bind(&self.db_id)
+                .fetch_all(&self.pool)
+                .await
+                .map_err(|e| format!("Failed to query atoms: {}", e))?;
 
         let mut atoms_retagged: i32 = 0;
         for atom_id in &atoms_with_loser {
@@ -229,14 +233,13 @@ impl TagStore for PostgresStorage {
         offset: i32,
     ) -> StorageResult<PaginatedTagChildren> {
         // Fast total count
-        let total: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM tags WHERE parent_id = $1 AND db_id = $2",
-        )
-        .bind(parent_id)
-        .bind(&self.db_id)
-        .fetch_one(&self.pool)
-        .await
-        .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+        let total: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM tags WHERE parent_id = $1 AND db_id = $2")
+                .bind(parent_id)
+                .bind(&self.db_id)
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
 
         let total = total as i32;
 
@@ -266,18 +269,28 @@ impl TagStore for PostgresStorage {
 
         let mut children: Vec<TagWithCount> = rows
             .into_iter()
-            .map(|(id, name, parent_id, created_at, atom_count, children_total, is_autotag_target)| TagWithCount {
-                tag: Tag {
+            .map(
+                |(
                     id,
                     name,
                     parent_id,
                     created_at,
+                    atom_count,
+                    children_total,
                     is_autotag_target,
+                )| TagWithCount {
+                    tag: Tag {
+                        id,
+                        name,
+                        parent_id,
+                        created_at,
+                        is_autotag_target,
+                    },
+                    atom_count,
+                    children_total: children_total as i32,
+                    children: Vec::new(),
                 },
-                atom_count,
-                children_total: children_total as i32,
-                children: Vec::new(),
-            })
+            )
             .collect();
 
         if min_count > 0 {
@@ -287,11 +300,7 @@ impl TagStore for PostgresStorage {
         Ok(PaginatedTagChildren { children, total })
     }
 
-    async fn create_tag(
-        &self,
-        name: &str,
-        parent_id: Option<&str>,
-    ) -> StorageResult<Tag> {
+    async fn create_tag(&self, name: &str, parent_id: Option<&str>) -> StorageResult<Tag> {
         let id = Uuid::new_v4().to_string();
         let now = Utc::now().to_rfc3339();
 
@@ -350,13 +359,14 @@ impl TagStore for PostgresStorage {
     }
 
     async fn set_tag_autotag_target(&self, id: &str, value: bool) -> StorageResult<()> {
-        let result = sqlx::query("UPDATE tags SET is_autotag_target = $1 WHERE id = $2 AND db_id = $3")
-            .bind(value)
-            .bind(id)
-            .bind(&self.db_id)
-            .execute(&self.pool)
-            .await
-            .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+        let result =
+            sqlx::query("UPDATE tags SET is_autotag_target = $1 WHERE id = $2 AND db_id = $3")
+                .bind(value)
+                .bind(id)
+                .bind(&self.db_id)
+                .execute(&self.pool)
+                .await
+                .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
         if result.rows_affected() == 0 {
             return Err(AtomicCoreError::NotFound(format!("tag {}", id)));
         }
@@ -368,7 +378,8 @@ impl TagStore for PostgresStorage {
         keep_default_names: &[String],
         add_custom_names: &[String],
     ) -> StorageResult<Vec<Tag>> {
-        const DEFAULT_NAMES: &[&str] = &["Topics", "People", "Locations", "Organizations", "Events"];
+        const DEFAULT_NAMES: &[&str] =
+            &["Topics", "People", "Locations", "Organizations", "Events"];
 
         let mut tx = self
             .pool
@@ -401,7 +412,9 @@ impl TagStore for PostgresStorage {
             if !keep_lower.contains(&default_name.to_lowercase()) {
                 continue;
             }
-            let existing = top_level.iter().find(|(_, n, _, _, _)| n.eq_ignore_ascii_case(default_name));
+            let existing = top_level
+                .iter()
+                .find(|(_, n, _, _, _)| n.eq_ignore_ascii_case(default_name));
             let id = match existing {
                 Some((id, _, _, _, _)) => id.clone(),
                 None => {
@@ -443,12 +456,14 @@ impl TagStore for PostgresStorage {
                     .await
                     .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
             } else if *is_target {
-                sqlx::query("UPDATE tags SET is_autotag_target = FALSE WHERE id = $1 AND db_id = $2")
-                    .bind(id)
-                    .bind(&self.db_id)
-                    .execute(&mut *tx)
-                    .await
-                    .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+                sqlx::query(
+                    "UPDATE tags SET is_autotag_target = FALSE WHERE id = $1 AND db_id = $2",
+                )
+                .bind(id)
+                .bind(&self.db_id)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
             }
         }
 
@@ -544,11 +559,7 @@ impl TagStore for PostgresStorage {
         Ok(())
     }
 
-    async fn get_related_tags(
-        &self,
-        tag_id: &str,
-        limit: usize,
-    ) -> StorageResult<Vec<RelatedTag>> {
+    async fn get_related_tags(&self, tag_id: &str, limit: usize) -> StorageResult<Vec<RelatedTag>> {
         // Get tag hierarchy (this tag + all descendants) for exclusion
         let source_tag_ids: Vec<String> = sqlx::query_scalar(
             "WITH RECURSIVE descendant_tags(id) AS (
@@ -680,10 +691,7 @@ impl TagStore for PostgresStorage {
                     q = q.bind(cid);
                 }
 
-                let meta_rows = q
-                    .fetch_all(&self.pool)
-                    .await
-                    .unwrap_or_default();
+                let meta_rows = q.fetch_all(&self.pool).await.unwrap_or_default();
 
                 let score_map: HashMap<&str, f64> = new_candidates
                     .iter()
@@ -742,10 +750,7 @@ impl TagStore for PostgresStorage {
                 q = q.bind(tid);
             }
 
-            let candidate_tags = q
-                .fetch_all(&self.pool)
-                .await
-                .unwrap_or_default();
+            let candidate_tags = q.fetch_all(&self.pool).await.unwrap_or_default();
 
             // Filter by whole-word name match in content
             let matched_tags: Vec<(String, String, bool)> = candidate_tags
@@ -753,8 +758,8 @@ impl TagStore for PostgresStorage {
                 .filter(|(_, name, _)| {
                     let name_lower = name.to_lowercase();
                     if let Some(pos) = content_lower.find(&name_lower) {
-                        let before_ok = pos == 0
-                            || !content_lower.as_bytes()[pos - 1].is_ascii_alphanumeric();
+                        let before_ok =
+                            pos == 0 || !content_lower.as_bytes()[pos - 1].is_ascii_alphanumeric();
                         let end = pos + name_lower.len();
                         let after_ok = end >= content_lower.len()
                             || !content_lower.as_bytes()[end].is_ascii_alphanumeric();
@@ -782,7 +787,11 @@ impl TagStore for PostgresStorage {
         }
 
         // Sort by score and truncate
-        tags.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        tags.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         tags.truncate(limit);
 
         Ok(tags)
@@ -837,20 +846,20 @@ impl TagStore for PostgresStorage {
 
         // Validate tag name
         if trimmed_name.is_empty() || trimmed_name.eq_ignore_ascii_case("null") {
-            return Err(AtomicCoreError::DatabaseOperation(
-                format!("Invalid tag name: '{}'", name),
-            ));
+            return Err(AtomicCoreError::DatabaseOperation(format!(
+                "Invalid tag name: '{}'",
+                name
+            )));
         }
 
         // Try to find existing tag (case-insensitive)
-        let existing_id: Option<String> = sqlx::query_scalar(
-            "SELECT id FROM tags WHERE LOWER(name) = LOWER($1) AND db_id = $2",
-        )
-        .bind(trimmed_name)
-        .bind(&self.db_id)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+        let existing_id: Option<String> =
+            sqlx::query_scalar("SELECT id FROM tags WHERE LOWER(name) = LOWER($1) AND db_id = $2")
+                .bind(trimmed_name)
+                .bind(&self.db_id)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
 
         if let Some(id) = existing_id {
             return Ok(id);
@@ -858,16 +867,18 @@ impl TagStore for PostgresStorage {
 
         // Tag doesn't exist - require a valid parent for new tags
         let parent = parent_name.ok_or_else(|| {
-            AtomicCoreError::DatabaseOperation(
-                format!("New tag '{}' requires a parent category", trimmed_name),
-            )
+            AtomicCoreError::DatabaseOperation(format!(
+                "New tag '{}' requires a parent category",
+                trimmed_name
+            ))
         })?;
 
         let trimmed_parent = parent.trim();
         if trimmed_parent.is_empty() || trimmed_parent.eq_ignore_ascii_case("null") {
-            return Err(AtomicCoreError::DatabaseOperation(
-                format!("New tag '{}' requires a valid parent category", trimmed_name),
-            ));
+            return Err(AtomicCoreError::DatabaseOperation(format!(
+                "New tag '{}' requires a valid parent category",
+                trimmed_name
+            )));
         }
 
         // Parent must be an existing top-level tag (parent_id IS NULL)
@@ -904,18 +915,17 @@ impl TagStore for PostgresStorage {
         .bind(&self.db_id)
         .fetch_one(&self.pool)
         .await
-        .map_err(|e| AtomicCoreError::DatabaseOperation(
-            format!("Failed to create tag '{}': {}", trimmed_name, e),
-        ))?;
+        .map_err(|e| {
+            AtomicCoreError::DatabaseOperation(format!(
+                "Failed to create tag '{}': {}",
+                trimmed_name, e
+            ))
+        })?;
 
         Ok(actual_id)
     }
 
-    async fn link_tags_to_atom(
-        &self,
-        atom_id: &str,
-        tag_ids: &[String],
-    ) -> StorageResult<()> {
+    async fn link_tags_to_atom(&self, atom_id: &str, tag_ids: &[String]) -> StorageResult<()> {
         for tag_id in tag_ids {
             sqlx::query(
                 "INSERT INTO atom_tags (atom_id, tag_id, db_id) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
@@ -972,7 +982,11 @@ impl TagStore for PostgresStorage {
             // Add children with tree formatting
             for (j, (child_name,)) in children.iter().enumerate() {
                 let is_last_child = j == children.len() - 1;
-                let connector = if is_last_child { "\u{2514}\u{2500}\u{2500} " } else { "\u{251c}\u{2500}\u{2500} " };
+                let connector = if is_last_child {
+                    "\u{2514}\u{2500}\u{2500} "
+                } else {
+                    "\u{251c}\u{2500}\u{2500} "
+                };
                 result.push_str(connector);
                 result.push_str(child_name);
                 result.push('\n');
@@ -982,10 +996,7 @@ impl TagStore for PostgresStorage {
         Ok(result.trim_end().to_string())
     }
 
-    async fn compute_tag_centroids_batch(
-        &self,
-        tag_ids: &[String],
-    ) -> StorageResult<()> {
+    async fn compute_tag_centroids_batch(&self, tag_ids: &[String]) -> StorageResult<()> {
         use pgvector::Vector;
 
         for tag_id in tag_ids {
@@ -1003,9 +1014,9 @@ impl TagStore for PostgresStorage {
             .bind(&self.db_id)
             .fetch_all(&self.pool)
             .await
-            .map_err(|e| AtomicCoreError::DatabaseOperation(
-                format!("Failed to get tag descendants: {}", e),
-            ))?;
+            .map_err(|e| {
+                AtomicCoreError::DatabaseOperation(format!("Failed to get tag descendants: {}", e))
+            })?;
 
             let desc_ids: Vec<String> = descendant_ids.into_iter().map(|(id,)| id).collect();
 
@@ -1020,19 +1031,20 @@ impl TagStore for PostgresStorage {
             .bind(&self.db_id)
             .fetch_all(&self.pool)
             .await
-            .map_err(|e| AtomicCoreError::DatabaseOperation(
-                format!("Failed to get embeddings for tag centroid: {}", e),
-            ))?;
+            .map_err(|e| {
+                AtomicCoreError::DatabaseOperation(format!(
+                    "Failed to get embeddings for tag centroid: {}",
+                    e
+                ))
+            })?;
 
             if embeddings.is_empty() {
                 continue;
             }
 
             // Compute centroid (average of all embeddings)
-            let embedding_vecs: Vec<Vec<f32>> = embeddings
-                .into_iter()
-                .map(|(v,)| v.to_vec())
-                .collect();
+            let embedding_vecs: Vec<Vec<f32>> =
+                embeddings.into_iter().map(|(v,)| v.to_vec()).collect();
 
             let dim = embedding_vecs[0].len();
             let mut centroid = vec![0.0f32; dim];
@@ -1069,39 +1081,34 @@ impl TagStore for PostgresStorage {
             .bind(&self.db_id)
             .execute(&self.pool)
             .await
-            .map_err(|e| AtomicCoreError::DatabaseOperation(
-                format!("Failed to save tag centroid: {}", e),
-            ))?;
+            .map_err(|e| {
+                AtomicCoreError::DatabaseOperation(format!("Failed to save tag centroid: {}", e))
+            })?;
         }
 
         Ok(())
     }
 
-    async fn cleanup_orphaned_parents(
-        &self,
-        tag_id: &str,
-    ) -> StorageResult<()> {
+    async fn cleanup_orphaned_parents(&self, tag_id: &str) -> StorageResult<()> {
         // Get parent of this tag
-        let parent_id: Option<String> = sqlx::query_scalar(
-            "SELECT parent_id FROM tags WHERE id = $1 AND db_id = $2",
-        )
-        .bind(tag_id)
-        .bind(&self.db_id)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?
-        .flatten();
+        let parent_id: Option<String> =
+            sqlx::query_scalar("SELECT parent_id FROM tags WHERE id = $1 AND db_id = $2")
+                .bind(tag_id)
+                .bind(&self.db_id)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?
+                .flatten();
 
         if let Some(parent) = parent_id {
             // Check if parent has any children left
-            let child_count: i64 = sqlx::query_scalar(
-                "SELECT COUNT(*) FROM tags WHERE parent_id = $1 AND db_id = $2",
-            )
-            .bind(&parent)
-            .bind(&self.db_id)
-            .fetch_one(&self.pool)
-            .await
-            .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+            let child_count: i64 =
+                sqlx::query_scalar("SELECT COUNT(*) FROM tags WHERE parent_id = $1 AND db_id = $2")
+                    .bind(&parent)
+                    .bind(&self.db_id)
+                    .fetch_one(&self.pool)
+                    .await
+                    .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
 
             // Check if parent is linked to any atoms
             let atom_count: i64 = sqlx::query_scalar(
@@ -1131,9 +1138,12 @@ impl TagStore for PostgresStorage {
                     .bind(&self.db_id)
                     .execute(&self.pool)
                     .await
-                    .map_err(|e| AtomicCoreError::DatabaseOperation(
-                        format!("Failed to delete orphaned parent: {}", e),
-                    ))?;
+                    .map_err(|e| {
+                        AtomicCoreError::DatabaseOperation(format!(
+                            "Failed to delete orphaned parent: {}",
+                            e
+                        ))
+                    })?;
                 // Recurse to grandparent using Box::pin for async recursion
                 Box::pin(self.cleanup_orphaned_parents(&parent)).await?;
             }
@@ -1142,10 +1152,7 @@ impl TagStore for PostgresStorage {
         Ok(())
     }
 
-    async fn apply_tag_merges(
-        &self,
-        merges: &[TagMerge],
-    ) -> StorageResult<CompactionResult> {
+    async fn apply_tag_merges(&self, merges: &[TagMerge]) -> StorageResult<CompactionResult> {
         let mut tags_merged = 0;
         let mut atoms_retagged = 0;
         let mut errors = Vec::new();
@@ -1174,10 +1181,7 @@ impl TagStore for PostgresStorage {
         })
     }
 
-    async fn get_tag_hierarchy(
-        &self,
-        tag_id: &str,
-    ) -> StorageResult<Vec<String>> {
+    async fn get_tag_hierarchy(&self, tag_id: &str) -> StorageResult<Vec<String>> {
         let rows: Vec<String> = sqlx::query_scalar(
             "WITH RECURSIVE descendant_tags(id) AS (
                 SELECT id FROM tags WHERE id = $1 AND db_id = $2
@@ -1196,10 +1200,7 @@ impl TagStore for PostgresStorage {
         Ok(rows)
     }
 
-    async fn count_atoms_with_tags(
-        &self,
-        tag_ids: &[String],
-    ) -> StorageResult<i32> {
+    async fn count_atoms_with_tags(&self, tag_ids: &[String]) -> StorageResult<i32> {
         if tag_ids.is_empty() {
             return Ok(0);
         }

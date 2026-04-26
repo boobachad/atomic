@@ -121,11 +121,8 @@ async fn run_server(
     // Spawn background cleanup job
     jobs::spawn_cleanup_job(pool.clone(), Arc::clone(&fly_client));
 
-    let mailgun_client = clients::mailgun::MailgunClient::new(
-        mailgun_api_key,
-        mailgun_domain,
-        mailgun_from,
-    );
+    let mailgun_client =
+        clients::mailgun::MailgunClient::new(mailgun_api_key, mailgun_domain, mailgun_from);
 
     let app_state = web::Data::new(state::CloudState {
         db: pool,
@@ -177,10 +174,8 @@ async fn run_server(
                 actix_files::Files::new("/", &frontend_dir_owned)
                     .index_file("index.html")
                     .default_handler(
-                        actix_files::NamedFile::open(
-                            frontend_path.join("index.html"),
-                        )
-                        .expect("Frontend index.html not found"),
+                        actix_files::NamedFile::open(frontend_path.join("index.html"))
+                            .expect("Frontend index.html not found"),
                     ),
             );
         }

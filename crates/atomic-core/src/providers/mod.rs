@@ -14,12 +14,19 @@ use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, Mutex};
 
 pub use error::ProviderError;
-pub use models::{fetch_and_return_capabilities, get_cached_capabilities_sync, save_capabilities_cache, AvailableModel};
+pub use models::{
+    fetch_and_return_capabilities, get_cached_capabilities_sync, save_capabilities_cache,
+    AvailableModel,
+};
 pub use ollama::OllamaProvider;
 pub use openai_compat::OpenAICompatProvider;
 pub use openrouter::OpenRouterProvider;
-pub use structured::{call_structured, lint_schema, parse_tolerant, StructuredCall, StructuredCallError};
-pub use traits::{EmbeddingConfig, EmbeddingProvider, LlmConfig, LlmProvider, StreamingLlmProvider};
+pub use structured::{
+    call_structured, lint_schema, parse_tolerant, StructuredCall, StructuredCallError,
+};
+pub use traits::{
+    EmbeddingConfig, EmbeddingProvider, LlmConfig, LlmProvider, StreamingLlmProvider,
+};
 
 /// Provider type enum
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -68,54 +75,76 @@ pub struct ProviderConfig {
 impl ProviderConfig {
     pub fn from_settings(settings: &HashMap<String, String>) -> Self {
         let provider_type = ProviderType::from_string(
-            settings.get("provider").map(|s| s.as_str()).unwrap_or("openrouter")
+            settings
+                .get("provider")
+                .map(|s| s.as_str())
+                .unwrap_or("openrouter"),
         );
 
         ProviderConfig {
             provider_type,
             openrouter_api_key: settings.get("openrouter_api_key").cloned(),
-            openrouter_embedding_model: settings.get("embedding_model")
+            openrouter_embedding_model: settings
+                .get("embedding_model")
                 .cloned()
                 .unwrap_or_else(|| "openai/text-embedding-3-small".to_string()),
-            openrouter_llm_model: settings.get("tagging_model")
+            openrouter_llm_model: settings
+                .get("tagging_model")
                 .cloned()
                 .unwrap_or_else(|| "openai/gpt-4o-mini".to_string()),
-            openrouter_context_length: settings.get("openrouter_context_length")
-                .and_then(|s| if s.is_empty() { None } else { s.parse().ok() }),
-            ollama_host: settings.get("ollama_host")
+            openrouter_context_length: settings.get("openrouter_context_length").and_then(|s| {
+                if s.is_empty() {
+                    None
+                } else {
+                    s.parse().ok()
+                }
+            }),
+            ollama_host: settings
+                .get("ollama_host")
                 .cloned()
                 .unwrap_or_else(|| "http://127.0.0.1:11434".to_string()),
-            ollama_embedding_model: settings.get("ollama_embedding_model")
+            ollama_embedding_model: settings
+                .get("ollama_embedding_model")
                 .cloned()
                 .unwrap_or_else(|| "nomic-embed-text".to_string()),
-            ollama_llm_model: settings.get("ollama_llm_model")
+            ollama_llm_model: settings
+                .get("ollama_llm_model")
                 .cloned()
                 .unwrap_or_else(|| "llama3.2".to_string()),
-            ollama_context_length: settings.get("ollama_context_length")
+            ollama_context_length: settings
+                .get("ollama_context_length")
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(65536),
-            ollama_timeout_secs: settings.get("ollama_timeout_secs")
+            ollama_timeout_secs: settings
+                .get("ollama_timeout_secs")
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(120), // Default 2 minutes
-            openai_compat_base_url: settings.get("openai_compat_base_url")
+            openai_compat_base_url: settings
+                .get("openai_compat_base_url")
                 .cloned()
                 .unwrap_or_default(),
-            openai_compat_api_key: settings.get("openai_compat_api_key")
+            openai_compat_api_key: settings
+                .get("openai_compat_api_key")
                 .cloned()
                 .filter(|k| !k.is_empty()),
-            openai_compat_embedding_model: settings.get("openai_compat_embedding_model")
+            openai_compat_embedding_model: settings
+                .get("openai_compat_embedding_model")
                 .cloned()
                 .unwrap_or_default(),
-            openai_compat_llm_model: settings.get("openai_compat_llm_model")
+            openai_compat_llm_model: settings
+                .get("openai_compat_llm_model")
                 .cloned()
                 .unwrap_or_default(),
-            openai_compat_embedding_dimension: settings.get("openai_compat_embedding_dimension")
+            openai_compat_embedding_dimension: settings
+                .get("openai_compat_embedding_dimension")
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(1536),
-            openai_compat_context_length: settings.get("openai_compat_context_length")
+            openai_compat_context_length: settings
+                .get("openai_compat_context_length")
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(65536),
-            openai_compat_timeout_secs: settings.get("openai_compat_timeout_secs")
+            openai_compat_timeout_secs: settings
+                .get("openai_compat_timeout_secs")
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(300), // Default 5 minutes
         }
@@ -146,9 +175,7 @@ impl ProviderConfig {
                 openrouter::models::get_embedding_dimension(&self.openrouter_embedding_model)
                     .unwrap_or(1536) // Fall back to 1536 for unknown models
             }
-            ProviderType::Ollama => {
-                ollama::get_embedding_dimension(&self.ollama_embedding_model)
-            }
+            ProviderType::Ollama => ollama::get_embedding_dimension(&self.ollama_embedding_model),
             ProviderType::OpenAICompat => self.openai_compat_embedding_dimension,
         }
     }
@@ -165,7 +192,11 @@ impl ProviderConfig {
                 }
                 // Fall back to model metadata from capabilities cache
                 let cache = CAPABILITIES_CACHE.inner.lock().ok()?;
-                cache.as_ref()?.context_lengths.get(&self.openrouter_llm_model).copied()
+                cache
+                    .as_ref()?
+                    .context_lengths
+                    .get(&self.openrouter_llm_model)
+                    .copied()
             }
             ProviderType::Ollama => Some(self.ollama_context_length),
             ProviderType::OpenAICompat => Some(self.openai_compat_context_length),
@@ -189,19 +220,25 @@ impl ProviderConfig {
 }
 
 /// Create an embedding provider based on configuration
-pub fn create_embedding_provider(config: &ProviderConfig) -> Result<Arc<dyn EmbeddingProvider>, ProviderError> {
+pub fn create_embedding_provider(
+    config: &ProviderConfig,
+) -> Result<Arc<dyn EmbeddingProvider>, ProviderError> {
     match config.provider_type {
         ProviderType::OpenRouter => {
-            let api_key = config.openrouter_api_key.clone()
-                .ok_or_else(|| ProviderError::Configuration("OpenRouter API key not configured".to_string()))?;
+            let api_key = config.openrouter_api_key.clone().ok_or_else(|| {
+                ProviderError::Configuration("OpenRouter API key not configured".to_string())
+            })?;
             Ok(Arc::new(OpenRouterProvider::new(api_key)))
         }
-        ProviderType::Ollama => {
-            Ok(Arc::new(OllamaProvider::new(Some(config.ollama_host.clone()), Some(config.ollama_timeout_secs))))
-        }
+        ProviderType::Ollama => Ok(Arc::new(OllamaProvider::new(
+            Some(config.ollama_host.clone()),
+            Some(config.ollama_timeout_secs),
+        ))),
         ProviderType::OpenAICompat => {
             if config.openai_compat_base_url.is_empty() {
-                return Err(ProviderError::Configuration("OpenAI Compatible base URL not configured".to_string()));
+                return Err(ProviderError::Configuration(
+                    "OpenAI Compatible base URL not configured".to_string(),
+                ));
             }
             Ok(Arc::new(OpenAICompatProvider::new(
                 config.openai_compat_base_url.clone(),
@@ -216,16 +253,20 @@ pub fn create_embedding_provider(config: &ProviderConfig) -> Result<Arc<dyn Embe
 pub fn create_llm_provider(config: &ProviderConfig) -> Result<Arc<dyn LlmProvider>, ProviderError> {
     match config.provider_type {
         ProviderType::OpenRouter => {
-            let api_key = config.openrouter_api_key.clone()
-                .ok_or_else(|| ProviderError::Configuration("OpenRouter API key not configured".to_string()))?;
+            let api_key = config.openrouter_api_key.clone().ok_or_else(|| {
+                ProviderError::Configuration("OpenRouter API key not configured".to_string())
+            })?;
             Ok(Arc::new(OpenRouterProvider::new(api_key)))
         }
-        ProviderType::Ollama => {
-            Ok(Arc::new(OllamaProvider::new(Some(config.ollama_host.clone()), Some(config.ollama_timeout_secs))))
-        }
+        ProviderType::Ollama => Ok(Arc::new(OllamaProvider::new(
+            Some(config.ollama_host.clone()),
+            Some(config.ollama_timeout_secs),
+        ))),
         ProviderType::OpenAICompat => {
             if config.openai_compat_base_url.is_empty() {
-                return Err(ProviderError::Configuration("OpenAI Compatible base URL not configured".to_string()));
+                return Err(ProviderError::Configuration(
+                    "OpenAI Compatible base URL not configured".to_string(),
+                ));
             }
             Ok(Arc::new(OpenAICompatProvider::new(
                 config.openai_compat_base_url.clone(),
@@ -237,19 +278,25 @@ pub fn create_llm_provider(config: &ProviderConfig) -> Result<Arc<dyn LlmProvide
 }
 
 /// Create a streaming LLM provider based on configuration
-pub fn create_streaming_llm_provider(config: &ProviderConfig) -> Result<Arc<dyn StreamingLlmProvider>, ProviderError> {
+pub fn create_streaming_llm_provider(
+    config: &ProviderConfig,
+) -> Result<Arc<dyn StreamingLlmProvider>, ProviderError> {
     match config.provider_type {
         ProviderType::OpenRouter => {
-            let api_key = config.openrouter_api_key.clone()
-                .ok_or_else(|| ProviderError::Configuration("OpenRouter API key not configured".to_string()))?;
+            let api_key = config.openrouter_api_key.clone().ok_or_else(|| {
+                ProviderError::Configuration("OpenRouter API key not configured".to_string())
+            })?;
             Ok(Arc::new(OpenRouterProvider::new(api_key)))
         }
-        ProviderType::Ollama => {
-            Ok(Arc::new(OllamaProvider::new(Some(config.ollama_host.clone()), Some(config.ollama_timeout_secs))))
-        }
+        ProviderType::Ollama => Ok(Arc::new(OllamaProvider::new(
+            Some(config.ollama_host.clone()),
+            Some(config.ollama_timeout_secs),
+        ))),
         ProviderType::OpenAICompat => {
             if config.openai_compat_base_url.is_empty() {
-                return Err(ProviderError::Configuration("OpenAI Compatible base URL not configured".to_string()));
+                return Err(ProviderError::Configuration(
+                    "OpenAI Compatible base URL not configured".to_string(),
+                ));
             }
             Ok(Arc::new(OpenAICompatProvider::new(
                 config.openai_compat_base_url.clone(),
@@ -276,10 +323,13 @@ static PROVIDER_CACHE: LazyLock<ProviderCache> = LazyLock::new(|| ProviderCache 
 
 /// Get or create a cached embedding provider.
 /// Returns the same Arc if config hasn't changed.
-pub fn get_embedding_provider(config: &ProviderConfig) -> Result<Arc<dyn EmbeddingProvider>, ProviderError> {
-    let mut cache = PROVIDER_CACHE.embedding.lock().map_err(|_| {
-        ProviderError::Configuration("Provider cache lock poisoned".to_string())
-    })?;
+pub fn get_embedding_provider(
+    config: &ProviderConfig,
+) -> Result<Arc<dyn EmbeddingProvider>, ProviderError> {
+    let mut cache = PROVIDER_CACHE
+        .embedding
+        .lock()
+        .map_err(|_| ProviderError::Configuration("Provider cache lock poisoned".to_string()))?;
 
     if let Some((ref cached_config, ref provider)) = *cache {
         if cached_config == config {
@@ -295,9 +345,10 @@ pub fn get_embedding_provider(config: &ProviderConfig) -> Result<Arc<dyn Embeddi
 /// Get or create a cached LLM provider.
 /// Returns the same Arc if config hasn't changed.
 pub fn get_llm_provider(config: &ProviderConfig) -> Result<Arc<dyn LlmProvider>, ProviderError> {
-    let mut cache = PROVIDER_CACHE.llm.lock().map_err(|_| {
-        ProviderError::Configuration("Provider cache lock poisoned".to_string())
-    })?;
+    let mut cache = PROVIDER_CACHE
+        .llm
+        .lock()
+        .map_err(|_| ProviderError::Configuration("Provider cache lock poisoned".to_string()))?;
 
     if let Some((ref cached_config, ref provider)) = *cache {
         if cached_config == config {
@@ -385,23 +436,38 @@ mod tests {
         let rate_limited = ProviderError::RateLimited {
             retry_after_secs: Some(30),
         };
-        assert!(rate_limited.is_retryable(), "Rate limited should be retryable");
+        assert!(
+            rate_limited.is_retryable(),
+            "Rate limited should be retryable"
+        );
 
         let network_error = ProviderError::Network("connection refused".to_string());
-        assert!(network_error.is_retryable(), "Network errors should be retryable");
+        assert!(
+            network_error.is_retryable(),
+            "Network errors should be retryable"
+        );
 
         // Non-retryable errors
         let config_error = ProviderError::Configuration("missing API key".to_string());
-        assert!(!config_error.is_retryable(), "Config errors should not be retryable");
+        assert!(
+            !config_error.is_retryable(),
+            "Config errors should not be retryable"
+        );
 
         let api_error = ProviderError::Api {
             status: 400,
             message: "bad request".to_string(),
         };
-        assert!(!api_error.is_retryable(), "API errors should not be retryable");
+        assert!(
+            !api_error.is_retryable(),
+            "API errors should not be retryable"
+        );
 
         let model_error = ProviderError::ModelNotFound("gpt-5".to_string());
-        assert!(!model_error.is_retryable(), "Model not found should not be retryable");
+        assert!(
+            !model_error.is_retryable(),
+            "Model not found should not be retryable"
+        );
     }
 
     #[test]
@@ -409,7 +475,10 @@ mod tests {
         let mut settings: HashMap<String, String> = HashMap::new();
         settings.insert("provider".to_string(), "openrouter".to_string());
         settings.insert("openrouter_api_key".to_string(), "test-key".to_string());
-        settings.insert("embedding_model".to_string(), "openai/text-embedding-3-large".to_string());
+        settings.insert(
+            "embedding_model".to_string(),
+            "openai/text-embedding-3-large".to_string(),
+        );
 
         let config = ProviderConfig::from_settings(&settings);
 
@@ -423,8 +492,14 @@ mod tests {
     fn test_provider_config_from_settings_ollama() {
         let mut settings: HashMap<String, String> = HashMap::new();
         settings.insert("provider".to_string(), "ollama".to_string());
-        settings.insert("ollama_host".to_string(), "http://localhost:11434".to_string());
-        settings.insert("ollama_embedding_model".to_string(), "nomic-embed-text".to_string());
+        settings.insert(
+            "ollama_host".to_string(),
+            "http://localhost:11434".to_string(),
+        );
+        settings.insert(
+            "ollama_embedding_model".to_string(),
+            "nomic-embed-text".to_string(),
+        );
         settings.insert("ollama_llm_model".to_string(), "llama3.2".to_string());
 
         let config = ProviderConfig::from_settings(&settings);
@@ -442,7 +517,10 @@ mod tests {
         let config = ProviderConfig::from_settings(&settings);
 
         assert_eq!(config.provider_type, ProviderType::OpenRouter); // Default
-        assert_eq!(config.openrouter_embedding_model, "openai/text-embedding-3-small");
+        assert_eq!(
+            config.openrouter_embedding_model,
+            "openai/text-embedding-3-small"
+        );
         assert_eq!(config.ollama_host, "http://127.0.0.1:11434");
     }
 }

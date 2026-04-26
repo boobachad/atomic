@@ -83,9 +83,26 @@ export const COMMAND_MAP: Record<string, CommandSpec> = {
     argsMode: 'body',
     transformArgs: atomBody,
   },
+  process_atom_pipeline: {
+    method: 'POST',
+    path: (a) => `/api/atoms/${encodeURIComponent(a.id as string)}/process`,
+  },
   delete_atom: {
     method: 'DELETE',
     path: (a) => `/api/atoms/${encodeURIComponent(a.id as string)}`,
+  },
+  get_atom_link_suggestions: {
+    method: 'GET',
+    path: (a) => {
+      const params = new URLSearchParams();
+      if (a.q != null) params.set('q', String(a.q));
+      if (a.limit != null) params.set('limit', String(a.limit));
+      return `/api/atoms/link-suggestions${params.toString() ? `?${params}` : ''}`;
+    },
+  },
+  get_atom_links: {
+    method: 'GET',
+    path: (a) => `/api/atoms/${encodeURIComponent(a.id as string)}/links`,
   },
 
   // ==================== Tags ====================
@@ -160,6 +177,12 @@ export const COMMAND_MAP: Record<string, CommandSpec> = {
     argsMode: 'body',
     transformArgs: (a) => ({ query: a.query, mode: 'hybrid', limit: a.limit, threshold: a.threshold }),
   },
+  search_global_keyword: {
+    method: 'POST',
+    path: '/api/search/global',
+    argsMode: 'body',
+    transformArgs: (a) => ({ query: a.query, section_limit: a.sectionLimit }),
+  },
   find_similar_atoms: {
     method: 'GET',
     path: (a) => `/api/atoms/${encodeURIComponent(a.atomId as string)}/similar?limit=${a.limit ?? 10}&threshold=${a.threshold ?? 0.7}`,
@@ -184,9 +207,19 @@ export const COMMAND_MAP: Record<string, CommandSpec> = {
     method: 'POST',
     path: (a) => `/api/tagging/retry/${encodeURIComponent(a.atomId as string)}`,
   },
+  retry_failed_embeddings: {
+    method: 'POST',
+    path: (a) => `/api/embeddings/retry-failed${a.dbId ? `?db=${encodeURIComponent(a.dbId as string)}` : ''}`,
+    transformResponse: (d: any) => d.count as number,
+  },
+  retry_failed_tagging: {
+    method: 'POST',
+    path: (a) => `/api/tagging/retry-failed${a.dbId ? `?db=${encodeURIComponent(a.dbId as string)}` : ''}`,
+    transformResponse: (d: any) => d.count as number,
+  },
   reembed_all_atoms: {
     method: 'POST',
-    path: '/api/embeddings/reembed-all',
+    path: (a) => `/api/embeddings/reembed-all${a.dbId ? `?db=${encodeURIComponent(a.dbId as string)}` : ''}`,
     transformResponse: (d: any) => d.count as number,
   },
   reset_stuck_processing: {
@@ -198,6 +231,10 @@ export const COMMAND_MAP: Record<string, CommandSpec> = {
     method: 'GET',
     path: (a) => `/api/atoms/${encodeURIComponent(a.atomId as string)}/embedding-status`,
     transformResponse: (d: any) => d.status as string,
+  },
+  get_all_pipeline_statuses: {
+    method: 'GET',
+    path: '/api/embeddings/status/all',
   },
 
   // ==================== Briefings ====================
@@ -452,6 +489,7 @@ export const COMMAND_MAP: Record<string, CommandSpec> = {
     transformArgs: (a) => ({
       content: a.content,
       ...(a.canvasContext ? { canvas_context: a.canvasContext } : {}),
+      ...(a.pageContext ? { page_context: a.pageContext } : {}),
     }),
   },
 
@@ -627,6 +665,18 @@ export const COMMAND_MAP: Record<string, CommandSpec> = {
   get_database_stats: {
     method: 'GET',
     path: (a) => `/api/databases/${encodeURIComponent(a.id as string)}/stats`,
+  },
+  start_markdown_export: {
+    method: 'POST',
+    path: (a) => `/api/databases/${encodeURIComponent(a.id as string)}/exports/markdown`,
+  },
+  get_export_job: {
+    method: 'GET',
+    path: (a) => `/api/exports/${encodeURIComponent(a.id as string)}`,
+  },
+  cancel_export_job: {
+    method: 'DELETE',
+    path: (a) => `/api/exports/${encodeURIComponent(a.id as string)}`,
   },
 
   // ==================== Logs ====================

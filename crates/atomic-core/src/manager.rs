@@ -114,7 +114,10 @@ impl DatabaseManager {
     /// In Postgres mode, grabs the storage from any loaded core (they all share a pool).
     #[cfg(feature = "postgres")]
     fn any_storage(&self) -> Result<crate::storage::StorageBackend, AtomicCoreError> {
-        let cores = self.cores.read().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+        let cores = self
+            .cores
+            .read()
+            .map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
         cores
             .values()
             .next()
@@ -133,10 +136,16 @@ impl DatabaseManager {
             if databases.iter().any(|d| d.id == id_or_name) {
                 return Ok(id_or_name.to_string());
             }
-            if let Some(db) = databases.iter().find(|d| d.name.eq_ignore_ascii_case(id_or_name)) {
+            if let Some(db) = databases
+                .iter()
+                .find(|d| d.name.eq_ignore_ascii_case(id_or_name))
+            {
                 return Ok(db.id.clone());
             }
-            return Err(AtomicCoreError::NotFound(format!("Database '{}'", id_or_name)));
+            return Err(AtomicCoreError::NotFound(format!(
+                "Database '{}'",
+                id_or_name
+            )));
         }
 
         // SQLite path: check registry
@@ -158,7 +167,10 @@ impl DatabaseManager {
     pub async fn get_core(&self, id: &str) -> Result<AtomicCore, AtomicCoreError> {
         // Fast path: already loaded by id
         {
-            let cores = self.cores.read().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+            let cores = self
+                .cores
+                .read()
+                .map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
             if let Some(core) = cores.get(id) {
                 return Ok(core.clone());
             }
@@ -168,7 +180,10 @@ impl DatabaseManager {
         let resolved_id = self.resolve_database_id(id).await?;
         if resolved_id != id {
             // Check cache again with the resolved id
-            let cores = self.cores.read().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+            let cores = self
+                .cores
+                .read()
+                .map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
             if let Some(core) = cores.get(&resolved_id) {
                 return Ok(core.clone());
             }
@@ -180,7 +195,10 @@ impl DatabaseManager {
         if let Some(ref _url) = self.database_url {
             // Get the pool from an existing core to share it
             let existing_core = {
-                let cores = self.cores.read().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+                let cores = self
+                    .cores
+                    .read()
+                    .map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
                 cores.values().next().cloned()
             };
             if let Some(existing) = existing_core {
@@ -191,11 +209,16 @@ impl DatabaseManager {
                     let storage = core.storage.clone();
                     let all_tags = storage.get_all_tags_impl().await?;
                     if all_tags.is_empty() {
-                        for category in &["Topics", "People", "Locations", "Organizations", "Events"] {
+                        for category in
+                            &["Topics", "People", "Locations", "Organizations", "Events"]
+                        {
                             storage.create_tag_impl(category, None).await?;
                         }
                     }
-                    let mut cores = self.cores.write().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+                    let mut cores = self
+                        .cores
+                        .write()
+                        .map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
                     cores.insert(id.to_string(), core.clone());
                     // No registry to touch in Postgres mode; last_opened_at on
                     // the Postgres `databases` row could be wired up later if needed.
@@ -207,14 +230,14 @@ impl DatabaseManager {
         // SQLite path: load from disk
         let registry = self.sqlite_registry();
         let db_path = registry.database_path(id);
-        let core = AtomicCore::open_for_server_with_registry(
-            &db_path,
-            Some(Arc::clone(registry)),
-        )?;
+        let core = AtomicCore::open_for_server_with_registry(&db_path, Some(Arc::clone(registry)))?;
 
         registry.touch_database(id)?;
 
-        let mut cores = self.cores.write().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+        let mut cores = self
+            .cores
+            .write()
+            .map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
         cores.insert(id.to_string(), core.clone());
         Ok(core)
     }
@@ -222,7 +245,10 @@ impl DatabaseManager {
     /// Get the active (current) database core.
     pub async fn active_core(&self) -> Result<AtomicCore, AtomicCoreError> {
         let id = {
-            let guard = self.active_id.read().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+            let guard = self
+                .active_id
+                .read()
+                .map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
             guard.clone()
         };
         self.get_core(&id).await
@@ -230,7 +256,10 @@ impl DatabaseManager {
 
     /// Get the active database ID.
     pub fn active_id(&self) -> Result<String, AtomicCoreError> {
-        let id = self.active_id.read().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+        let id = self
+            .active_id
+            .read()
+            .map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
         Ok(id.clone())
     }
 
@@ -262,7 +291,10 @@ impl DatabaseManager {
         // Ensure it's loaded
         self.get_core(id).await?;
 
-        let mut active = self.active_id.write().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+        let mut active = self
+            .active_id
+            .write()
+            .map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
         *active = id.to_string();
         Ok(())
     }
@@ -296,7 +328,10 @@ impl DatabaseManager {
                         core.storage.create_tag_impl(category, None).await?;
                     }
                 }
-                let mut cores = self.cores.write().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+                let mut cores = self
+                    .cores
+                    .write()
+                    .map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
                 cores.insert(info.id.clone(), core);
             }
 
@@ -308,12 +343,12 @@ impl DatabaseManager {
 
         // Create the actual SQLite file
         let db_path = registry.database_path(&info.id);
-        let core = AtomicCore::open_for_server_with_registry(
-            &db_path,
-            Some(Arc::clone(registry)),
-        )?;
+        let core = AtomicCore::open_for_server_with_registry(&db_path, Some(Arc::clone(registry)))?;
 
-        let mut cores = self.cores.write().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+        let mut cores = self
+            .cores
+            .write()
+            .map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
         cores.insert(info.id.clone(), core);
 
         Ok(info)
@@ -329,19 +364,26 @@ impl DatabaseManager {
 
             // Remove from cache
             {
-                let mut cores =
-                    self.cores.write().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+                let mut cores = self
+                    .cores
+                    .write()
+                    .map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
                 cores.remove(id);
             }
 
             // If this was the active database, switch to default
             {
-                let active = self.active_id.read().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+                let active = self
+                    .active_id
+                    .read()
+                    .map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
                 if *active == id {
                     drop(active);
                     let default_id = storage.get_default_database_id_sync().await?;
-                    let mut active =
-                        self.active_id.write().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+                    let mut active = self
+                        .active_id
+                        .write()
+                        .map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
                     *active = default_id;
                 }
             }
@@ -357,8 +399,10 @@ impl DatabaseManager {
 
         // Remove from cache
         {
-            let mut cores =
-                self.cores.write().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+            let mut cores = self
+                .cores
+                .write()
+                .map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
             if let Some(core) = cores.remove(id) {
                 core.optimize();
             }
@@ -366,12 +410,17 @@ impl DatabaseManager {
 
         // If this was the active database, switch to default
         {
-            let active = self.active_id.read().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+            let active = self
+                .active_id
+                .read()
+                .map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
             if *active == id {
                 drop(active);
                 let default_id = registry.get_default_database_id()?;
-                let mut active =
-                    self.active_id.write().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+                let mut active = self
+                    .active_id
+                    .write()
+                    .map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
                 *active = default_id;
             }
         }
@@ -393,12 +442,18 @@ impl DatabaseManager {
         #[cfg(feature = "postgres")]
         if self.is_postgres() {
             let databases = self.any_storage()?.list_databases_sync().await?;
-            let active = self.active_id.read().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+            let active = self
+                .active_id
+                .read()
+                .map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
             return Ok((databases, active.clone()));
         }
 
         let databases = self.sqlite_registry().list_databases()?;
-        let active = self.active_id.read().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+        let active = self
+            .active_id
+            .read()
+            .map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
         Ok((databases, active.clone()))
     }
 
@@ -423,9 +478,14 @@ impl DatabaseManager {
     }
 
     /// Recreate vector indexes on all known databases *except* `skip_id` with the
-    /// given dimension. `skip_id` is typically the active database whose index was
-    /// already recreated (and whose async re-embedding job is in flight).
-    pub async fn recreate_other_vector_indexes(&self, new_dim: usize, skip_id: &str) -> Result<(), AtomicCoreError> {
+    /// given dimension. Existing chunk rows are preserved so embed-only jobs can
+    /// reuse current chunk boundaries. `skip_id` is typically the active database
+    /// whose index was already recreated.
+    pub async fn recreate_other_vector_indexes(
+        &self,
+        new_dim: usize,
+        skip_id: &str,
+    ) -> Result<(), AtomicCoreError> {
         #[cfg(feature = "postgres")]
         if self.is_postgres() {
             // In Postgres mode all databases share the same atom_chunks table —

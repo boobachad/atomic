@@ -199,7 +199,7 @@ impl Database {
     ///   1. Add a new `if version < N` block at the end (before the virtual-table section)
     ///   2. End the block with `PRAGMA user_version = N;`
     ///   3. Bump LATEST_VERSION
-    const LATEST_VERSION: i32 = 12;
+    const LATEST_VERSION: i32 = 14;
 
     pub fn run_migrations(conn: &Connection) -> Result<(), AtomicCoreError> {
         let version: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
@@ -446,9 +446,8 @@ impl Database {
                     .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
                     .collect::<Result<Vec<_>, _>>()?;
 
-                let mut update_stmt = conn.prepare(
-                    "UPDATE atoms SET title = ?1, snippet = ?2 WHERE id = ?3",
-                )?;
+                let mut update_stmt =
+                    conn.prepare("UPDATE atoms SET title = ?1, snippet = ?2 WHERE id = ?3")?;
                 for (id, content) in &atoms {
                     let (title, snippet) = crate::extract_title_and_snippet(content, 300);
                     update_stmt.execute(rusqlite::params![title, snippet, id])?;
@@ -674,6 +673,66 @@ impl Database {
             )?;
         }
 
+        // --- V12 → V13: Materialized markdown atom links ---
+        if version < 13 {
+            conn.execute_batch(
+                r#"
+                CREATE TABLE IF NOT EXISTS atom_links (
+                    id TEXT PRIMARY KEY,
+                    source_atom_id TEXT NOT NULL,
+                    target_atom_id TEXT,
+                    raw_target TEXT NOT NULL,
+                    label TEXT,
+                    target_kind TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    start_offset INTEGER,
+                    end_offset INTEGER,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_atom_links_source
+                    ON atom_links(source_atom_id, start_offset);
+                CREATE INDEX IF NOT EXISTS idx_atom_links_target
+                    ON atom_links(target_atom_id)
+                    WHERE target_atom_id IS NOT NULL;
+                CREATE INDEX IF NOT EXISTS idx_atom_links_status
+                    ON atom_links(status);
+                "#,
+            )?;
+
+            conn.execute_batch("PRAGMA user_version = 13;")?;
+        }
+
+        // --- V13 → V14: Durable atom pipeline queue ---
+        if version < 14 {
+            conn.execute_batch(
+                r#"
+                CREATE TABLE IF NOT EXISTS atom_pipeline_jobs (
+                    atom_id TEXT PRIMARY KEY REFERENCES atoms(id) ON DELETE CASCADE,
+                    embed_requested INTEGER NOT NULL DEFAULT 0,
+                    tag_requested INTEGER NOT NULL DEFAULT 0,
+                    reason TEXT NOT NULL,
+                    not_before TEXT NOT NULL,
+                    state TEXT NOT NULL DEFAULT 'pending',
+                    lease_until TEXT,
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    atom_updated_at TEXT NOT NULL,
+                    last_error TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_atom_pipeline_jobs_claim
+                    ON atom_pipeline_jobs(state, not_before, updated_at);
+                CREATE INDEX IF NOT EXISTS idx_atom_pipeline_jobs_lease
+                    ON atom_pipeline_jobs(state, lease_until);
+
+                PRAGMA user_version = 14;
+                "#,
+            )?;
+        }
+
         // --- Triggers (recreated every startup to stay current) ---
         conn.execute_batch(
             "DROP TRIGGER IF EXISTS atom_tags_insert_count;
@@ -733,8 +792,7 @@ impl Database {
             )
             .unwrap_or_default();
 
-        if vec_tags_sql.is_empty()
-            || !vec_tags_sql.contains(&format!("float[{}]", vec_chunks_dim))
+        if vec_tags_sql.is_empty() || !vec_tags_sql.contains(&format!("float[{}]", vec_chunks_dim))
         {
             conn.execute("DROP TABLE IF EXISTS vec_tags", []).ok();
             conn.execute("DELETE FROM tag_embeddings", []).ok();
@@ -780,6 +838,89 @@ impl Database {
             )?;
         }
 
+        // FTS5 for atom-level keyword search (powers the search palette).
+        // External content backed by the atoms table; kept in sync manually
+        // from `storage::sqlite::atoms` on insert/update/delete.
+        let atoms_fts_sql: String = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='atoms_fts'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or_default();
+
+        let has_atoms_fts = atoms_fts_sql.contains("content='atoms'");
+
+        if !has_atoms_fts {
+            conn.execute_batch("DROP TABLE IF EXISTS atoms_fts")?;
+            conn.execute_batch(
+                r#"
+                CREATE VIRTUAL TABLE atoms_fts USING fts5(
+                    id UNINDEXED,
+                    content,
+                    content='atoms',
+                    content_rowid='rowid'
+                );
+                "#,
+            )?;
+            conn.execute("INSERT INTO atoms_fts(atoms_fts) VALUES('rebuild')", [])?;
+        }
+
+        let wiki_fts_sql: String = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='wiki_articles_fts'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or_default();
+
+        if wiki_fts_sql.is_empty() {
+            conn.execute_batch(
+                r#"
+                CREATE VIRTUAL TABLE wiki_articles_fts USING fts5(
+                    id UNINDEXED,
+                    tag_id UNINDEXED,
+                    tag_name,
+                    content
+                );
+                "#,
+            )?;
+            conn.execute("DELETE FROM wiki_articles_fts", [])?;
+            conn.execute(
+                "INSERT INTO wiki_articles_fts(id, tag_id, tag_name, content)
+                 SELECT w.id, w.tag_id, t.name, w.content
+                 FROM wiki_articles w
+                 JOIN tags t ON t.id = w.tag_id",
+                [],
+            )?;
+        }
+
+        let chat_fts_sql: String = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='chat_messages_fts'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or_default();
+
+        if chat_fts_sql.is_empty() {
+            conn.execute_batch(
+                r#"
+                CREATE VIRTUAL TABLE chat_messages_fts USING fts5(
+                    id UNINDEXED,
+                    conversation_id UNINDEXED,
+                    content
+                );
+                "#,
+            )?;
+            conn.execute("DELETE FROM chat_messages_fts", [])?;
+            conn.execute(
+                "INSERT INTO chat_messages_fts(id, conversation_id, content)
+                 SELECT id, conversation_id, content FROM chat_messages",
+                [],
+            )?;
+        }
+
         crate::settings::migrate_settings(conn)?;
 
         Ok(())
@@ -813,7 +954,9 @@ pub fn will_dimension_change(conn: &Connection, key: &str, new_value: &str) -> (
     (current_dim != new_dim, new_dim)
 }
 
-/// Recreate vec_chunks table with a new dimension and reset embedding status
+/// Recreate vec_chunks table with a new dimension and reset embedding status.
+/// Chunk rows are preserved so embed-only re-embedding can reuse the existing
+/// markdown-aware chunk boundaries.
 pub fn recreate_vec_chunks_with_dimension(
     conn: &Connection,
     dimension: usize,
@@ -827,28 +970,16 @@ pub fn recreate_vec_chunks_with_dimension(
     conn.execute(&create_sql, [])?;
 
     // Reset ONLY embedding status to pending
-    conn.execute(
-        "UPDATE atoms SET embedding_status = 'pending'",
-        [],
-    )?;
+    conn.execute("UPDATE atoms SET embedding_status = 'pending'", [])?;
 
     // Set tagging_status to 'skipped' - existing tags are preserved
-    conn.execute(
-        "UPDATE atoms SET tagging_status = 'skipped'",
-        [],
-    )?;
+    conn.execute("UPDATE atoms SET tagging_status = 'skipped'", [])?;
 
-    // Clear all existing chunk data
-    conn.execute("DELETE FROM atom_chunks", [])?;
-
-    // Clear FTS5 table
-    conn.execute("DELETE FROM atom_chunks_fts", [])?;
+    // Clear old chunk vectors while preserving chunk ids/content.
+    conn.execute("UPDATE atom_chunks SET embedding = NULL", [])?;
 
     // Clear semantic edges
     conn.execute("DELETE FROM semantic_edges", [])?;
-
-    // Clear canvas positions
-    conn.execute("DELETE FROM atom_positions", [])?;
 
     // Clear tag embeddings and recreate vec_tags with new dimension
     conn.execute("DELETE FROM tag_embeddings", []).ok();
@@ -875,7 +1006,11 @@ mod tests {
         // Verify we got a valid database
         let conn = db.conn.lock().unwrap();
         let count: i32 = conn
-            .query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table'", [], |row| row.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table'",
+                [],
+                |row| row.get(0),
+            )
             .unwrap();
 
         // Should have at least our core tables (16 regular + 2 virtual)

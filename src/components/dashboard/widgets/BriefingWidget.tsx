@@ -218,9 +218,9 @@ export function BriefingWidget() {
           citation={activeCitation}
           anchorRect={anchorRect}
           onClose={closePopover}
-          onViewAtom={(atomId) => {
+          onViewAtom={(atomId, highlightText) => {
             closePopover();
-            openReader(atomId);
+            openReader(atomId, highlightText);
           }}
         />
       )}

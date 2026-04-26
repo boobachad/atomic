@@ -58,7 +58,8 @@ impl FlyClient {
         });
 
         let resp = self
-            .inner.http
+            .inner
+            .http
             .post(&url)
             .header("Authorization", self.auth_header())
             .json(&body)
@@ -88,7 +89,8 @@ impl FlyClient {
         });
 
         let resp = self
-            .inner.http
+            .inner
+            .http
             .post(FLY_GRAPHQL_URL)
             .header("Authorization", self.auth_header())
             .json(&query)
@@ -113,7 +115,8 @@ impl FlyClient {
         });
 
         let resp = self
-            .inner.http
+            .inner
+            .http
             .post(FLY_GRAPHQL_URL)
             .header("Authorization", self.auth_header())
             .json(&query)
@@ -134,7 +137,8 @@ impl FlyClient {
         let url = format!("{}/apps/{}", FLY_API_BASE, app_name);
 
         let resp = self
-            .inner.http
+            .inner
+            .http
             .delete(&url)
             .header("Authorization", self.auth_header())
             .send()
@@ -165,7 +169,8 @@ impl FlyClient {
         };
 
         let resp = self
-            .inner.http
+            .inner
+            .http
             .post(&url)
             .header("Authorization", self.auth_header())
             .json(&body)
@@ -237,7 +242,8 @@ impl FlyClient {
         });
 
         let resp = self
-            .inner.http
+            .inner
+            .http
             .post(&url)
             .header("Authorization", self.auth_header())
             .json(&config)
@@ -264,7 +270,8 @@ impl FlyClient {
         let url = format!("{}/apps/{}/machines/{}", FLY_API_BASE, app_name, machine_id);
 
         let resp = self
-            .inner.http
+            .inner
+            .http
             .get(&url)
             .header("Authorization", self.auth_header())
             .send()
@@ -282,18 +289,15 @@ impl FlyClient {
     }
 
     /// Start a stopped machine
-    pub async fn start_machine(
-        &self,
-        app_name: &str,
-        machine_id: &str,
-    ) -> Result<(), CloudError> {
+    pub async fn start_machine(&self, app_name: &str, machine_id: &str) -> Result<(), CloudError> {
         let url = format!(
             "{}/apps/{}/machines/{}/start",
             FLY_API_BASE, app_name, machine_id
         );
 
         let resp = self
-            .inner.http
+            .inner
+            .http
             .post(&url)
             .header("Authorization", self.auth_header())
             .send()
@@ -309,18 +313,15 @@ impl FlyClient {
     }
 
     /// Stop a running machine
-    pub async fn stop_machine(
-        &self,
-        app_name: &str,
-        machine_id: &str,
-    ) -> Result<(), CloudError> {
+    pub async fn stop_machine(&self, app_name: &str, machine_id: &str) -> Result<(), CloudError> {
         let url = format!(
             "{}/apps/{}/machines/{}/stop",
             FLY_API_BASE, app_name, machine_id
         );
 
         let resp = self
-            .inner.http
+            .inner
+            .http
             .post(&url)
             .header("Authorization", self.auth_header())
             .send()
@@ -347,7 +348,8 @@ impl FlyClient {
         );
 
         let resp = self
-            .inner.http
+            .inner
+            .http
             .delete(&url)
             .header("Authorization", self.auth_header())
             .send()
@@ -363,18 +365,12 @@ impl FlyClient {
     }
 
     /// Destroy a volume permanently
-    pub async fn destroy_volume(
-        &self,
-        app_name: &str,
-        volume_id: &str,
-    ) -> Result<(), CloudError> {
-        let url = format!(
-            "{}/apps/{}/volumes/{}",
-            FLY_API_BASE, app_name, volume_id
-        );
+    pub async fn destroy_volume(&self, app_name: &str, volume_id: &str) -> Result<(), CloudError> {
+        let url = format!("{}/apps/{}/volumes/{}", FLY_API_BASE, app_name, volume_id);
 
         let resp = self
-            .inner.http
+            .inner
+            .http
             .delete(&url)
             .header("Authorization", self.auth_header())
             .send()
@@ -402,7 +398,8 @@ impl FlyClient {
 
         // Fetch existing machine config
         let resp = self
-            .inner.http
+            .inner
+            .http
             .get(&url)
             .header("Authorization", self.auth_header())
             .send()
@@ -411,10 +408,14 @@ impl FlyClient {
 
         if !resp.status().is_success() {
             let body = resp.text().await.unwrap_or_default();
-            return Err(CloudError::Fly(format!("Get machine for update failed: {body}")));
+            return Err(CloudError::Fly(format!(
+                "Get machine for update failed: {body}"
+            )));
         }
 
-        let mut machine: serde_json::Value = resp.json().await
+        let mut machine: serde_json::Value = resp
+            .json()
+            .await
             .map_err(|e| CloudError::Fly(e.to_string()))?;
 
         // Update only the image in the existing config
@@ -428,7 +429,8 @@ impl FlyClient {
         });
 
         let resp = self
-            .inner.http
+            .inner
+            .http
             .post(&url)
             .header("Authorization", self.auth_header())
             .json(&update_body)

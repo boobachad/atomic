@@ -6,8 +6,8 @@ use crate::event_bridge::embedding_event_callback;
 use crate::state::{AppState, ServerEvent};
 use actix_web::{web, HttpResponse};
 use atomic_core::{
-    AtomWithTags, BulkCreateResult, PaginatedAtoms, PaginatedTagChildren, SourceInfo, Tag,
-    TagWithCount,
+    AtomLink, AtomWithTags, BulkCreateResult, PaginatedAtoms, PaginatedTagChildren, SourceInfo,
+    Tag, TagWithCount,
 };
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
@@ -47,10 +47,7 @@ pub struct GetAtomsQuery {
     ),
     tag = "atoms",
 )]
-pub async fn get_atoms(
-    db: Db,
-    query: web::Query<GetAtomsQuery>,
-) -> HttpResponse {
+pub async fn get_atoms(db: Db, query: web::Query<GetAtomsQuery>) -> HttpResponse {
     let source_filter = match query.source.as_deref() {
         Some("manual") => atomic_core::SourceFilter::Manual,
         Some("external") => atomic_core::SourceFilter::External,
@@ -113,6 +110,55 @@ pub async fn get_atom(db: Db, path: web::Path<String>) -> HttpResponse {
     }
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/atoms/{id}/links",
+    params(
+        ("id" = String, Path, description = "Source atom ID"),
+    ),
+    responses(
+        (status = 200, description = "Materialized atom links emitted by this atom", body = Vec<AtomLink>),
+        (status = 500, description = "Internal error", body = ApiErrorResponse),
+    ),
+    tag = "atoms",
+)]
+pub async fn get_atom_links(db: Db, path: web::Path<String>) -> HttpResponse {
+    let id = path.into_inner();
+    ok_or_error(db.0.get_atom_links(&id).await)
+}
+
+#[derive(Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct LinkSuggestionsQuery {
+    /// Title query. Empty returns recent atoms.
+    pub q: Option<String>,
+    /// Max results to return (default: 10, max: 50)
+    pub limit: Option<i32>,
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/atoms/link-suggestions",
+    params(LinkSuggestionsQuery),
+    responses(
+        (status = 200, description = "Recent atoms or title matches for editor link completion", body = Vec<atomic_core::AtomLinkSuggestion>),
+        (status = 500, description = "Internal error", body = ApiErrorResponse),
+    ),
+    tag = "atoms",
+)]
+pub async fn get_atom_link_suggestions(
+    db: Db,
+    query: web::Query<LinkSuggestionsQuery>,
+) -> HttpResponse {
+    ok_or_error(
+        db.0.suggest_atom_links(
+            query.q.as_deref().unwrap_or_default(),
+            query.limit.unwrap_or(10),
+        )
+        .await,
+    )
+}
+
 #[derive(Deserialize, IntoParams)]
 #[into_params(parameter_in = Query)]
 pub struct GetAtomBySourceUrlQuery {
@@ -137,7 +183,8 @@ pub async fn get_atom_by_source_url(
     let url = query.into_inner().url;
     match db.0.get_atom_by_source_url(&url).await {
         Ok(Some(atom)) => HttpResponse::Ok().json(atom),
-        Ok(None) => HttpResponse::NotFound().json(serde_json::json!({"error": "No atom found with this source URL"})),
+        Ok(None) => HttpResponse::NotFound()
+            .json(serde_json::json!({"error": "No atom found with this source URL"})),
         Err(e) => crate::error::error_response(e),
     }
 }
@@ -176,23 +223,25 @@ pub async fn create_atom(
     let req = body.into_inner();
     let on_event = embedding_event_callback(state.event_tx.clone());
     let event_tx = state.event_tx.clone();
-    match db.0.create_atom(
-        atomic_core::CreateAtomRequest {
-            content: req.content,
-            source_url: req.source_url,
-            published_at: req.published_at,
-            tag_ids: req.tag_ids,
-            skip_if_source_exists: req.skip_if_source_exists,
-        },
-        on_event,
-    ).await {
+    match db
+        .0
+        .create_atom(
+            atomic_core::CreateAtomRequest {
+                content: req.content,
+                source_url: req.source_url,
+                published_at: req.published_at,
+                tag_ids: req.tag_ids,
+                skip_if_source_exists: req.skip_if_source_exists,
+            },
+            on_event,
+        )
+        .await
+    {
         Ok(Some(atom)) => {
             let _ = event_tx.send(ServerEvent::AtomCreated { atom: atom.clone() });
             HttpResponse::Created().json(atom)
         }
-        Ok(None) => {
-            HttpResponse::Ok().json(serde_json::json!({"skipped": true}))
-        }
+        Ok(None) => HttpResponse::Ok().json(serde_json::json!({"skipped": true})),
         Err(e) => crate::error::error_response(e),
     }
 }
@@ -270,16 +319,27 @@ pub async fn update_atom(
     let id = path.into_inner();
     let req = body.into_inner();
     let on_event = embedding_event_callback(state.event_tx.clone());
-    ok_or_error(db.0.update_atom(
-        &id,
-        atomic_core::UpdateAtomRequest {
-            content: req.content,
-            source_url: req.source_url,
-            published_at: req.published_at,
-            tag_ids: req.tag_ids,
-        },
-        on_event,
-    ).await)
+    let event_tx = state.event_tx.clone();
+    match db
+        .0
+        .update_atom(
+            &id,
+            atomic_core::UpdateAtomRequest {
+                content: req.content,
+                source_url: req.source_url,
+                published_at: req.published_at,
+                tag_ids: req.tag_ids,
+            },
+            on_event,
+        )
+        .await
+    {
+        Ok(atom) => {
+            let _ = event_tx.send(ServerEvent::AtomUpdated { atom: atom.clone() });
+            HttpResponse::Ok().json(atom)
+        }
+        Err(e) => crate::error::error_response(e),
+    }
 }
 
 /// Update atom content/metadata without triggering embedding or tagging pipeline.
@@ -304,15 +364,41 @@ pub async fn update_atom_content_only(
 ) -> HttpResponse {
     let id = path.into_inner();
     let req = body.into_inner();
-    ok_or_error(db.0.update_atom_content_only(
-        &id,
-        atomic_core::UpdateAtomRequest {
-            content: req.content,
-            source_url: req.source_url,
-            published_at: req.published_at,
-            tag_ids: req.tag_ids,
-        },
-    ).await)
+    ok_or_error(
+        db.0.update_atom_content_only(
+            &id,
+            atomic_core::UpdateAtomRequest {
+                content: req.content,
+                source_url: req.source_url,
+                published_at: req.published_at,
+                tag_ids: req.tag_ids,
+            },
+        )
+        .await,
+    )
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/atoms/{id}/process",
+    params(
+        ("id" = String, Path, description = "Atom ID"),
+    ),
+    responses(
+        (status = 200, description = "Queued atom pipeline processing"),
+        (status = 404, description = "Atom not found", body = ApiErrorResponse),
+    ),
+    tag = "atoms",
+)]
+pub async fn process_atom_pipeline(
+    state: web::Data<AppState>,
+    db: Db,
+    path: web::Path<String>,
+) -> HttpResponse {
+    let id = path.into_inner();
+    tracing::info!(atom_id = %id, "Received explicit atom pipeline request");
+    let on_event = embedding_event_callback(state.event_tx.clone());
+    ok_or_error(db.0.process_atom_pipeline(&id, on_event).await)
 }
 
 #[utoipa::path(
@@ -361,10 +447,7 @@ pub struct GetTagChildrenQuery {
     ),
     tag = "tags",
 )]
-pub async fn get_tags(
-    db: Db,
-    query: web::Query<GetTagsQuery>,
-) -> HttpResponse {
+pub async fn get_tags(db: Db, query: web::Query<GetTagsQuery>) -> HttpResponse {
     let min_count = query.min_count.unwrap_or(2);
     ok_or_error(db.0.get_all_tags_filtered(min_count).await)
 }
@@ -390,7 +473,10 @@ pub async fn get_tag_children(
     let min_count = query.min_count.unwrap_or(0);
     let limit = query.limit.unwrap_or(100);
     let offset = query.offset.unwrap_or(0);
-    ok_or_error(db.0.get_tag_children(&parent_id, min_count, limit, offset).await)
+    ok_or_error(
+        db.0.get_tag_children(&parent_id, min_count, limit, offset)
+            .await,
+    )
 }
 
 #[derive(Deserialize, Serialize, ToSchema)]
@@ -411,10 +497,7 @@ pub struct CreateTagRequest {
     ),
     tag = "tags",
 )]
-pub async fn create_tag(
-    db: Db,
-    body: web::Json<CreateTagRequest>,
-) -> HttpResponse {
+pub async fn create_tag(db: Db, body: web::Json<CreateTagRequest>) -> HttpResponse {
     let req = body.into_inner();
     match db.0.create_tag(&req.name, req.parent_id.as_deref()).await {
         Ok(tag) => HttpResponse::Created().json(tag),
@@ -450,7 +533,10 @@ pub async fn update_tag(
 ) -> HttpResponse {
     let id = path.into_inner();
     let req = body.into_inner();
-    ok_or_error(db.0.update_tag(&id, &req.name, req.parent_id.as_deref()).await)
+    ok_or_error(
+        db.0.update_tag(&id, &req.name, req.parent_id.as_deref())
+            .await,
+    )
 }
 
 #[utoipa::path(
@@ -532,5 +618,8 @@ pub async fn configure_autotag_targets(
     body: web::Json<ConfigureAutotagTargetsRequest>,
 ) -> HttpResponse {
     let req = body.into_inner();
-    ok_or_error(db.0.configure_autotag_targets(&req.keep_defaults, &req.add_custom).await)
+    ok_or_error(
+        db.0.configure_autotag_targets(&req.keep_defaults, &req.add_custom)
+            .await,
+    )
 }

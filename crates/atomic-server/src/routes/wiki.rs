@@ -93,10 +93,7 @@ pub struct SuggestionsQuery {
 }
 
 #[utoipa::path(get, path = "/api/wiki/suggestions", params(SuggestionsQuery), responses((status = 200, description = "Suggested wiki articles", body = Vec<atomic_core::SuggestedArticle>)), tag = "wiki")]
-pub async fn get_wiki_suggestions(
-    db: Db,
-    query: web::Query<SuggestionsQuery>,
-) -> HttpResponse {
+pub async fn get_wiki_suggestions(db: Db, query: web::Query<SuggestionsQuery>) -> HttpResponse {
     let limit = query.limit.unwrap_or(10);
     ok_or_error(db.0.get_suggested_wiki_articles(limit).await)
 }

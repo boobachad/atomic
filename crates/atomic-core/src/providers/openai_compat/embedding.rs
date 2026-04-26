@@ -49,7 +49,8 @@ pub async fn embed_batch(
 
     if !response.status().is_success() {
         let status = response.status().as_u16();
-        let retry_after = response.headers()
+        let retry_after = response
+            .headers()
             .get("retry-after")
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.parse::<u64>().ok());

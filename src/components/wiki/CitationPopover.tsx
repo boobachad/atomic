@@ -16,7 +16,7 @@ interface CitationPopoverProps {
   citation: CitationForPopover;
   anchorRect: { top: number; left: number; bottom: number; width: number } | null;
   onClose: () => void;
-  onViewAtom: (atomId: string) => void;
+  onViewAtom: (atomId: string, highlightText?: string) => void;
 }
 
 // Calculate position based on anchor rect
@@ -85,7 +85,7 @@ export function CitationPopover({ citation, anchorRect, onClose, onViewAtom }: C
   }, [anchorRect]);
 
   const handleViewAtom = () => {
-    onViewAtom(citation.atom_id);
+    onViewAtom(citation.atom_id, citation.excerpt);
     onClose();
   };
 
@@ -138,4 +138,3 @@ export function CitationPopover({ citation, anchorRect, onClose, onViewAtom }: C
     document.body
   );
 }
-

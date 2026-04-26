@@ -1,5 +1,6 @@
 //! Application state and server event types
 
+use crate::export_jobs::ExportJobManager;
 use crate::log_buffer::LogBuffer;
 use atomic_core::{AtomicCore, DatabaseManager};
 use serde::Serialize;
@@ -14,27 +15,35 @@ pub struct AppState {
     pub public_url: Option<String>,
     /// In-memory ring buffer for recent log lines (for user export)
     pub log_buffer: LogBuffer,
+    /// Background database export jobs and temporary artifacts.
+    pub export_jobs: ExportJobManager,
 }
 
 impl AppState {
     /// Resolve which database core to use for a request.
     /// Checks X-Atomic-Database header, then ?db= query param, then falls back to active.
-    pub async fn resolve_core(&self, req: &actix_web::HttpRequest) -> Result<AtomicCore, atomic_core::AtomicCoreError> {
+    pub async fn resolve_core(
+        &self,
+        req: &actix_web::HttpRequest,
+    ) -> Result<AtomicCore, atomic_core::AtomicCoreError> {
         // Check X-Atomic-Database header
-        if let Some(db_id) = req.headers().get("X-Atomic-Database")
+        if let Some(db_id) = req
+            .headers()
+            .get("X-Atomic-Database")
             .and_then(|v| v.to_str().ok())
         {
             return self.manager.get_core(db_id).await;
         }
 
         // Check ?db= query parameter
-        if let Some(db_id) = req.query_string()
-            .split('&')
-            .find_map(|pair| {
-                let mut parts = pair.splitn(2, '=');
-                if parts.next()? == "db" { parts.next() } else { None }
-            })
-        {
+        if let Some(db_id) = req.query_string().split('&').find_map(|pair| {
+            let mut parts = pair.splitn(2, '=');
+            if parts.next()? == "db" {
+                parts.next()
+            } else {
+                None
+            }
+        }) {
             return self.manager.get_core(db_id).await;
         }
 
@@ -76,9 +85,31 @@ pub enum ServerEvent {
         completed: usize,
         total: usize,
     },
+    PipelineQueueStarted {
+        run_id: String,
+        total_jobs: usize,
+        embedding_total: usize,
+    },
+    PipelineQueueProgress {
+        run_id: String,
+        stage: String,
+        completed: usize,
+        total: usize,
+    },
+    PipelineQueueCompleted {
+        run_id: String,
+        total_jobs: usize,
+        failed_jobs: usize,
+    },
+    EventsLagged {
+        skipped: u64,
+    },
 
     // Atom lifecycle events
     AtomCreated {
+        atom: atomic_core::AtomWithTags,
+    },
+    AtomUpdated {
         atom: atomic_core::AtomWithTags,
     },
 
@@ -192,14 +223,54 @@ impl From<atomic_core::EmbeddingEvent> for ServerEvent {
             },
             atomic_core::EmbeddingEvent::TaggingFailed { atom_id, ref error } => {
                 tracing::warn!(atom_id, error = %error, "Tagging failed");
-                ServerEvent::TaggingFailed { atom_id, error: error.clone() }
+                ServerEvent::TaggingFailed {
+                    atom_id,
+                    error: error.clone(),
+                }
             }
             atomic_core::EmbeddingEvent::TaggingSkipped { atom_id } => {
                 ServerEvent::TaggingSkipped { atom_id }
             }
-            atomic_core::EmbeddingEvent::BatchProgress { batch_id, phase, completed, total } => {
-                ServerEvent::BatchProgress { batch_id, phase, completed, total }
-            }
+            atomic_core::EmbeddingEvent::BatchProgress {
+                batch_id,
+                phase,
+                completed,
+                total,
+            } => ServerEvent::BatchProgress {
+                batch_id,
+                phase,
+                completed,
+                total,
+            },
+            atomic_core::EmbeddingEvent::PipelineQueueStarted {
+                run_id,
+                total_jobs,
+                embedding_total,
+            } => ServerEvent::PipelineQueueStarted {
+                run_id,
+                total_jobs,
+                embedding_total,
+            },
+            atomic_core::EmbeddingEvent::PipelineQueueProgress {
+                run_id,
+                stage,
+                completed,
+                total,
+            } => ServerEvent::PipelineQueueProgress {
+                run_id,
+                stage,
+                completed,
+                total,
+            },
+            atomic_core::EmbeddingEvent::PipelineQueueCompleted {
+                run_id,
+                total_jobs,
+                failed_jobs,
+            } => ServerEvent::PipelineQueueCompleted {
+                run_id,
+                total_jobs,
+                failed_jobs,
+            },
         }
     }
 }
@@ -210,24 +281,64 @@ impl From<atomic_core::IngestionEvent> for ServerEvent {
             atomic_core::IngestionEvent::FetchStarted { url, request_id } => {
                 ServerEvent::IngestionFetchStarted { url, request_id }
             }
-            atomic_core::IngestionEvent::FetchComplete { url, request_id, content_length } => {
-                ServerEvent::IngestionFetchComplete { url, request_id, content_length }
-            }
-            atomic_core::IngestionEvent::FetchFailed { url, request_id, error } => {
-                ServerEvent::IngestionFetchFailed { url, request_id, error }
-            }
-            atomic_core::IngestionEvent::Skipped { url, request_id, reason } => {
-                ServerEvent::IngestionSkipped { url, request_id, reason }
-            }
-            atomic_core::IngestionEvent::IngestionComplete { request_id, atom_id, url, title } => {
-                ServerEvent::IngestionComplete { request_id, atom_id, url, title }
-            }
-            atomic_core::IngestionEvent::IngestionFailed { request_id, url, error } => {
-                ServerEvent::IngestionFailed { request_id, url, error }
-            }
-            atomic_core::IngestionEvent::FeedPollComplete { feed_id, new_items, skipped, errors } => {
-                ServerEvent::FeedPollComplete { feed_id, new_items, skipped, errors }
-            }
+            atomic_core::IngestionEvent::FetchComplete {
+                url,
+                request_id,
+                content_length,
+            } => ServerEvent::IngestionFetchComplete {
+                url,
+                request_id,
+                content_length,
+            },
+            atomic_core::IngestionEvent::FetchFailed {
+                url,
+                request_id,
+                error,
+            } => ServerEvent::IngestionFetchFailed {
+                url,
+                request_id,
+                error,
+            },
+            atomic_core::IngestionEvent::Skipped {
+                url,
+                request_id,
+                reason,
+            } => ServerEvent::IngestionSkipped {
+                url,
+                request_id,
+                reason,
+            },
+            atomic_core::IngestionEvent::IngestionComplete {
+                request_id,
+                atom_id,
+                url,
+                title,
+            } => ServerEvent::IngestionComplete {
+                request_id,
+                atom_id,
+                url,
+                title,
+            },
+            atomic_core::IngestionEvent::IngestionFailed {
+                request_id,
+                url,
+                error,
+            } => ServerEvent::IngestionFailed {
+                request_id,
+                url,
+                error,
+            },
+            atomic_core::IngestionEvent::FeedPollComplete {
+                feed_id,
+                new_items,
+                skipped,
+                errors,
+            } => ServerEvent::FeedPollComplete {
+                feed_id,
+                new_items,
+                skipped,
+                errors,
+            },
             atomic_core::IngestionEvent::FeedPollFailed { feed_id, error } => {
                 ServerEvent::FeedPollFailed { feed_id, error }
             }
@@ -281,6 +392,18 @@ impl From<atomic_core::ChatEvent> for ServerEvent {
                 action,
                 params,
             },
+            atomic_core::ChatEvent::AtomCreated {
+                conversation_id: _,
+                atom,
+            } => ServerEvent::AtomCreated { atom },
+            atomic_core::ChatEvent::AtomUpdated {
+                conversation_id: _,
+                atom,
+            } => ServerEvent::AtomUpdated { atom },
+            atomic_core::ChatEvent::AtomPipelineEvent {
+                conversation_id: _,
+                event,
+            } => ServerEvent::from(event),
             atomic_core::ChatEvent::Error {
                 conversation_id,
                 error,

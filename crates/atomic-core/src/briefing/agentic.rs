@@ -169,15 +169,14 @@ fn snippet_for(atom: &AtomWithTags) -> String {
     } else {
         atom.atom.content.as_str()
     };
-    let cleaned: String = src.chars().map(|c| if c == '\n' { ' ' } else { c }).collect();
+    let cleaned: String = src
+        .chars()
+        .map(|c| if c == '\n' { ' ' } else { c })
+        .collect();
     truncate_on_char_boundary(cleaned.trim(), SNIPPET_LEN)
 }
 
-fn build_user_prompt(
-    since: &DateTime<Utc>,
-    new_atoms: &[AtomWithTags],
-    total_new: i32,
-) -> String {
+fn build_user_prompt(since: &DateTime<Utc>, new_atoms: &[AtomWithTags], total_new: i32) -> String {
     let mut out = String::new();
     out.push_str(&format!(
         "The following {} atoms were added since {}. Summarize them in a 2-3 paragraph briefing.\n\n",
@@ -450,10 +449,7 @@ async fn final_briefing_call(
 /// initial new-atoms list (1-indexed). Citations that don't map are dropped
 /// with a warning — this is the spec'd behavior for "agent cites something
 /// it doesn't have."
-fn extract_citations(
-    content: &str,
-    new_atoms: &[AtomWithTags],
-) -> Vec<(i32, String, String)> {
+fn extract_citations(content: &str, new_atoms: &[AtomWithTags]) -> Vec<(i32, String, String)> {
     let re = match Regex::new(r"\[(\d+)\]") {
         Ok(r) => r,
         Err(e) => {
@@ -558,8 +554,7 @@ mod tests {
 
     #[test]
     fn lint_briefing_schema_is_portable() {
-        lint_schema(&briefing_schema())
-            .expect("briefing_schema must be portable across providers");
+        lint_schema(&briefing_schema()).expect("briefing_schema must be portable across providers");
     }
 
     #[test]

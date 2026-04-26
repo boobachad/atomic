@@ -89,7 +89,17 @@ impl FeedStore for PostgresStorage {
         let mut feeds: Vec<Feed> = rows
             .into_iter()
             .map(
-                |(id, url, title, site_url, poll_interval, last_polled_at, last_error, created_at, is_paused)| {
+                |(
+                    id,
+                    url,
+                    title,
+                    site_url,
+                    poll_interval,
+                    last_polled_at,
+                    last_error,
+                    created_at,
+                    is_paused,
+                )| {
                     Feed {
                         id,
                         url,
@@ -139,14 +149,13 @@ impl FeedStore for PostgresStorage {
         .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?
         .ok_or_else(|| AtomicCoreError::NotFound(format!("Feed not found: {}", id)))?;
 
-        let tag_ids: Vec<String> = sqlx::query_scalar(
-            "SELECT tag_id FROM feed_tags WHERE feed_id = $1 AND db_id = $2",
-        )
-        .bind(id)
-        .bind(&self.db_id)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+        let tag_ids: Vec<String> =
+            sqlx::query_scalar("SELECT tag_id FROM feed_tags WHERE feed_id = $1 AND db_id = $2")
+                .bind(id)
+                .bind(&self.db_id)
+                .fetch_all(&self.pool)
+                .await
+                .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
 
         Ok(Feed {
             id: row.0,
@@ -182,10 +191,7 @@ impl FeedStore for PostgresStorage {
         let exists = exists.unwrap_or(false);
 
         if !exists {
-            return Err(AtomicCoreError::NotFound(format!(
-                "Feed not found: {}",
-                id
-            )));
+            return Err(AtomicCoreError::NotFound(format!("Feed not found: {}", id)));
         }
 
         if let Some(t) = title {
@@ -249,10 +255,7 @@ impl FeedStore for PostgresStorage {
             .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
 
         if result.rows_affected() == 0 {
-            return Err(AtomicCoreError::NotFound(format!(
-                "Feed not found: {}",
-                id
-            )));
+            return Err(AtomicCoreError::NotFound(format!("Feed not found: {}", id)));
         }
 
         Ok(())
@@ -274,7 +277,17 @@ impl FeedStore for PostgresStorage {
         let feeds: Vec<Feed> = rows
             .into_iter()
             .map(
-                |(id, url, title, site_url, poll_interval, last_polled_at, last_error, created_at, is_paused)| {
+                |(
+                    id,
+                    url,
+                    title,
+                    site_url,
+                    poll_interval,
+                    last_polled_at,
+                    last_error,
+                    created_at,
+                    is_paused,
+                )| {
                     Feed {
                         id,
                         url,
@@ -337,11 +350,7 @@ impl FeedStore for PostgresStorage {
             .collect())
     }
 
-    async fn mark_feed_polled(
-        &self,
-        id: &str,
-        error: Option<&str>,
-    ) -> StorageResult<()> {
+    async fn mark_feed_polled(&self, id: &str, error: Option<&str>) -> StorageResult<()> {
         let now = chrono::Utc::now().to_rfc3339();
 
         match error {
@@ -373,11 +382,7 @@ impl FeedStore for PostgresStorage {
         Ok(())
     }
 
-    async fn claim_feed_item(
-        &self,
-        feed_id: &str,
-        guid: &str,
-    ) -> StorageResult<bool> {
+    async fn claim_feed_item(&self, feed_id: &str, guid: &str) -> StorageResult<bool> {
         let now = chrono::Utc::now().to_rfc3339();
 
         let result = sqlx::query(
@@ -441,22 +446,26 @@ impl FeedStore for PostgresStorage {
         site_url: Option<&str>,
     ) -> StorageResult<()> {
         if let Some(t) = title {
-            sqlx::query("UPDATE feeds SET title = COALESCE(title, $1) WHERE id = $2 AND db_id = $3")
-                .bind(t)
-                .bind(id)
-                .bind(&self.db_id)
-                .execute(&self.pool)
-                .await
-                .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+            sqlx::query(
+                "UPDATE feeds SET title = COALESCE(title, $1) WHERE id = $2 AND db_id = $3",
+            )
+            .bind(t)
+            .bind(id)
+            .bind(&self.db_id)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
         }
         if let Some(s) = site_url {
-            sqlx::query("UPDATE feeds SET site_url = COALESCE(site_url, $1) WHERE id = $2 AND db_id = $3")
-                .bind(s)
-                .bind(id)
-                .bind(&self.db_id)
-                .execute(&self.pool)
-                .await
-                .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+            sqlx::query(
+                "UPDATE feeds SET site_url = COALESCE(site_url, $1) WHERE id = $2 AND db_id = $3",
+            )
+            .bind(s)
+            .bind(id)
+            .bind(&self.db_id)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
         }
         Ok(())
     }

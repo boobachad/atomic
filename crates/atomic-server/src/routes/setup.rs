@@ -31,7 +31,10 @@ pub async fn claim_instance(
     state: web::Data<AppState>,
     body: web::Json<ClaimBody>,
 ) -> HttpResponse {
-    let name = body.into_inner().name.unwrap_or_else(|| "default".to_string());
+    let name = body
+        .into_inner()
+        .name
+        .unwrap_or_else(|| "default".to_string());
     let core = match state.manager.active_core().await {
         Ok(c) => c,
         Err(e) => return crate::error::error_response(e),

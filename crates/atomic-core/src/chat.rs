@@ -103,7 +103,8 @@ pub fn get_message_tool_calls(
                 id: row.get(0)?,
                 message_id: row.get(1)?,
                 tool_name: row.get(2)?,
-                tool_input: serde_json::from_str(&tool_input_str).unwrap_or(serde_json::Value::Null),
+                tool_input: serde_json::from_str(&tool_input_str)
+                    .unwrap_or(serde_json::Value::Null),
                 tool_output: tool_output_str
                     .map(|s| serde_json::from_str(&s).unwrap_or(serde_json::Value::Null)),
                 status: row.get(5)?,
@@ -203,7 +204,11 @@ fn batch_fetch_tool_calls(
     if message_ids.is_empty() {
         return Ok(std::collections::HashMap::new());
     }
-    let placeholders = message_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+    let placeholders = message_ids
+        .iter()
+        .map(|_| "?")
+        .collect::<Vec<_>>()
+        .join(",");
     let query = format!(
         "SELECT id, message_id, tool_name, tool_input, tool_output, status, created_at, completed_at
          FROM chat_tool_calls
@@ -212,7 +217,8 @@ fn batch_fetch_tool_calls(
         placeholders
     );
     let mut stmt = conn.prepare(&query)?;
-    let mut map: std::collections::HashMap<String, Vec<ChatToolCall>> = std::collections::HashMap::new();
+    let mut map: std::collections::HashMap<String, Vec<ChatToolCall>> =
+        std::collections::HashMap::new();
     let rows = stmt.query_map(rusqlite::params_from_iter(message_ids.iter()), |row| {
         let tool_input_str: String = row.get(3)?;
         let tool_output_str: Option<String> = row.get(4)?;
@@ -243,7 +249,11 @@ fn batch_fetch_citations(
     if message_ids.is_empty() {
         return Ok(std::collections::HashMap::new());
     }
-    let placeholders = message_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+    let placeholders = message_ids
+        .iter()
+        .map(|_| "?")
+        .collect::<Vec<_>>()
+        .join(",");
     let query = format!(
         "SELECT id, message_id, citation_index, atom_id, chunk_index, excerpt, relevance_score
          FROM chat_citations
@@ -252,7 +262,8 @@ fn batch_fetch_citations(
         placeholders
     );
     let mut stmt = conn.prepare(&query)?;
-    let mut map: std::collections::HashMap<String, Vec<ChatCitation>> = std::collections::HashMap::new();
+    let mut map: std::collections::HashMap<String, Vec<ChatCitation>> =
+        std::collections::HashMap::new();
     let rows = stmt.query_map(rusqlite::params_from_iter(message_ids.iter()), |row| {
         Ok(ChatCitation {
             id: row.get(0)?,
@@ -346,9 +357,10 @@ fn batch_fetch_conversation_summaries(
         placeholders
     );
     let mut preview_stmt = conn.prepare(&preview_query)?;
-    let preview_rows = preview_stmt.query_map(rusqlite::params_from_iter(conv_ids.iter()), |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-    })?;
+    let preview_rows = preview_stmt
+        .query_map(rusqlite::params_from_iter(conv_ids.iter()), |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
     for row in preview_rows {
         let (conv_id, content) = row?;
         let preview = truncate_preview(&content, 100);
@@ -619,8 +631,7 @@ pub fn set_conversation_scope(
         })?;
 
     let tags = get_conversation_tags(conn, conversation_id)?;
-    let (message_count, last_message_preview) =
-        get_conversation_summary(conn, conversation_id)?;
+    let (message_count, last_message_preview) = get_conversation_summary(conn, conversation_id)?;
 
     Ok(ConversationWithTags {
         conversation,
@@ -668,8 +679,7 @@ pub fn add_tag_to_scope(
         })?;
 
     let tags = get_conversation_tags(conn, conversation_id)?;
-    let (message_count, last_message_preview) =
-        get_conversation_summary(conn, conversation_id)?;
+    let (message_count, last_message_preview) = get_conversation_summary(conn, conversation_id)?;
 
     Ok(ConversationWithTags {
         conversation,
@@ -717,8 +727,7 @@ pub fn remove_tag_from_scope(
         })?;
 
     let tags = get_conversation_tags(conn, conversation_id)?;
-    let (message_count, last_message_preview) =
-        get_conversation_summary(conn, conversation_id)?;
+    let (message_count, last_message_preview) = get_conversation_summary(conn, conversation_id)?;
 
     Ok(ConversationWithTags {
         conversation,
@@ -749,7 +758,14 @@ pub fn save_message(
     conn.execute(
         "INSERT INTO chat_messages (id, conversation_id, role, content, created_at, message_index)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        rusqlite::params![&message_id, conversation_id, role, content, &now, message_index],
+        rusqlite::params![
+            &message_id,
+            conversation_id,
+            role,
+            content,
+            &now,
+            message_index
+        ],
     )?;
 
     conn.execute(
@@ -929,8 +945,7 @@ mod tests {
         )
         .unwrap();
 
-        let result =
-            create_conversation(&conn, &[tag_id.clone()], Some("Tagged Chat")).unwrap();
+        let result = create_conversation(&conn, &[tag_id.clone()], Some("Tagged Chat")).unwrap();
         assert_eq!(result.tags.len(), 1);
         assert_eq!(result.tags[0].name, "TestTag");
     }
@@ -1100,8 +1115,7 @@ mod tests {
         assert!(!msg_id.is_empty());
         assert_eq!(msg_idx, 0);
 
-        let (_, msg_idx2) =
-            save_message(&conn, &conv.conversation.id, "assistant", "Hi!").unwrap();
+        let (_, msg_idx2) = save_message(&conn, &conv.conversation.id, "assistant", "Hi!").unwrap();
         assert_eq!(msg_idx2, 1);
     }
 }

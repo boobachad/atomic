@@ -44,9 +44,7 @@ fn validate_subdomain(subdomain: &str) -> Result<(), CloudError> {
         "status", "docs", "help", "support", "blog", "cloud", "manage",
     ];
     if RESERVED.contains(&subdomain) {
-        return Err(CloudError::Conflict(
-            "This subdomain is reserved".into(),
-        ));
+        return Err(CloudError::Conflict("This subdomain is reserved".into()));
     }
 
     Ok(())
@@ -65,7 +63,10 @@ pub async fn create_checkout(
     // Check if this email already has an active instance
     if let Ok(Some(customer)) = crate::db::get_customer_by_email(&state.db, &body.email).await {
         if let Ok(Some(_)) = crate::db::get_instance_by_customer_id(&state.db, customer.id).await {
-            return CloudError::Conflict("An instance already exists for this email. Sign in to manage it.".into()).to_response();
+            return CloudError::Conflict(
+                "An instance already exists for this email. Sign in to manage it.".into(),
+            )
+            .to_response();
         }
     }
 

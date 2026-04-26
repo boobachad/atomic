@@ -12,8 +12,8 @@ use chrono::Utc;
 use rusqlite::Connection;
 
 use super::{
-    call_llm_for_wiki, extract_citations, batch_fetch_chunk_details,
-    synthesize_article, WikiStrategyContext,
+    batch_fetch_chunk_details, call_llm_for_wiki, extract_citations, synthesize_article,
+    WikiStrategyContext,
 };
 
 /// Data needed for wiki article generation (extracted before async call)
@@ -38,9 +38,15 @@ pub(crate) async fn generate(
     ctx: &WikiStrategyContext,
 ) -> Result<WikiArticleWithCitations, String> {
     let max_tokens = ctx.max_source_tokens();
-    tracing::info!(budget_tokens = max_tokens, "[wiki/centroid] Preparing sources (centroid similarity)");
+    tracing::info!(
+        budget_tokens = max_tokens,
+        "[wiki/centroid] Preparing sources (centroid similarity)"
+    );
 
-    let (chunks, atom_count) = ctx.storage.get_wiki_source_chunks_sync(&ctx.tag_id, max_tokens).await
+    let (chunks, atom_count) = ctx
+        .storage
+        .get_wiki_source_chunks_sync(&ctx.tag_id, max_tokens)
+        .await
         .map_err(|e| e.to_string())?;
 
     let input = WikiGenerationInput {
@@ -50,7 +56,11 @@ pub(crate) async fn generate(
         tag_name: ctx.tag_name.clone(),
     };
 
-    tracing::info!(chunks = input.chunks.len(), atoms = input.atom_count, "[wiki/centroid] Found chunks");
+    tracing::info!(
+        chunks = input.chunks.len(),
+        atoms = input.atom_count,
+        "[wiki/centroid] Found chunks"
+    );
 
     tracing::info!("[wiki/centroid] Calling LLM...");
     let result = generate_wiki_content(
@@ -59,7 +69,8 @@ pub(crate) async fn generate(
         &ctx.wiki_model,
         &ctx.linkable_article_names,
         ctx.generation_prompt(),
-    ).await?;
+    )
+    .await?;
 
     Ok(result)
 }
@@ -72,21 +83,18 @@ pub(crate) async fn update(
 ) -> Result<Option<WikiArticleWithCitations>, String> {
     let max_tokens = ctx.max_source_tokens();
 
-    let update_data = ctx.storage.get_wiki_update_chunks_sync(
-        &ctx.tag_id,
-        &existing.article.updated_at,
-        max_tokens,
-    ).await.map_err(|e| e.to_string())?;
+    let update_data = ctx
+        .storage
+        .get_wiki_update_chunks_sync(&ctx.tag_id, &existing.article.updated_at, max_tokens)
+        .await
+        .map_err(|e| e.to_string())?;
 
     let (new_chunks, atom_count) = match update_data {
         Some(data) => data,
         None => return Ok(None),
     };
 
-    tracing::info!(
-        new_chunks = new_chunks.len(),
-        "[wiki/centroid] Update"
-    );
+    tracing::info!(new_chunks = new_chunks.len(), "[wiki/centroid] Update");
 
     let input = WikiUpdateInput {
         new_chunks,
@@ -102,7 +110,8 @@ pub(crate) async fn update(
         &ctx.wiki_model,
         &ctx.linkable_article_names,
         ctx.update_prompt(),
-    ).await?;
+    )
+    .await?;
 
     Ok(Some(result))
 }
@@ -118,13 +127,15 @@ pub(crate) fn select_chunks_by_centroid(
     // Over-fetch by 3x to account for chunks outside the tag hierarchy.
     let fetch_limit = 3000_i32;
 
-    let mut vec_stmt = conn.prepare(
-        "SELECT chunk_id, distance
+    let mut vec_stmt = conn
+        .prepare(
+            "SELECT chunk_id, distance
          FROM vec_chunks
          WHERE embedding MATCH ?1
          ORDER BY distance
          LIMIT ?2",
-    ).map_err(|e| format!("Failed to prepare vec_chunks query: {}", e))?;
+        )
+        .map_err(|e| format!("Failed to prepare vec_chunks query: {}", e))?;
 
     let candidates: Vec<(String, f32)> = vec_stmt
         .query_map(rusqlite::params![centroid_blob, fetch_limit], |row| {
@@ -186,25 +197,36 @@ pub(crate) fn select_chunks_unranked(
         placeholders
     );
 
-    let mut stmt = conn.prepare(&query)
+    let mut stmt = conn
+        .prepare(&query)
         .map_err(|e| format!("Failed to prepare chunks query: {}", e))?;
 
-    let mut rows = stmt.query(rusqlite::params_from_iter(all_tag_ids.iter()))
+    let mut rows = stmt
+        .query(rusqlite::params_from_iter(all_tag_ids.iter()))
         .map_err(|e| format!("Failed to query chunks: {}", e))?;
 
     let mut chunks = Vec::new();
     let mut total_tokens = 0;
 
-    while let Some(row) = rows.next().map_err(|e| format!("Failed to read row: {}", e))? {
-        let content: String = row.get(2).map_err(|e| format!("Failed to get content: {}", e))?;
+    while let Some(row) = rows
+        .next()
+        .map_err(|e| format!("Failed to read row: {}", e))?
+    {
+        let content: String = row
+            .get(2)
+            .map_err(|e| format!("Failed to get content: {}", e))?;
         let tokens = count_tokens(&content);
         if total_tokens + tokens > max_source_tokens && !chunks.is_empty() {
             break;
         }
         total_tokens += tokens;
         chunks.push(ChunkWithContext {
-            atom_id: row.get(0).map_err(|e| format!("Failed to get atom_id: {}", e))?,
-            chunk_index: row.get(1).map_err(|e| format!("Failed to get chunk_index: {}", e))?,
+            atom_id: row
+                .get(0)
+                .map_err(|e| format!("Failed to get atom_id: {}", e))?,
+            chunk_index: row
+                .get(1)
+                .map_err(|e| format!("Failed to get chunk_index: {}", e))?,
             content,
             similarity_score: 1.0,
         });
@@ -250,32 +272,47 @@ pub(crate) fn select_new_chunks_unranked(
         return Ok(Vec::new());
     }
 
-    let placeholders = new_atom_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+    let placeholders = new_atom_ids
+        .iter()
+        .map(|_| "?")
+        .collect::<Vec<_>>()
+        .join(",");
     let query = format!(
         "SELECT atom_id, chunk_index, content FROM atom_chunks WHERE atom_id IN ({}) ORDER BY atom_id, chunk_index",
         placeholders
     );
 
-    let mut stmt = conn.prepare(&query)
+    let mut stmt = conn
+        .prepare(&query)
         .map_err(|e| format!("Failed to prepare new chunks query: {}", e))?;
 
     let params: Vec<&str> = new_atom_ids.iter().map(|s| s.as_str()).collect();
-    let mut rows = stmt.query(rusqlite::params_from_iter(params.iter()))
+    let mut rows = stmt
+        .query(rusqlite::params_from_iter(params.iter()))
         .map_err(|e| format!("Failed to query new chunks: {}", e))?;
 
     let mut chunks = Vec::new();
     let mut total_tokens = 0;
 
-    while let Some(row) = rows.next().map_err(|e| format!("Failed to read row: {}", e))? {
-        let content: String = row.get(2).map_err(|e| format!("Failed to get content: {}", e))?;
+    while let Some(row) = rows
+        .next()
+        .map_err(|e| format!("Failed to read row: {}", e))?
+    {
+        let content: String = row
+            .get(2)
+            .map_err(|e| format!("Failed to get content: {}", e))?;
         let tokens = count_tokens(&content);
         if total_tokens + tokens > max_source_tokens && !chunks.is_empty() {
             break;
         }
         total_tokens += tokens;
         chunks.push(ChunkWithContext {
-            atom_id: row.get(0).map_err(|e| format!("Failed to get atom_id: {}", e))?,
-            chunk_index: row.get(1).map_err(|e| format!("Failed to get chunk_index: {}", e))?,
+            atom_id: row
+                .get(0)
+                .map_err(|e| format!("Failed to get atom_id: {}", e))?,
+            chunk_index: row
+                .get(1)
+                .map_err(|e| format!("Failed to get chunk_index: {}", e))?,
             content,
             similarity_score: 1.0,
         });
@@ -353,8 +390,7 @@ async fn update_wiki_content(
     );
 
     // Call LLM API
-    let result =
-        call_llm_for_wiki(provider_config, system_prompt, &user_content, model).await?;
+    let result = call_llm_for_wiki(provider_config, system_prompt, &user_content, model).await?;
 
     // Create updated article
     let now = Utc::now().to_rfc3339();

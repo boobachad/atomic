@@ -169,7 +169,10 @@ fn normalize_bm25_score(score: f64) -> f32 {
 ///
 /// Use this when you need multiple chunks per atom (e.g., wiki generation).
 /// For most UI cases, use `search_atoms()` instead.
-pub async fn search_chunks(db: &Database, options: SearchOptions) -> Result<Vec<ChunkResult>, String> {
+pub async fn search_chunks(
+    db: &Database,
+    options: SearchOptions,
+) -> Result<Vec<ChunkResult>, String> {
     search_chunks_with_settings(db, options, None).await
 }
 
@@ -225,7 +228,11 @@ pub async fn search_atoms_with_settings(
     // Sort by score descending and limit. The recency filter is pushed into the
     // underlying SQL queries, so no post-filtering is needed here.
     let mut deduped: Vec<ChunkResult> = atom_best.into_values().collect();
-    deduped.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    deduped.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     deduped.truncate(options.limit as usize);
 
     // Batch fetch all atom data in one query
@@ -240,10 +247,16 @@ pub async fn search_atoms_with_settings(
         if let Some(atom) = atom_map.get(&chunk.atom_id) {
             let tags = tag_map.get(&chunk.atom_id).cloned().unwrap_or_default();
             results.push(SemanticSearchResult {
-                atom: AtomWithTags { atom: atom.clone(), tags },
+                atom: AtomWithTags {
+                    atom: atom.clone(),
+                    tags,
+                },
                 similarity_score: chunk.score,
                 matching_chunk_content: chunk.content,
                 matching_chunk_index: chunk.chunk_index,
+                match_snippet: None,
+                match_offsets: None,
+                match_count: None,
             });
         }
     }
@@ -260,18 +273,25 @@ pub fn since_days_cutoff(since_days: i32) -> String {
 }
 
 /// Batch fetch atoms by IDs in a single query
-fn batch_fetch_atoms(conn: &rusqlite::Connection, atom_ids: &[String]) -> Result<HashMap<String, Atom>, String> {
+fn batch_fetch_atoms(
+    conn: &rusqlite::Connection,
+    atom_ids: &[String],
+) -> Result<HashMap<String, Atom>, String> {
     if atom_ids.is_empty() {
         return Ok(HashMap::new());
     }
     let placeholders = atom_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
     let query = format!(
         "SELECT {} FROM atoms WHERE id IN ({})",
-        crate::ATOM_COLUMNS, placeholders
+        crate::ATOM_COLUMNS,
+        placeholders
     );
     let mut stmt = conn.prepare(&query).map_err(|e| e.to_string())?;
     let rows = stmt
-        .query_map(rusqlite::params_from_iter(atom_ids.iter()), crate::atom_from_row)
+        .query_map(
+            rusqlite::params_from_iter(atom_ids.iter()),
+            crate::atom_from_row,
+        )
         .map_err(|e| e.to_string())?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| e.to_string())?;
@@ -280,7 +300,10 @@ fn batch_fetch_atoms(conn: &rusqlite::Connection, atom_ids: &[String]) -> Result
 }
 
 /// Batch fetch tags for multiple atoms in a single query
-fn batch_fetch_tags(conn: &rusqlite::Connection, atom_ids: &[String]) -> Result<HashMap<String, Vec<Tag>>, String> {
+fn batch_fetch_tags(
+    conn: &rusqlite::Connection,
+    atom_ids: &[String],
+) -> Result<HashMap<String, Vec<Tag>>, String> {
     if atom_ids.is_empty() {
         return Ok(HashMap::new());
     }
@@ -316,7 +339,10 @@ fn batch_fetch_tags(conn: &rusqlite::Connection, atom_ids: &[String]) -> Result<
 }
 
 /// Batch fetch chunk info by IDs in a single query
-fn batch_fetch_chunk_info(conn: &rusqlite::Connection, chunk_ids: &[String]) -> Result<HashMap<String, (String, String, i32)>, String> {
+fn batch_fetch_chunk_info(
+    conn: &rusqlite::Connection,
+    chunk_ids: &[String],
+) -> Result<HashMap<String, (String, String, i32)>, String> {
     if chunk_ids.is_empty() {
         return Ok(HashMap::new());
     }
@@ -339,7 +365,10 @@ fn batch_fetch_chunk_info(conn: &rusqlite::Connection, chunk_ids: &[String]) -> 
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| e.to_string())?;
 
-    Ok(rows.into_iter().map(|(id, atom_id, content, idx)| (id, (atom_id, content, idx))).collect())
+    Ok(rows
+        .into_iter()
+        .map(|(id, atom_id, content, idx)| (id, (atom_id, content, idx)))
+        .collect())
 }
 
 /// Keyword search using FTS5/BM25
@@ -405,13 +434,15 @@ async fn search_keyword_chunks(
     // Convert to ChunkResult with normalized scores
     Ok(filtered
         .into_iter()
-        .map(|(chunk_id, atom_id, content, chunk_index, bm25_score)| ChunkResult {
-            chunk_id,
-            atom_id,
-            content,
-            chunk_index,
-            score: normalize_bm25_score(bm25_score),
-        })
+        .map(
+            |(chunk_id, atom_id, content, chunk_index, bm25_score)| ChunkResult {
+                chunk_id,
+                atom_id,
+                content,
+                chunk_index,
+                score: normalize_bm25_score(bm25_score),
+            },
+        )
         .collect())
 }
 
@@ -477,7 +508,10 @@ async fn search_semantic_chunks(
             )
             .map_err(|e| format!("Failed to prepare vec query: {}", e))?;
         let rows: Vec<_> = stmt
-            .query_map(rusqlite::params![&query_blob, knn_limit, c, fetch_limit], row_map)
+            .query_map(
+                rusqlite::params![&query_blob, knn_limit, c, fetch_limit],
+                row_map,
+            )
             .map_err(|e| format!("Failed to query similar chunks: {}", e))?
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| format!("Failed to collect similar chunks: {}", e))?;
@@ -511,7 +545,8 @@ async fn search_semantic_chunks(
 
     // Pre-compute scope filter for all candidate atom_ids in one batch query
     let scope_atom_ids: std::collections::HashSet<String> = if !options.scope_tag_ids.is_empty() {
-        let candidate_atom_ids: Vec<&str> = chunk_map.values().map(|(aid, _, _)| aid.as_str()).collect();
+        let candidate_atom_ids: Vec<&str> =
+            chunk_map.values().map(|(aid, _, _)| aid.as_str()).collect();
         batch_atoms_with_scope_tags(&conn, &candidate_atom_ids, &options.scope_tag_ids)?
     } else {
         std::collections::HashSet::new()
@@ -560,7 +595,12 @@ async fn search_hybrid_chunks(
         let rrf = 1.0 / (RRF_K + (rank + 1) as f32);
         chunk_scores.insert(
             chunk.chunk_id.clone(),
-            (rrf, chunk.atom_id.clone(), chunk.content.clone(), chunk.chunk_index),
+            (
+                rrf,
+                chunk.atom_id.clone(),
+                chunk.content.clone(),
+                chunk.chunk_index,
+            ),
         );
     }
 
@@ -569,23 +609,34 @@ async fn search_hybrid_chunks(
         chunk_scores
             .entry(chunk.chunk_id.clone())
             .and_modify(|(score, _, _, _)| *score += rrf)
-            .or_insert((rrf, chunk.atom_id.clone(), chunk.content.clone(), chunk.chunk_index));
+            .or_insert((
+                rrf,
+                chunk.atom_id.clone(),
+                chunk.content.clone(),
+                chunk.chunk_index,
+            ));
     }
 
     // Sort by RRF score and normalize to 0-1
     let max_rrf = 2.0 / (RRF_K + 1.0);
     let mut combined: Vec<ChunkResult> = chunk_scores
         .into_iter()
-        .map(|(chunk_id, (score, atom_id, content, chunk_index))| ChunkResult {
-            chunk_id,
-            atom_id,
-            content,
-            chunk_index,
-            score: (score / max_rrf).clamp(0.0, 1.0),
-        })
+        .map(
+            |(chunk_id, (score, atom_id, content, chunk_index))| ChunkResult {
+                chunk_id,
+                atom_id,
+                content,
+                chunk_index,
+                score: (score / max_rrf).clamp(0.0, 1.0),
+            },
+        )
         .collect();
 
-    combined.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    combined.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     combined.truncate(options.limit as usize);
 
     Ok(combined)
@@ -631,7 +682,8 @@ fn batch_atoms_with_scope_tags(
         tag_placeholders.join(","),
     );
 
-    let mut params: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(atom_ids.len() + scope_tag_ids.len());
+    let mut params: Vec<&dyn rusqlite::ToSql> =
+        Vec::with_capacity(atom_ids.len() + scope_tag_ids.len());
     for id in atom_ids {
         params.push(id);
     }
@@ -639,9 +691,13 @@ fn batch_atoms_with_scope_tags(
         params.push(id);
     }
 
-    let mut stmt = conn.prepare(&query).map_err(|e| format!("Failed to prepare scope query: {}", e))?;
+    let mut stmt = conn
+        .prepare(&query)
+        .map_err(|e| format!("Failed to prepare scope query: {}", e))?;
     let rows = stmt
-        .query_map(rusqlite::params_from_iter(params), |row| row.get::<_, String>(0))
+        .query_map(rusqlite::params_from_iter(params), |row| {
+            row.get::<_, String>(0)
+        })
         .map_err(|e| format!("Failed to execute scope query: {}", e))?;
 
     let mut matching = std::collections::HashSet::new();
@@ -758,7 +814,10 @@ pub fn find_similar_atoms(
     for (result_atom_id, similarity, chunk_content, chunk_index) in results {
         if let Some(atom) = atom_map.get(&result_atom_id) {
             final_results.push(SimilarAtomResult {
-                atom: AtomWithTags { atom: atom.clone(), tags: vec![] },
+                atom: AtomWithTags {
+                    atom: atom.clone(),
+                    tags: vec![],
+                },
                 similarity_score: similarity,
                 matching_chunk_content: chunk_content,
                 matching_chunk_index: chunk_index,
@@ -946,7 +1005,10 @@ mod tests {
 
         let target_chunk_id = uuid::Uuid::new_v4().to_string();
         let diff_embedding: Vec<f32> = vec![-1.0; 1536]; // Opposite vector
-        let diff_blob: Vec<u8> = diff_embedding.iter().flat_map(|f| f.to_le_bytes()).collect();
+        let diff_blob: Vec<u8> = diff_embedding
+            .iter()
+            .flat_map(|f| f.to_le_bytes())
+            .collect();
 
         conn.execute(
             "INSERT INTO atom_chunks (id, atom_id, chunk_index, content, embedding) VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -962,6 +1024,9 @@ mod tests {
 
         // With very high threshold, should find nothing (vectors are opposite)
         let results = find_similar_atoms(&conn, &source_id, 10, 0.99).unwrap();
-        assert!(results.is_empty(), "High threshold should filter out dissimilar atoms");
+        assert!(
+            results.is_empty(),
+            "High threshold should filter out dissimilar atoms"
+        );
     }
 }

@@ -80,6 +80,38 @@ pub struct AtomSummary {
     pub tags: Vec<Tag>,
 }
 
+/// Materialized `[[...]]` link discovered in an atom's markdown content.
+///
+/// The first supported durable target form is an atom UUID. Non-UUID targets
+/// are preserved as unresolved text so future slug/title/alias resolvers can
+/// be layered in without changing the markdown syntax.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct AtomLink {
+    pub id: String,
+    pub source_atom_id: String,
+    pub target_atom_id: Option<String>,
+    pub target_title: Option<String>,
+    pub raw_target: String,
+    pub label: Option<String>,
+    pub target_kind: String,
+    pub status: String,
+    pub start_offset: Option<i32>,
+    pub end_offset: Option<i32>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// Lightweight atom target for editor link completion.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct AtomLinkSuggestion {
+    pub id: String,
+    pub title: String,
+    pub snippet: String,
+    pub updated_at: String,
+}
+
 /// Paginated response for atom list
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
@@ -116,6 +148,14 @@ pub struct SimilarAtomResult {
     pub matching_chunk_index: i32,
 }
 
+/// Byte-offset range of a single keyword match in the atom's `content`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct MatchOffset {
+    pub start: u32,
+    pub end: u32,
+}
+
 /// Result struct for semantic search
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
@@ -125,6 +165,90 @@ pub struct SemanticSearchResult {
     pub similarity_score: f32,
     pub matching_chunk_content: String,
     pub matching_chunk_index: i32,
+    /// FTS-windowed excerpt around matched terms with `\u{E000}`/`\u{E001}`
+    /// markers wrapping each hit. Named `match_snippet` (not `snippet`) so it
+    /// doesn't collide with the atom's stored preview, which `AtomWithTags`
+    /// flattens into the same JSON object under the `snippet` key. Populated
+    /// for keyword search only; `None` for semantic and hybrid paths.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub match_snippet: Option<String>,
+    /// Byte offsets of up to `MAX_MATCH_OFFSETS_PER_RESULT` matches in the
+    /// atom's content, in document order. Populated for keyword search only.
+    /// Capped for payload + UI bounds — consult `match_count` for the true
+    /// total.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub match_offsets: Option<Vec<MatchOffset>>,
+    /// Total number of matches in the atom's content. May exceed
+    /// `match_offsets.len()` when the offset list was capped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub match_count: Option<u32>,
+}
+
+/// Grouped keyword search across the app for search palette discovery.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct GlobalSearchResponse {
+    pub atoms: Vec<SemanticSearchResult>,
+    pub wiki: Vec<GlobalWikiSearchResult>,
+    pub chats: Vec<GlobalChatSearchResult>,
+    pub tags: Vec<GlobalTagSearchResult>,
+}
+
+/// Keyword search hit for a wiki article.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct GlobalWikiSearchResult {
+    pub id: String,
+    pub tag_id: String,
+    pub tag_name: String,
+    /// Full article body. Sent alongside the result so the palette can build
+    /// per-match windowed snippets (mirrors how atom search exposes content).
+    pub content: String,
+    /// Legacy plain-text prefix. Still populated for clients that don't
+    /// consume `snippet` / `match_offsets`.
+    pub content_snippet: String,
+    pub updated_at: String,
+    pub atom_count: i32,
+    pub score: f32,
+    /// FTS5 windowed excerpt around matched terms with `\u{E000}`/`\u{E001}`
+    /// markers wrapping each hit. Populated for keyword search. Named
+    /// `match_snippet` for symmetry with `SemanticSearchResult` and to keep
+    /// the distinction from the legacy `content_snippet` explicit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub match_snippet: Option<String>,
+    /// Byte offsets of up to `MAX_MATCH_OFFSETS_PER_RESULT` matches in the
+    /// article content, in document order. Capped — see `match_count`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub match_offsets: Option<Vec<MatchOffset>>,
+    /// Total number of matches in the article. May exceed
+    /// `match_offsets.len()` when the offset list was capped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub match_count: Option<u32>,
+}
+
+/// Keyword search hit for a chat conversation, collapsed from matching messages.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct GlobalChatSearchResult {
+    pub id: String,
+    pub title: Option<String>,
+    pub updated_at: String,
+    pub message_count: i32,
+    pub tags: Vec<Tag>,
+    pub matching_message_content: String,
+    pub score: f32,
+}
+
+/// Keyword search hit for a tag name.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct GlobalTagSearchResult {
+    pub id: String,
+    pub name: String,
+    pub parent_id: Option<String>,
+    pub created_at: String,
+    pub atom_count: i32,
+    pub score: f32,
 }
 
 /// Payload for embedding-complete event (embedding only, no tags)
@@ -381,7 +505,7 @@ pub struct GlobalCanvasData {
 pub struct AtomWithEmbedding {
     #[serde(flatten)]
     pub atom: AtomWithTags,
-    pub embedding: Option<Vec<f32>>,  // Average of chunk embeddings, None if not yet embedded
+    pub embedding: Option<Vec<f32>>, // Average of chunk embeddings, None if not yet embedded
 }
 
 // ==================== Semantic Graph Types ====================
@@ -675,6 +799,7 @@ pub struct SourceInfo {
 /// Result of changing a provider-related setting
 #[derive(Debug, Clone, Serialize)]
 pub struct SettingChangeResult {
+    pub embedding_space_changed: bool,
     pub dimension_changed: bool,
     pub old_dim: usize,
     pub new_dim: usize,
@@ -690,6 +815,12 @@ pub struct PipelineStatus {
     pub complete: i32,
     pub failed_count: i32,
     pub failed: Vec<FailedAtom>,
+    pub queued_embedding: i32,
+    pub queued_tagging: i32,
+    pub tagging_pending: i32,
+    pub tagging_processing: i32,
+    pub tagging_complete: i32,
+    pub tagging_skipped: i32,
     pub tagging_failed_count: i32,
     pub tagging_failed: Vec<FailedAtom>,
 }
@@ -702,4 +833,33 @@ pub struct FailedAtom {
     pub snippet: String,
     pub error: Option<String>,
     pub updated_at: String,
+}
+
+/// Durable atom-level pipeline job claimed by the background worker.
+#[derive(Debug, Clone)]
+pub struct AtomPipelineJob {
+    pub atom_id: String,
+    pub embed_requested: bool,
+    pub tag_requested: bool,
+    pub atom_updated_at: String,
+    pub attempts: i32,
+}
+
+/// Stage flags to enqueue for an atom-level pipeline job.
+#[derive(Debug, Clone)]
+pub struct AtomPipelineJobRequest {
+    pub atom_id: String,
+    pub embed_requested: bool,
+    pub tag_requested: bool,
+    pub not_before: Option<String>,
+    pub reason: String,
+}
+
+/// Existing chunk content reused by embed-only re-embedding.
+#[derive(Debug, Clone)]
+pub struct ExistingAtomChunk {
+    pub id: String,
+    pub atom_id: String,
+    pub chunk_index: i32,
+    pub content: String,
 }

@@ -112,16 +112,23 @@ mod tests {
 
     async fn test_app_state() -> (web::Data<AppState>, String) {
         let temp = tempfile::TempDir::new().unwrap();
-        let manager = std::sync::Arc::new(
-            atomic_core::DatabaseManager::new(temp.path()).unwrap()
-        );
-        let (info, raw_token) = manager.active_core().await.unwrap().create_api_token("test-token").await.unwrap();
+        let manager = std::sync::Arc::new(atomic_core::DatabaseManager::new(temp.path()).unwrap());
+        let (info, raw_token) = manager
+            .active_core()
+            .await
+            .unwrap()
+            .create_api_token("test-token")
+            .await
+            .unwrap();
         let (event_tx, _) = broadcast::channel(16);
         let state = web::Data::new(AppState {
             manager,
             event_tx,
             public_url: None,
             log_buffer: crate::log_buffer::LogBuffer::new(16),
+            export_jobs: crate::export_jobs::ExportJobManager::for_tests(
+                temp.path().join("exports"),
+            ),
         });
         // Leak the tempdir so the DB stays alive during the test
         std::mem::forget(temp);
@@ -165,9 +172,7 @@ mod tests {
         )
         .await;
 
-        let req = actix_test::TestRequest::get()
-            .uri("/api/ping")
-            .to_request();
+        let req = actix_test::TestRequest::get().uri("/api/ping").to_request();
         let resp = actix_test::try_call_service(&app, req).await;
         assert!(resp.is_err());
     }

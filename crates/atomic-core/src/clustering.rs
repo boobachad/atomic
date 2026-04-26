@@ -10,9 +10,7 @@ use crate::models::AtomCluster;
 /// Run label propagation on an arbitrary weighted adjacency list.
 /// Returns a map from node ID to cluster label (u32).
 /// Nodes in the same cluster share the same label.
-pub fn label_propagation(
-    edges: &[(String, String, f32)],
-) -> HashMap<String, u32> {
+pub fn label_propagation(edges: &[(String, String, f32)]) -> HashMap<String, u32> {
     if edges.is_empty() {
         return HashMap::new();
     }
@@ -112,13 +110,15 @@ pub fn compute_clusters_from_edges(
     }
     let labels = label_propagation(edges);
     let groups = group_labels_into_clusters(&labels, min_cluster_size as usize);
-    groups.into_iter().enumerate().map(|(i, atom_ids)| {
-        AtomCluster {
+    groups
+        .into_iter()
+        .enumerate()
+        .map(|(i, atom_ids)| AtomCluster {
             cluster_id: i as i32,
             atom_ids,
             dominant_tags: vec![],
-        }
-    }).collect()
+        })
+        .collect()
 }
 
 /// Compute clusters using a simplified label propagation algorithm.
@@ -188,10 +188,8 @@ fn get_dominant_tags(conn: &Connection, atom_ids: &[String]) -> Result<Vec<Strin
 
     let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
 
-    let params: Vec<&dyn rusqlite::ToSql> = atom_ids
-        .iter()
-        .map(|s| s as &dyn rusqlite::ToSql)
-        .collect();
+    let params: Vec<&dyn rusqlite::ToSql> =
+        atom_ids.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
 
     let tags: Vec<String> = stmt
         .query_map(params.as_slice(), |row| row.get(0))
@@ -332,7 +330,10 @@ mod tests {
 
         // No edges = no clusters
         let clusters = compute_atom_clusters(&conn, 0.5, 2).unwrap();
-        assert!(clusters.is_empty(), "No edges should result in empty clusters");
+        assert!(
+            clusters.is_empty(),
+            "No edges should result in empty clusters"
+        );
     }
 
     #[test]
@@ -352,7 +353,11 @@ mod tests {
 
         // All 3 should end up in one cluster (min_cluster_size = 2)
         let clusters = compute_atom_clusters(&conn, 0.5, 2).unwrap();
-        assert_eq!(clusters.len(), 1, "All connected atoms should form one cluster");
+        assert_eq!(
+            clusters.len(),
+            1,
+            "All connected atoms should form one cluster"
+        );
         assert_eq!(
             clusters[0].atom_ids.len(),
             3,
@@ -373,7 +378,11 @@ mod tests {
         // Create a cluster manually
         let clusters = vec![AtomCluster {
             cluster_id: 0,
-            atom_ids: vec!["atom1".to_string(), "atom2".to_string(), "atom3".to_string()],
+            atom_ids: vec![
+                "atom1".to_string(),
+                "atom2".to_string(),
+                "atom3".to_string(),
+            ],
             dominant_tags: vec![],
         }];
 

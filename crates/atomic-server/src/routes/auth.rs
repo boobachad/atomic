@@ -44,10 +44,7 @@ pub async fn list_tokens(state: web::Data<AppState>) -> HttpResponse {
 }
 
 #[utoipa::path(delete, path = "/api/auth/tokens/{id}", params(("id" = String, Path, description = "Token ID")), responses((status = 200, description = "Token revoked"), (status = 404, description = "Token not found", body = ApiErrorResponse)), tag = "auth")]
-pub async fn revoke_token(
-    state: web::Data<AppState>,
-    path: web::Path<String>,
-) -> HttpResponse {
+pub async fn revoke_token(state: web::Data<AppState>, path: web::Path<String>) -> HttpResponse {
     let token_id = path.into_inner();
     let core = match state.manager.active_core().await {
         Ok(c) => c,

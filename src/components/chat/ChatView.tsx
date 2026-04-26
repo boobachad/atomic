@@ -107,8 +107,8 @@ export function ChatView() {
   };
 
   // Handle viewing an atom from citation - switch drawer to viewer mode
-  const handleViewAtom = useCallback((atomId: string) => {
-    openReader(atomId);
+  const handleViewAtom = useCallback((atomId: string, highlightText?: string) => {
+    openReader(atomId, highlightText);
   }, [openReader]);
 
   if (!currentConversation) {

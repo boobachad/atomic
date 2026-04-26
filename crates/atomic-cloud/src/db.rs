@@ -35,19 +35,14 @@ pub async fn get_customer_by_stripe_id(
     pool: &PgPool,
     stripe_customer_id: &str,
 ) -> Result<Option<Customer>, CloudError> {
-    sqlx::query_as::<_, Customer>(
-        "SELECT * FROM customers WHERE stripe_customer_id = $1",
-    )
-    .bind(stripe_customer_id)
-    .fetch_optional(pool)
-    .await
-    .map_err(CloudError::from)
+    sqlx::query_as::<_, Customer>("SELECT * FROM customers WHERE stripe_customer_id = $1")
+        .bind(stripe_customer_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(CloudError::from)
 }
 
-pub async fn get_customer_by_id(
-    pool: &PgPool,
-    id: Uuid,
-) -> Result<Option<Customer>, CloudError> {
+pub async fn get_customer_by_id(pool: &PgPool, id: Uuid) -> Result<Option<Customer>, CloudError> {
     sqlx::query_as::<_, Customer>("SELECT * FROM customers WHERE id = $1")
         .bind(id)
         .fetch_optional(pool)
@@ -178,11 +173,13 @@ pub async fn get_instance_by_management_token(
     pool: &PgPool,
     token: &str,
 ) -> Result<Option<Instance>, CloudError> {
-    sqlx::query_as::<_, Instance>("SELECT * FROM instances WHERE management_token = $1 AND status != 'destroyed'")
-        .bind(token)
-        .fetch_optional(pool)
-        .await
-        .map_err(CloudError::from)
+    sqlx::query_as::<_, Instance>(
+        "SELECT * FROM instances WHERE management_token = $1 AND status != 'destroyed'",
+    )
+    .bind(token)
+    .fetch_optional(pool)
+    .await
+    .map_err(CloudError::from)
 }
 
 pub async fn get_instance_by_subdomain(
@@ -194,8 +191,8 @@ pub async fn get_instance_by_subdomain(
     )
     .bind(subdomain)
     .fetch_optional(pool)
-        .await
-        .map_err(CloudError::from)
+    .await
+    .map_err(CloudError::from)
 }
 
 pub async fn update_instance_status(
@@ -268,24 +265,19 @@ pub async fn create_magic_link(
     token: &str,
     expires_at: DateTime<Utc>,
 ) -> Result<(), CloudError> {
-    sqlx::query(
-        "INSERT INTO magic_links (id, email, token, expires_at) VALUES ($1, $2, $3, $4)",
-    )
-    .bind(Uuid::new_v4())
-    .bind(email)
-    .bind(token)
-    .bind(expires_at)
-    .execute(pool)
-    .await
-    .map_err(CloudError::from)?;
+    sqlx::query("INSERT INTO magic_links (id, email, token, expires_at) VALUES ($1, $2, $3, $4)")
+        .bind(Uuid::new_v4())
+        .bind(email)
+        .bind(token)
+        .bind(expires_at)
+        .execute(pool)
+        .await
+        .map_err(CloudError::from)?;
     Ok(())
 }
 
 /// Consume a magic link token. Returns the email if valid and unused.
-pub async fn consume_magic_link(
-    pool: &PgPool,
-    token: &str,
-) -> Result<Option<String>, CloudError> {
+pub async fn consume_magic_link(pool: &PgPool, token: &str) -> Result<Option<String>, CloudError> {
     let row = sqlx::query_as::<_, (String,)>(
         r#"
         UPDATE magic_links SET used = true

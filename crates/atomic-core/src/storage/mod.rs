@@ -4,12 +4,12 @@
 //! the default SQLite implementation. Alternative backends (e.g., Postgres)
 //! can be added by implementing the `Storage` supertrait.
 
-pub mod traits;
-pub mod sqlite;
 pub mod postgres;
+pub mod sqlite;
+pub mod traits;
 
-pub use traits::*;
 pub use sqlite::SqliteStorage;
+pub use traits::*;
 
 #[cfg(feature = "postgres")]
 pub use postgres::PostgresStorage;
@@ -59,7 +59,9 @@ impl StorageBackend {
     }
 
     /// Get pipeline status (embedding counts + failed atoms).
-    pub(crate) async fn get_pipeline_status(&self) -> Result<crate::models::PipelineStatus, AtomicCoreError> {
+    pub(crate) async fn get_pipeline_status(
+        &self,
+    ) -> Result<crate::models::PipelineStatus, AtomicCoreError> {
         match self {
             StorageBackend::Sqlite(s) => {
                 let s = s.clone();
@@ -94,7 +96,8 @@ impl StorageBackend {
             }
             #[cfg(feature = "postgres")]
             StorageBackend::Postgres(s) => {
-                <PostgresStorage as ClusterStore>::get_canvas_level(s, parent_id, children_hint).await
+                <PostgresStorage as ClusterStore>::get_canvas_level(s, parent_id, children_hint)
+                    .await
             }
         }
     }
@@ -164,28 +167,38 @@ pub(crate) trait ReborrowArg<'a> {
 
 impl SpawnArg for &str {
     type Owned = String;
-    fn into_spawn_arg(self) -> String { self.to_string() }
+    fn into_spawn_arg(self) -> String {
+        self.to_string()
+    }
 }
 
 impl<T: Clone + Send + Sync + 'static> SpawnArg for &[T] {
     type Owned = Vec<T>;
-    fn into_spawn_arg(self) -> Vec<T> { self.to_vec() }
+    fn into_spawn_arg(self) -> Vec<T> {
+        self.to_vec()
+    }
 }
 
 // Blanket for `&Struct` where Struct is sized (structs, not str/[T]).
 impl<T: Clone + Send + Sync + 'static> SpawnArg for &T {
     type Owned = T;
-    fn into_spawn_arg(self) -> T { self.clone() }
+    fn into_spawn_arg(self) -> T {
+        self.clone()
+    }
 }
 
 impl SpawnArg for Option<&str> {
     type Owned = Option<String>;
-    fn into_spawn_arg(self) -> Option<String> { self.map(|s| s.to_string()) }
+    fn into_spawn_arg(self) -> Option<String> {
+        self.map(|s| s.to_string())
+    }
 }
 
 impl<T: Clone + Send + Sync + 'static> SpawnArg for Option<&[T]> {
     type Owned = Option<Vec<T>>;
-    fn into_spawn_arg(self) -> Option<Vec<T>> { self.map(|s| s.to_vec()) }
+    fn into_spawn_arg(self) -> Option<Vec<T>> {
+        self.map(|s| s.to_vec())
+    }
 }
 
 // Copy scalars pass through.
@@ -205,22 +218,30 @@ impl_spawn_arg_copy!(i32, usize, f32, bool, Option<i32>, Option<bool>);
 
 impl<'a> ReborrowArg<'a> for String {
     type Out = &'a str;
-    fn reborrow_arg(&'a self) -> &'a str { self.as_str() }
+    fn reborrow_arg(&'a self) -> &'a str {
+        self.as_str()
+    }
 }
 
 impl<'a, T: 'a> ReborrowArg<'a> for Vec<T> {
     type Out = &'a [T];
-    fn reborrow_arg(&'a self) -> &'a [T] { self.as_slice() }
+    fn reborrow_arg(&'a self) -> &'a [T] {
+        self.as_slice()
+    }
 }
 
 impl<'a> ReborrowArg<'a> for Option<String> {
     type Out = Option<&'a str>;
-    fn reborrow_arg(&'a self) -> Option<&'a str> { self.as_deref() }
+    fn reborrow_arg(&'a self) -> Option<&'a str> {
+        self.as_deref()
+    }
 }
 
 impl<'a, T: 'a> ReborrowArg<'a> for Option<Vec<T>> {
     type Out = Option<&'a [T]>;
-    fn reborrow_arg(&'a self) -> Option<&'a [T]> { self.as_deref() }
+    fn reborrow_arg(&'a self) -> Option<&'a [T]> {
+        self.as_deref()
+    }
 }
 
 macro_rules! impl_reborrow_copy {
@@ -310,6 +331,10 @@ dispatch! {
         => sqlite: delete_atom_impl, pg_trait: AtomStore, pg_method: delete_atom;
     fn get_atoms_by_tag_impl(&self, tag_id: &str) -> Result<Vec<AtomWithTags>, AtomicCoreError>
         => sqlite: get_atoms_by_tag_impl, pg_trait: AtomStore, pg_method: get_atoms_by_tag;
+    fn get_atom_links_impl(&self, atom_id: &str) -> Result<Vec<AtomLink>, AtomicCoreError>
+        => sqlite: get_atom_links_impl, pg_trait: AtomStore, pg_method: get_atom_links;
+    fn suggest_atom_links_impl(&self, query: &str, limit: i32) -> Result<Vec<AtomLinkSuggestion>, AtomicCoreError>
+        => sqlite: suggest_atom_links_impl, pg_trait: AtomStore, pg_method: suggest_atom_links;
     fn list_atoms_impl(&self, params: &ListAtomsParams) -> Result<PaginatedAtoms, AtomicCoreError>
         => sqlite: list_atoms_impl, pg_trait: AtomStore, pg_method: list_atoms;
     fn get_source_list_impl(&self) -> Result<Vec<SourceInfo>, AtomicCoreError>
@@ -392,12 +417,20 @@ dispatch! {
         => sqlite: set_tagging_status_sync, pg_trait: ChunkStore, pg_method: set_tagging_status;
     fn save_chunks_and_embeddings_sync(&self, atom_id: &str, chunks: &[(String, Vec<f32>)]) -> Result<(), AtomicCoreError>
         => sqlite: save_chunks_and_embeddings_sync, pg_trait: ChunkStore, pg_method: save_chunks_and_embeddings;
+    fn get_chunks_for_atoms_sync(&self, atom_ids: &[String]) -> Result<Vec<ExistingAtomChunk>, AtomicCoreError>
+        => sqlite: get_chunks_for_atoms_sync, pg_trait: ChunkStore, pg_method: get_chunks_for_atoms;
+    fn update_chunk_embeddings_sync(&self, chunks: &[(String, Vec<f32>)]) -> Result<(), AtomicCoreError>
+        => sqlite: update_chunk_embeddings_sync, pg_trait: ChunkStore, pg_method: update_chunk_embeddings;
     fn save_chunks_and_embeddings_batch_sync(&self, atoms: &[(String, Vec<(String, Vec<f32>)>)]) -> Result<Vec<String>, AtomicCoreError>
         => sqlite: save_chunks_and_embeddings_batch_sync, pg_trait: ChunkStore, pg_method: save_chunks_and_embeddings_batch;
     fn reset_stuck_processing_sync(&self) -> Result<i32, AtomicCoreError>
         => sqlite: reset_stuck_processing_sync, pg_trait: ChunkStore, pg_method: reset_stuck_processing;
     fn reset_failed_embeddings_sync(&self) -> Result<i32, AtomicCoreError>
         => sqlite: reset_failed_embeddings_sync, pg_trait: ChunkStore, pg_method: reset_failed_embeddings;
+    fn reset_failed_embedding_statuses_sync(&self) -> Result<i32, AtomicCoreError>
+        => sqlite: reset_failed_embedding_statuses_sync, pg_trait: ChunkStore, pg_method: reset_failed_embedding_statuses;
+    fn reset_failed_tagging_statuses_sync(&self) -> Result<i32, AtomicCoreError>
+        => sqlite: reset_failed_tagging_statuses_sync, pg_trait: ChunkStore, pg_method: reset_failed_tagging_statuses;
     fn rebuild_semantic_edges_sync(&self) -> Result<i32, AtomicCoreError>
         => sqlite: rebuild_semantic_edges_sync, pg_trait: ChunkStore, pg_method: rebuild_semantic_edges;
     fn get_semantic_edges_sync(&self, min_similarity: f32) -> Result<Vec<SemanticEdge>, AtomicCoreError>
@@ -414,6 +447,8 @@ dispatch! {
         => sqlite: check_vector_extension_sync, pg_trait: ChunkStore, pg_method: check_vector_extension;
     fn claim_pending_embeddings_sync(&self, limit: i32) -> Result<Vec<(String, String)>, AtomicCoreError>
         => sqlite: claim_pending_embeddings_sync, pg_trait: ChunkStore, pg_method: claim_pending_embeddings;
+    fn claim_pending_embeddings_due_sync(&self, limit: i32, max_updated_at: &str) -> Result<Vec<(String, String)>, AtomicCoreError>
+        => sqlite: claim_pending_embeddings_due_sync, pg_trait: ChunkStore, pg_method: claim_pending_embeddings_due;
     fn delete_chunks_batch_sync(&self, atom_ids: &[String]) -> Result<(), AtomicCoreError>
         => sqlite: delete_chunks_batch_sync, pg_trait: ChunkStore, pg_method: delete_chunks_batch;
     fn compute_semantic_edges_for_atom_sync(&self, atom_id: &str, threshold: f32, max_edges: i32) -> Result<i32, AtomicCoreError>
@@ -424,6 +459,8 @@ dispatch! {
         => sqlite: rebuild_fts_index_sync, pg_trait: ChunkStore, pg_method: rebuild_fts_index;
     fn claim_pending_tagging_sync(&self) -> Result<Vec<String>, AtomicCoreError>
         => sqlite: claim_pending_tagging_sync, pg_trait: ChunkStore, pg_method: claim_pending_tagging;
+    fn claim_pending_tagging_due_sync(&self, max_updated_at: &str) -> Result<Vec<String>, AtomicCoreError>
+        => sqlite: claim_pending_tagging_due_sync, pg_trait: ChunkStore, pg_method: claim_pending_tagging_due;
     fn recreate_vector_index_sync(&self, dimension: usize) -> Result<(), AtomicCoreError>
         => sqlite: recreate_vector_index_sync, pg_trait: ChunkStore, pg_method: recreate_vector_index;
     fn claim_pending_reembedding_sync(&self) -> Result<Vec<String>, AtomicCoreError>
@@ -436,6 +473,16 @@ dispatch! {
         => sqlite: set_edges_status_batch_sync, pg_trait: ChunkStore, pg_method: set_edges_status_batch;
     fn count_pending_edges_sync(&self) -> Result<i32, AtomicCoreError>
         => sqlite: count_pending_edges_sync, pg_trait: ChunkStore, pg_method: count_pending_edges;
+    fn enqueue_pipeline_jobs_sync(&self, jobs: &[AtomPipelineJobRequest]) -> Result<i32, AtomicCoreError>
+        => sqlite: enqueue_pipeline_jobs_sync, pg_trait: ChunkStore, pg_method: enqueue_pipeline_jobs;
+    fn enqueue_pipeline_jobs_from_statuses_sync(&self, max_updated_at: Option<&str>) -> Result<i32, AtomicCoreError>
+        => sqlite: enqueue_pipeline_jobs_from_statuses_sync, pg_trait: ChunkStore, pg_method: enqueue_pipeline_jobs_from_statuses;
+    fn claim_pipeline_jobs_sync(&self, limit: i32, lease_until: &str, now: &str) -> Result<Vec<AtomPipelineJob>, AtomicCoreError>
+        => sqlite: claim_pipeline_jobs_sync, pg_trait: ChunkStore, pg_method: claim_pipeline_jobs;
+    fn clear_pipeline_jobs_sync(&self, jobs: &[AtomPipelineJob]) -> Result<(), AtomicCoreError>
+        => sqlite: clear_pipeline_jobs_sync, pg_trait: ChunkStore, pg_method: clear_pipeline_jobs;
+    fn count_pipeline_jobs_sync(&self) -> Result<i32, AtomicCoreError>
+        => sqlite: count_pipeline_jobs_sync, pg_trait: ChunkStore, pg_method: count_pipeline_jobs;
 
     // ---- SearchStore ----
     fn vector_search_sync(&self, query_embedding: &[f32], limit: i32, threshold: f32, tag_id: Option<&str>, created_after: Option<&str>) -> Result<Vec<SemanticSearchResult>, AtomicCoreError>

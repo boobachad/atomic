@@ -19,8 +19,7 @@ use utoipa::{IntoParams, ToSchema};
 pub async fn get_latest_briefing(db: Db) -> HttpResponse {
     match db.0.get_latest_briefing().await {
         Ok(Some(b)) => HttpResponse::Ok().json(b),
-        Ok(None) => HttpResponse::NotFound()
-            .json(serde_json::json!({"error": "No briefings yet"})),
+        Ok(None) => HttpResponse::NotFound().json(serde_json::json!({"error": "No briefings yet"})),
         Err(e) => error_response(e),
     }
 }
@@ -59,8 +58,9 @@ pub async fn get_briefing(db: Db, path: web::Path<String>) -> HttpResponse {
     let id = path.into_inner();
     match db.0.get_briefing(&id).await {
         Ok(Some(b)) => HttpResponse::Ok().json(b),
-        Ok(None) => HttpResponse::NotFound()
-            .json(serde_json::json!({"error": "Briefing not found"})),
+        Ok(None) => {
+            HttpResponse::NotFound().json(serde_json::json!({"error": "Briefing not found"}))
+        }
         Err(e) => error_response(e),
     }
 }
@@ -75,10 +75,7 @@ pub async fn get_briefing(db: Db, path: web::Path<String>) -> HttpResponse {
     ),
     tag = "briefings"
 )]
-pub async fn run_briefing_now(
-    state: web::Data<AppState>,
-    req: HttpRequest,
-) -> HttpResponse {
+pub async fn run_briefing_now(state: web::Data<AppState>, req: HttpRequest) -> HttpResponse {
     // Resolve the target core before we start (same logic as Db extractor).
     let core = match state.resolve_core(&req).await {
         Ok(c) => c,

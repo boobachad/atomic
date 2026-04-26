@@ -218,7 +218,10 @@ impl GenerationParams {
             .as_ref()
             .map(|params| params.iter().any(|p| p == param))
             // When capabilities aren't loaded, only send universally-supported params
-            .unwrap_or(matches!(param, "temperature" | "max_tokens" | "json_schema"))
+            .unwrap_or(matches!(
+                param,
+                "temperature" | "max_tokens" | "json_schema"
+            ))
     }
 }
 

@@ -100,11 +100,39 @@ export class HttpTransport implements Transport {
     }, 0);
   }
 
-  private connectWs(): Promise<void> {
+  private connectWs(timeoutMs = 5000): Promise<void> {
     return new Promise<void>((resolve, reject) => {
       if (!this.wsUrl) return reject(new Error('No WebSocket URL'));
-      this.ws = new WebSocket(this.wsUrl);
-      this.ws.onmessage = (msg) => {
+      const socket = new WebSocket(this.wsUrl);
+      this.ws = socket;
+
+      let opened = false;
+      let settled = false;
+      let timeout: ReturnType<typeof setTimeout> | null = null;
+
+      const isCurrentSocket = () => this.ws === socket;
+      const settleResolve = () => {
+        if (settled) return;
+        settled = true;
+        if (timeout) clearTimeout(timeout);
+        resolve();
+      };
+      const settleReject = (error: Error) => {
+        if (settled) return;
+        settled = true;
+        if (timeout) clearTimeout(timeout);
+        reject(error);
+      };
+
+      timeout = setTimeout(() => {
+        if (socket.readyState === WebSocket.CONNECTING) {
+          socket.close();
+        }
+        settleReject(new Error('WebSocket connection timed out'));
+      }, timeoutMs);
+
+      socket.onmessage = (msg) => {
+        if (!isCurrentSocket()) return;
         try {
           const data = JSON.parse(msg.data);
           const normalized = normalizeServerEvent(data);
@@ -116,29 +144,41 @@ export class HttpTransport implements Transport {
           // ignore malformed messages
         }
       };
-      this.ws.onopen = () => {
+      socket.onopen = () => {
+        if (!isCurrentSocket() || settled) {
+          socket.close();
+          return;
+        }
+        opened = true;
         this.connected = true;
         this.reconnectDelay = 1000; // reset backoff
         this.onConnectionChange?.(true);
-        resolve();
+        settleResolve();
       };
-      this.ws.onclose = () => {
+      socket.onclose = () => {
+        if (!isCurrentSocket()) return;
         const wasConnected = this.connected;
         this.connected = false;
         if (wasConnected) {
           this.onConnectionChange?.(false);
         }
+        if (!opened) {
+          settleReject(new Error('WebSocket connection closed before opening'));
+          return;
+        }
         this.scheduleReconnect();
       };
-      this.ws.onerror = () => {
-        if (!this.connected) reject(new Error('WebSocket connection failed'));
+      socket.onerror = () => {
+        if (!opened) settleReject(new Error('WebSocket connection failed'));
       };
     });
   }
 
   private scheduleReconnect(): void {
     if (!this.shouldReconnect) return;
+    if (this.reconnectTimer) return;
     this.reconnectTimer = setTimeout(async () => {
+      this.reconnectTimer = null;
       try {
         await this.connectWs();
       } catch {

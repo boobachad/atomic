@@ -65,12 +65,14 @@ impl ModelCapabilitiesCache {
         let mut models: Vec<AvailableModel> = self
             .models
             .iter()
-            .filter(|(_, params)| {
-                params.iter().any(|p| p == "structured_outputs")
-            })
+            .filter(|(_, params)| params.iter().any(|p| p == "structured_outputs"))
             .map(|(id, _)| AvailableModel {
                 id: id.clone(),
-                name: self.model_names.get(id).cloned().unwrap_or_else(|| id.clone()),
+                name: self
+                    .model_names
+                    .get(id)
+                    .cloned()
+                    .unwrap_or_else(|| id.clone()),
             })
             .collect();
 
@@ -89,10 +91,7 @@ pub async fn fetch_model_capabilities(client: &Client) -> Result<ModelCapabiliti
         .map_err(|e| format!("Failed to fetch models: {}", e))?;
 
     if !response.status().is_success() {
-        return Err(format!(
-            "Models API returned status: {}",
-            response.status()
-        ));
+        return Err(format!("Models API returned status: {}", response.status()));
     }
 
     let models_response: ModelsResponse = response
@@ -219,10 +218,7 @@ pub async fn fetch_ollama_models(base_url: &str) -> Result<Vec<OllamaModel>, Str
         .map_err(|e| format!("Failed to connect to Ollama: {}", e))?;
 
     if !response.status().is_success() {
-        return Err(format!(
-            "Ollama API returned status: {}",
-            response.status()
-        ));
+        return Err(format!("Ollama API returned status: {}", response.status()));
     }
 
     let models_response: OllamaModelsResponse = response

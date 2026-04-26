@@ -21,10 +21,7 @@ impl SqliteStorage {
             .map_err(|e| AtomicCoreError::Clustering(e))
     }
 
-    pub(crate) fn save_clusters_sync(
-        &self,
-        clusters: &[AtomCluster],
-    ) -> StorageResult<()> {
+    pub(crate) fn save_clusters_sync(&self, clusters: &[AtomCluster]) -> StorageResult<()> {
         let conn = self
             .db
             .conn
@@ -91,8 +88,8 @@ impl SqliteStorage {
     ) -> StorageResult<Vec<AtomCluster>> {
         let conn = self.db.read_conn()?;
         for cluster in &mut clusters {
-            cluster.dominant_tags = get_dominant_tags_for_cluster(&conn, &cluster.atom_ids)
-                .unwrap_or_default();
+            cluster.dominant_tags =
+                get_dominant_tags_for_cluster(&conn, &cluster.atom_ids).unwrap_or_default();
         }
         Ok(clusters)
     }

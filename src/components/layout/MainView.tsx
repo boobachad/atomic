@@ -9,8 +9,6 @@ import {
   ChevronRight,
   Sun,
   Moon,
-  Check,
-  Pencil,
   Trash2,
   MoreHorizontal,
   MessageCircle,
@@ -33,7 +31,6 @@ import { LocalGraphView } from '../canvas/LocalGraphView';
 import { DashboardView } from '../dashboard/DashboardView';
 import { FAB } from '../ui/FAB';
 import { Modal } from '../ui/Modal';
-import { EmbeddingProgressBanner } from '../ui/EmbeddingProgressBanner';
 import { WikiFullView } from '../wiki/WikiFullView';
 import { WikiReader } from '../wiki/WikiReader';
 import { ChatViewer } from '../chat/ChatViewer';
@@ -86,7 +83,7 @@ export function MainView() {
   const deleteAtom = useAtomsStore(s => s.deleteAtom);
   const fetchTags = useTagsStore(s => s.fetchTags);
 
-  const openCommandPalette = useUIStore(s => s.openCommandPalette);
+  const openSearchPalette = useUIStore(s => s.openSearchPalette);
 
   const chatSidebarOpen = useUIStore(s => s.chatSidebarOpen);
   const chatSidebarWidth = useUIStore(s => s.chatSidebarWidth);
@@ -257,8 +254,19 @@ export function MainView() {
   }, [setChatSidebarWidth]);
 
   const handleOpenSearch = useCallback(() => {
-    openCommandPalette('/');
-  }, [openCommandPalette]);
+    if (readerState.atomId) {
+      readerEditorActions.current?.openSearch(readerState.highlightText ?? undefined);
+      return;
+    }
+    openSearchPalette();
+  }, [openSearchPalette, readerState.atomId, readerState.highlightText]);
+
+  const handleReaderDismiss = useCallback(async () => {
+    if (readerState.atomId) {
+      await readerEditorActions.current?.stopEditing();
+    }
+    overlayDismiss();
+  }, [readerState.atomId, overlayDismiss]);
 
   const handleLoadMore = useCallback(() => {
     if (!isSemanticSearch && hasMore) {
@@ -292,31 +300,33 @@ export function MainView() {
           <>
             <div className="flex items-center gap-1">
               <button
-                onClick={overlayDismiss}
+                onClick={() => { void handleReaderDismiss(); }}
                 className="p-1.5 rounded-md text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-hover)] transition-colors"
                 title="Close"
               >
                 <X className="w-4 h-4" strokeWidth={2} />
               </button>
-              {/* In edit mode: undo/redo. In view mode: back/forward */}
-              {readerState.atomId && readerState.editing ? (
+              {readerState.atomId && (
                 <>
                   <button
-                    onClick={() => readerEditorActions.current?.undo()}
-                    className="p-1.5 rounded-md text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-hover)] transition-colors"
-                    title="Undo (Cmd+Z)"
+                    onClick={overlayBack}
+                    disabled={overlayNav.index <= 0}
+                    className={`p-1.5 rounded-md transition-colors ${overlayNav.index > 0 ? 'text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-hover)]' : 'text-[var(--color-text-tertiary)] cursor-default'}`}
+                    title="Back"
                   >
-                    <Undo2 className="w-4 h-4" strokeWidth={2} />
+                    <ChevronLeft className="w-4 h-4" strokeWidth={2} />
                   </button>
                   <button
-                    onClick={() => readerEditorActions.current?.redo()}
-                    className="p-1.5 rounded-md text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-hover)] transition-colors"
-                    title="Redo (Cmd+Shift+Z)"
+                    onClick={overlayForward}
+                    disabled={overlayNav.index >= overlayNav.stack.length - 1}
+                    className={`p-1.5 rounded-md transition-colors ${overlayNav.index < overlayNav.stack.length - 1 ? 'text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-hover)]' : 'text-[var(--color-text-tertiary)] cursor-default'}`}
+                    title="Forward"
                   >
-                    <Redo2 className="w-4 h-4" strokeWidth={2} />
+                    <ChevronRight className="w-4 h-4" strokeWidth={2} />
                   </button>
                 </>
-              ) : (
+              )}
+              {!readerState.atomId && (
                 <>
                   <button
                     onClick={overlayBack}
@@ -337,7 +347,7 @@ export function MainView() {
                 </>
               )}
               {/* Save status indicator */}
-              {readerState.editing && readerState.saveStatus !== 'idle' && (
+              {readerState.atomId && readerState.saveStatus !== 'idle' && (
                 <span className={`text-xs ml-1 ${
                   readerState.saveStatus === 'saving' ? 'text-[var(--color-text-tertiary)]' :
                   readerState.saveStatus === 'saved' ? 'text-green-500' :
@@ -352,8 +362,27 @@ export function MainView() {
             <div data-tauri-drag-region className="flex-1 h-full drag-region" />
 
             {/* Action buttons for atom reader — inline on desktop, overflow menu on mobile */}
-            {readerState.atomId && !isMobile && (
+            {readerState.atomId && (
               <div className="flex items-center gap-1">
+                {isMobile && (
+                  <>
+                    <button
+                      onClick={() => readerEditorActions.current?.undo()}
+                      className="p-1.5 rounded-md text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-hover)] transition-colors"
+                      title="Undo"
+                    >
+                      <Undo2 className="w-4 h-4" strokeWidth={2} />
+                    </button>
+                    <button
+                      onClick={() => readerEditorActions.current?.redo()}
+                      className="p-1.5 rounded-md text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-hover)] transition-colors"
+                      title="Redo"
+                    >
+                      <Redo2 className="w-4 h-4" strokeWidth={2} />
+                    </button>
+                    <div className="mx-1 h-4 w-px bg-[var(--color-border)]" />
+                  </>
+                )}
                 {/* Theme toggle */}
                 <button
                   onClick={toggleReaderTheme}
@@ -364,25 +393,6 @@ export function MainView() {
                     <Sun className="w-4 h-4" strokeWidth={2} />
                   ) : (
                     <Moon className="w-4 h-4" strokeWidth={2} />
-                  )}
-                </button>
-                {/* Edit / Done toggle */}
-                <button
-                  onClick={() => readerState.editing
-                    ? readerEditorActions.current?.stopEditing()
-                    : readerEditorActions.current?.startEditing(0)
-                  }
-                  className={`p-1.5 rounded-md transition-colors ${
-                    readerState.editing
-                      ? 'text-[var(--color-accent)] hover:bg-[var(--color-accent)]/20'
-                      : 'text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-hover)]'
-                  }`}
-                  title={readerState.editing ? 'Done (Esc)' : 'Edit'}
-                >
-                  {readerState.editing ? (
-                    <Check className="w-4 h-4" strokeWidth={2} />
-                  ) : (
-                    <Pencil className="w-4 h-4" strokeWidth={2} />
                   )}
                 </button>
                 {/* Delete */}
@@ -396,30 +406,9 @@ export function MainView() {
               </div>
             )}
 
-            {/* Mobile reader overflow menu: edit is the primary inline action,
-                theme + delete hide behind a ⋯ button. */}
+            {/* Mobile reader overflow menu: theme + delete hide behind a ⋯ button. */}
             {readerState.atomId && isMobile && (
               <div className="flex items-center gap-1">
-                {/* Edit / Done toggle (kept inline — primary action) */}
-                <button
-                  onClick={() => readerState.editing
-                    ? readerEditorActions.current?.stopEditing()
-                    : readerEditorActions.current?.startEditing(0)
-                  }
-                  className={`p-1.5 rounded-md transition-colors ${
-                    readerState.editing
-                      ? 'text-[var(--color-accent)] hover:bg-[var(--color-accent)]/20'
-                      : 'text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-hover)]'
-                  }`}
-                  title={readerState.editing ? 'Done (Esc)' : 'Edit'}
-                >
-                  {readerState.editing ? (
-                    <Check className="w-4 h-4" strokeWidth={2} />
-                  ) : (
-                    <Pencil className="w-4 h-4" strokeWidth={2} />
-                  )}
-                </button>
-
                 {/* Overflow menu */}
                 <div className="relative" ref={readerMenuRef}>
                   <button
@@ -562,7 +551,7 @@ export function MainView() {
             <button
               onClick={handleOpenSearch}
               className="p-1.5 rounded-md text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-hover)] transition-colors"
-              title="Search atoms"
+              title={readerState.atomId ? 'Find in note' : 'Search atoms'}
             >
               <Search className="w-4 h-4" strokeWidth={2} />
             </button>
@@ -643,7 +632,11 @@ export function MainView() {
         ) : readerState.atomId ? (
           <AtomReader atomId={readerState.atomId} highlightText={readerState.highlightText} initialEditing={readerState.editing} />
         ) : wikiReaderState.tagId && wikiReaderState.tagName ? (
-          <WikiReader tagId={wikiReaderState.tagId} tagName={wikiReaderState.tagName} />
+          <WikiReader
+            tagId={wikiReaderState.tagId}
+            tagName={wikiReaderState.tagName}
+            highlightText={wikiReaderState.highlightText}
+          />
         ) : viewMode === 'dashboard' ? (
           <DashboardView />
         ) : viewMode === 'wiki' ? (
@@ -677,9 +670,6 @@ export function MainView() {
 
       {/* FAB — on atoms + dashboard views, and only when no overlay is open */}
       {(viewMode === 'atoms' || viewMode === 'dashboard') && !readerState.atomId && !wikiReaderState.tagId && !localGraph.isOpen && <FAB onClick={handleNewAtom} title="Create new atom" />}
-
-      {/* Embedding progress overlay */}
-      <EmbeddingProgressBanner />
 
       {/* Delete confirmation modal for reader */}
       <Modal

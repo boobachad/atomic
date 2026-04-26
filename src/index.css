@@ -1,5 +1,6 @@
 @import "tailwindcss";
 @plugin "@tailwindcss/typography";
+@import "@atomic-editor/editor/styles.css";
 
 /* Custom animations */
 @keyframes fade-in {
@@ -81,6 +82,33 @@
   --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
   --font-family-mono: var(--font-mono);
+
+  /* Map Atomic's theme tokens onto @atomic-editor/editor's custom properties.
+   * The editor package defines its own `--atomic-editor-*` namespace
+   * with dark-neutral fallbacks; this block is what makes the editor
+   * track our theme (including `data-theme`/`data-font` overrides). */
+  --atomic-editor-font: var(--font-sans);
+  --atomic-editor-font-mono: var(--font-mono);
+  --atomic-editor-fg: var(--color-text-primary);
+  --atomic-editor-fg-muted: var(--color-text-secondary);
+  --atomic-editor-fg-faint: var(--color-text-tertiary);
+  --atomic-editor-bg: var(--color-bg-main);
+  --atomic-editor-bg-panel: var(--color-bg-panel);
+  --atomic-editor-bg-surface: var(--color-bg-card);
+  --atomic-editor-border: var(--color-border);
+  --atomic-editor-accent: var(--color-accent);
+  --atomic-editor-accent-bright: var(--color-accent-light);
+  --atomic-editor-accent-soft: color-mix(in srgb, var(--color-accent) 72%, white 28%);
+  --atomic-editor-link: var(--atomic-prose-link, #60a5fa);
+  --atomic-editor-link-hover: var(--atomic-prose-link-hover, #93c5fd);
+  --atomic-editor-code-bg: color-mix(in srgb, var(--color-bg-card) 88%, black 12%);
+  --atomic-editor-selection-bg: color-mix(in srgb, var(--color-accent) 28%, var(--color-bg-main) 72%);
+  --atomic-editor-search-bg: color-mix(in srgb, var(--color-accent) 26%, transparent 74%);
+  --atomic-editor-search-bg-active: color-mix(in srgb, var(--color-accent) 60%, transparent 40%);
+}
+
+.cm-tooltip-autocomplete .cm-completionDetail {
+  color: var(--color-text-tertiary);
 }
 
 [data-reader-theme="light"] {
@@ -249,7 +277,7 @@ body {
   padding-left: env(safe-area-inset-left);
 }
 
-code, pre, kbd, samp, .cm-editor {
+code, pre, kbd, samp {
   letter-spacing: normal;
 }
 
@@ -269,7 +297,7 @@ code, pre, kbd, samp, .cm-editor {
   --error-bg: rgba(239, 68, 68, 0.1);
   --error-border: rgba(239, 68, 68, 0.3);
   --error-text: #ef4444;
-  z-index: 50 !important;
+  z-index: 1000 !important;
   font-family: inherit !important;
 }
 
@@ -388,4 +416,3 @@ mark.search-highlight[data-current="true"] {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.6; }
 }
-
