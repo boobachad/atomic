@@ -2,6 +2,12 @@
 
 All notable changes to Atomic are documented here.
 
+## v1.32.2 — 2026-04-26
+
+- Add comprehensive user documentation covering concepts, getting started, guides, self-hosting, and API reference
+- Expand OpenAPI spec with full annotations for OAuth, setup, export, embedding, and log endpoints
+- Publish OpenAPI specification automatically with each release
+
 ## v1.32.1 — 2026-04-26
 
 - Anchor atom preview popover to its canvas node so the popover follows during pan and zoom
