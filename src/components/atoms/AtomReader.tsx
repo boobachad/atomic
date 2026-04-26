@@ -342,8 +342,13 @@ function AtomReaderContent({
         revealed ? 'opacity-100' : 'opacity-0'
       }`}
     >
-      <div className="flex-1 overflow-y-auto scrollbar-auto-hide">
-        <div className="max-w-6xl mx-auto px-3 py-5 sm:px-4 sm:py-6 lg:px-6 lg:flex lg:gap-10">
+      {/* @container makes the two-column layout react to the actual reader
+          pane width rather than the viewport. With the chat sidebar open,
+          the viewport may be wide while the reader is narrow — without
+          container queries the desktop two-column would render at ~600px
+          and squeeze the editor. */}
+      <div className="@container flex-1 overflow-y-auto scrollbar-auto-hide">
+        <div className="max-w-6xl mx-auto px-3 py-5 sm:px-4 sm:py-6 @4xl:px-6 @4xl:flex @4xl:gap-10">
           <div className="flex-1 min-w-0">
             <Suspense fallback={null}>
               <AtomicCodeMirrorEditor
@@ -362,7 +367,7 @@ function AtomReaderContent({
             </Suspense>
           </div>
 
-          <div className="w-full lg:w-80 lg:shrink-0 mt-6 lg:mt-0 border border-[var(--color-border)] rounded-lg p-4 self-start">
+          <div className="w-full @4xl:w-80 @4xl:shrink-0 mt-6 @4xl:mt-0 border border-[var(--color-border)] rounded-lg p-4 self-start">
             <div className="mb-4">
               {/* Source URL + delete share a row — delete sits to the right
                   of the input. */}
