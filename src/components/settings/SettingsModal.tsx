@@ -14,6 +14,7 @@ import {
   RefreshCw,
   Trash2,
   Upload,
+  Download,
   ChevronRight,
   AlertCircle,
 } from 'lucide-react';
@@ -56,6 +57,8 @@ import {
   retryFailedEmbeddings,
   retryFailedTagging,
   reembedAllAtoms,
+  exportDatabaseMarkdownArchive,
+  type ExportJob,
   type DatabasePipelineStatus,
   exportLogs,
   type IngestionResult,
@@ -329,6 +332,8 @@ function DatabasesTab() {
   const [pipelineError, setPipelineError] = useState<string | null>(null);
   const [retrying, setRetrying] = useState<string | null>(null);
   const [reembeddingDb, setReembeddingDb] = useState<string | null>(null);
+  const [exportingDb, setExportingDb] = useState<string | null>(null);
+  const [exportJobsByDb, setExportJobsByDb] = useState<Record<string, ExportJob>>({});
   const [confirmReembedDb, setConfirmReembedDb] = useState<DatabaseInfo | null>(null);
   const [expandedPipeline, setExpandedPipeline] = useState<string | null>(null);
   const liveRefreshTimer = useRef<ReturnType<typeof setTimeout>>();
@@ -422,6 +427,22 @@ function DatabasesTab() {
     await setDefaultDatabase(id);
   };
 
+  const handleExportMarkdown = async (db: DatabaseInfo) => {
+    if (exportingDb) return;
+    setExportingDb(db.id);
+    setPipelineError(null);
+    try {
+      const job = await exportDatabaseMarkdownArchive(db.id, progress => {
+        setExportJobsByDb(current => ({ ...current, [db.id]: progress }));
+      });
+      toast.success(`Exported ${job.total_atoms} ${job.total_atoms === 1 ? 'atom' : 'atoms'} as markdown`);
+    } catch (e) {
+      toast.error('Failed to export database', { description: String(e) });
+    } finally {
+      setExportingDb(null);
+    }
+  };
+
   const retryFailed = async (dbId: string, stage: 'embedding' | 'tagging') => {
     const key = `${dbId}:${stage}`;
     setRetrying(key);
@@ -471,6 +492,7 @@ function DatabasesTab() {
           const summary = pipelineSummary(status);
           const embeddingRetryKey = `${db.id}:embedding`;
           const taggingRetryKey = `${db.id}:tagging`;
+          const exportJob = exportJobsByDb[db.id];
           const isExpanded = expandedPipeline === db.id;
           const summaryClass = summary.tone === 'error'
             ? 'text-red-300'
@@ -552,6 +574,17 @@ function DatabasesTab() {
                         {isExpanded ? 'Hide' : 'Details'}
                       </button>
                     )}
+                    <button
+                      onClick={() => handleExportMarkdown(db)}
+                      disabled={!!exportingDb}
+                      className="inline-flex items-center gap-1 rounded px-2 py-1 text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-hover)] disabled:opacity-50 disabled:hover:bg-transparent transition-colors"
+                      title="Export database as markdown archive"
+                    >
+                      {exportingDb === db.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" strokeWidth={2} /> : <Download className="w-3.5 h-3.5" strokeWidth={2} />}
+                      {exportingDb === db.id && exportJob?.total_atoms
+                        ? `${Math.round((exportJob.processed_atoms / exportJob.total_atoms) * 100)}%`
+                        : 'Export'}
+                    </button>
                     {!db.is_default && (
                       <button
                         onClick={() => handleSetDefault(db.id)}

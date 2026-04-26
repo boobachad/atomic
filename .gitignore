@@ -19,6 +19,7 @@ registry.db-shm
 databases/
 docker-compose.prod.yml
 fly.toml
+exports/
 
 # iOS
 ios/AtomicMobile.xcodeproj/

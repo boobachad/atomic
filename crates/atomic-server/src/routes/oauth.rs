@@ -637,6 +637,9 @@ mod tests {
             event_tx,
             public_url: Some("https://atomic.example.com".to_string()),
             log_buffer: crate::log_buffer::LogBuffer::new(16),
+            export_jobs: crate::export_jobs::ExportJobManager::for_tests(
+                temp.path().join("exports"),
+            ),
         });
         std::mem::forget(temp);
         state
@@ -651,6 +654,9 @@ mod tests {
             event_tx,
             public_url: None,
             log_buffer: crate::log_buffer::LogBuffer::new(16),
+            export_jobs: crate::export_jobs::ExportJobManager::for_tests(
+                temp.path().join("exports"),
+            ),
         });
         std::mem::forget(temp);
         state

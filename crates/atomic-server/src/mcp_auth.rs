@@ -168,6 +168,9 @@ mod tests {
             event_tx,
             public_url: public_url.map(String::from),
             log_buffer: crate::log_buffer::LogBuffer::new(16),
+            export_jobs: crate::export_jobs::ExportJobManager::for_tests(
+                temp.path().join("exports"),
+            ),
         });
         std::mem::forget(temp);
         (state, raw_token)

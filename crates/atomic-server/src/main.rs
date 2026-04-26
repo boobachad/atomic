@@ -8,8 +8,8 @@ mod config;
 use actix_cors::Cors;
 use actix_web::{middleware, web, App, HttpResponse, HttpServer, Responder};
 use atomic_server::{
-    auth, event_bridge, log_buffer::LogBuffer, mcp, mcp_auth, routes, state::AppState, ws, Scalar,
-    Servable,
+    auth, event_bridge, export_jobs::ExportJobManager, log_buffer::LogBuffer, mcp, mcp_auth,
+    routes, state::AppState, ws, Scalar, Servable,
 };
 use clap::Parser;
 use config::{Cli, Command, TokenAction};
@@ -229,12 +229,15 @@ async fn run_server(
     // dense atom + pipeline bursts, so keep enough room for slower clients to
     // avoid losing the first queue status events.
     let (event_tx, _) = tokio::sync::broadcast::channel(4096);
+    let export_jobs = ExportJobManager::new(std::path::Path::new(data_dir).join("exports"))
+        .expect("Failed to initialize export job manager");
 
     let app_state = web::Data::new(AppState {
         manager: Arc::clone(&manager),
         event_tx: event_tx.clone(),
         public_url: public_url.clone(),
         log_buffer,
+        export_jobs,
     });
 
     // Create MCP service with multi-database support via ?db= query param
@@ -545,6 +548,10 @@ async fn run_server(
                 web::post().to(routes::oauth::authorize_approve),
             )
             .route("/oauth/token", web::post().to(routes::oauth::token))
+            .route(
+                "/api/exports/{id}/download",
+                web::get().to(routes::exports::download_export),
+            )
             // MCP endpoint with MCP-aware auth
             .service(
                 web::scope("/mcp")

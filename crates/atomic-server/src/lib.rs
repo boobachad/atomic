@@ -7,6 +7,7 @@ pub mod auth;
 mod db_extractor;
 pub mod error;
 pub mod event_bridge;
+pub mod export_jobs;
 pub mod log_buffer;
 pub mod mcp;
 pub mod mcp_auth;
@@ -123,6 +124,9 @@ pub use utoipa_scalar::{Scalar, Servable};
         routes::databases::rename_database,
         routes::databases::delete_database,
         routes::databases::activate_database,
+        routes::exports::start_markdown_export,
+        routes::exports::get_export_job,
+        routes::exports::cancel_or_delete_export_job,
         // Import
         routes::import::import_obsidian_vault,
         // Ingestion

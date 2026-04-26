@@ -8,6 +8,7 @@ pub mod chat;
 pub mod clustering;
 pub mod databases;
 pub mod embedding;
+pub mod exports;
 pub mod feeds;
 pub mod graph;
 pub mod import;
@@ -304,6 +305,15 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
     cfg.route(
         "/databases/{id}/stats",
         web::get().to(databases::database_stats),
+    );
+    cfg.route(
+        "/databases/{id}/exports/markdown",
+        web::post().to(exports::start_markdown_export),
+    );
+    cfg.route("/exports/{id}", web::get().to(exports::get_export_job));
+    cfg.route(
+        "/exports/{id}",
+        web::delete().to(exports::cancel_or_delete_export_job),
     );
 
     // Import

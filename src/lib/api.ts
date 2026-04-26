@@ -1,4 +1,6 @@
 import { getTransport } from './transport';
+import { HttpTransport } from './transport/http';
+import { isTauri, openExternalUrl } from './platform';
 
 // Type-safe wrapper for checking sqlite-vec
 export async function checkSqliteVec(): Promise<string> {
@@ -84,6 +86,87 @@ export async function retryFailedTagging(dbId: string): Promise<number> {
 // Re-embed all atoms
 export async function reembedAllAtoms(dbId?: string): Promise<number> {
   return getTransport().invoke('reembed_all_atoms', dbId ? { dbId } : undefined);
+}
+
+export type ExportJobStatus = 'queued' | 'running' | 'complete' | 'failed' | 'cancelled';
+
+export interface ExportJob {
+  id: string;
+  db_id: string;
+  db_name: string;
+  status: ExportJobStatus;
+  phase: string;
+  total_atoms: number;
+  processed_atoms: number;
+  bytes_written: number;
+  created_at: string;
+  updated_at: string;
+  completed_at: string | null;
+  error: string | null;
+  download_path: string | null;
+  download_expires_at: string | null;
+}
+
+export async function startDatabaseMarkdownExport(dbId: string): Promise<ExportJob> {
+  return getTransport().invoke('start_markdown_export', { id: dbId });
+}
+
+export async function getExportJob(id: string): Promise<ExportJob> {
+  return getTransport().invoke('get_export_job', { id });
+}
+
+export async function cancelExportJob(id: string): Promise<ExportJob> {
+  return getTransport().invoke('cancel_export_job', { id });
+}
+
+export async function exportDatabaseMarkdownArchive(
+  dbId: string,
+  onProgress?: (job: ExportJob) => void,
+): Promise<ExportJob> {
+  let job = await startDatabaseMarkdownExport(dbId);
+  onProgress?.(job);
+
+  while (job.status === 'queued' || job.status === 'running') {
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    job = await getExportJob(job.id);
+    onProgress?.(job);
+  }
+
+  if (job.status !== 'complete') {
+    throw new Error(job.error || `Export ${job.status}`);
+  }
+
+  await downloadExportJob(job);
+  return job;
+}
+
+export async function downloadExportJob(job: ExportJob): Promise<void> {
+  if (!job.download_path) {
+    throw new Error('Export is complete but no download URL was issued');
+  }
+
+  const transport = getTransport();
+  if (!(transport instanceof HttpTransport)) {
+    throw new Error('Markdown export requires an HTTP transport');
+  }
+
+  const { baseUrl } = transport.getConfig();
+  if (!baseUrl) {
+    throw new Error('Not connected to a server');
+  }
+
+  const url = `${baseUrl}${job.download_path}`;
+  if (isTauri()) {
+    await openExternalUrl(url);
+    return;
+  }
+
+  const a = document.createElement('a');
+  a.href = url;
+  a.rel = 'noopener noreferrer';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
 }
 
 // Reset atoms stuck in 'processing' state (call on app startup)

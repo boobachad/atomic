@@ -1,5 +1,6 @@
 //! Application state and server event types
 
+use crate::export_jobs::ExportJobManager;
 use crate::log_buffer::LogBuffer;
 use atomic_core::{AtomicCore, DatabaseManager};
 use serde::Serialize;
@@ -14,6 +15,8 @@ pub struct AppState {
     pub public_url: Option<String>,
     /// In-memory ring buffer for recent log lines (for user export)
     pub log_buffer: LogBuffer,
+    /// Background database export jobs and temporary artifacts.
+    pub export_jobs: ExportJobManager,
 }
 
 impl AppState {

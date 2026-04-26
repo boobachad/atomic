@@ -666,6 +666,18 @@ export const COMMAND_MAP: Record<string, CommandSpec> = {
     method: 'GET',
     path: (a) => `/api/databases/${encodeURIComponent(a.id as string)}/stats`,
   },
+  start_markdown_export: {
+    method: 'POST',
+    path: (a) => `/api/databases/${encodeURIComponent(a.id as string)}/exports/markdown`,
+  },
+  get_export_job: {
+    method: 'GET',
+    path: (a) => `/api/exports/${encodeURIComponent(a.id as string)}`,
+  },
+  cancel_export_job: {
+    method: 'DELETE',
+    path: (a) => `/api/exports/${encodeURIComponent(a.id as string)}`,
+  },
 
   // ==================== Logs ====================
   get_logs: {
