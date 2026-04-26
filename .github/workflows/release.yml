@@ -154,8 +154,79 @@ jobs:
           prerelease: false
           args: ${{ matrix.args }}
 
-  notify-discord:
+  publish-openapi:
     needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-openapi-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-openapi-
+            ${{ runner.os }}-cargo-
+
+      - name: Generate OpenAPI JSON
+        shell: bash
+        run: |
+          mkdir -p openapi-site
+          version="${GITHUB_REF_NAME#v}"
+          ATOMIC_OPENAPI_VERSION="$version" \
+            cargo run -p atomic-server --bin export-openapi -- openapi-site/openapi.json
+          cp openapi-site/openapi.json "openapi-site/${GITHUB_REF_NAME}.json"
+          cat > openapi-site/index.html <<'HTML'
+          <!doctype html>
+          <html lang="en">
+            <head>
+              <meta charset="utf-8">
+              <meta name="viewport" content="width=device-width, initial-scale=1">
+              <title>Atomic OpenAPI</title>
+            </head>
+            <body>
+              <h1>Atomic OpenAPI</h1>
+              <p><a href="./openapi.json">Latest release OpenAPI JSON</a></p>
+            </body>
+          </html>
+          HTML
+
+      - name: Upload OpenAPI JSON to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${GITHUB_REF_NAME}" openapi-site/openapi.json --clobber
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: openapi-site
+
+      - name: Deploy Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+  notify-discord:
+    needs: [build, publish-openapi]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout

@@ -2,9 +2,23 @@
 
 use crate::state::AppState;
 use actix_web::{web, HttpResponse};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 
-/// GET /api/setup/status — Check if the instance needs initial setup
+#[derive(Serialize, ToSchema)]
+pub struct SetupStatusResponse {
+    pub needs_setup: bool,
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/setup/status",
+    responses(
+        (status = 200, description = "Whether the instance needs initial setup", body = SetupStatusResponse)
+    ),
+    tag = "setup",
+    security(())
+)]
 pub async fn setup_status(state: web::Data<AppState>) -> HttpResponse {
     let core = match state.manager.active_core().await {
         Ok(c) => c,
@@ -13,20 +27,39 @@ pub async fn setup_status(state: web::Data<AppState>) -> HttpResponse {
     match core.list_api_tokens().await {
         Ok(tokens) => {
             let active = tokens.iter().filter(|t| !t.is_revoked).count();
-            HttpResponse::Ok().json(serde_json::json!({
-                "needs_setup": active == 0,
-            }))
+            HttpResponse::Ok().json(SetupStatusResponse {
+                needs_setup: active == 0,
+            })
         }
         Err(e) => crate::error::error_response(e),
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, ToSchema)]
 pub struct ClaimBody {
     pub name: Option<String>,
 }
 
-/// POST /api/setup/claim — Create the first API token (only works when no tokens exist)
+#[derive(Serialize, ToSchema)]
+pub struct ClaimResponse {
+    pub id: String,
+    pub name: String,
+    pub token: String,
+    pub prefix: String,
+    pub created_at: String,
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/setup/claim",
+    request_body = ClaimBody,
+    responses(
+        (status = 201, description = "Instance claimed and first token created", body = ClaimResponse),
+        (status = 409, description = "Instance already has an active token")
+    ),
+    tag = "setup",
+    security(())
+)]
 pub async fn claim_instance(
     state: web::Data<AppState>,
     body: web::Json<ClaimBody>,
@@ -52,13 +85,13 @@ pub async fn claim_instance(
         }));
     }
     match core.create_api_token(&name).await {
-        Ok((info, raw_token)) => HttpResponse::Created().json(serde_json::json!({
-            "id": info.id,
-            "name": info.name,
-            "token": raw_token,
-            "prefix": info.token_prefix,
-            "created_at": info.created_at,
-        })),
+        Ok((info, raw_token)) => HttpResponse::Created().json(ClaimResponse {
+            id: info.id,
+            name: info.name,
+            token: raw_token,
+            prefix: info.token_prefix,
+            created_at: info.created_at,
+        }),
         Err(e) => crate::error::error_response(e),
     }
 }

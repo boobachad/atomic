@@ -8,16 +8,17 @@ use actix_web::{web, HttpResponse};
 use atomic_core::models::PipelineStatus;
 use atomic_core::registry::DatabaseInfo;
 use serde::Serialize;
+use utoipa::ToSchema;
 
-#[derive(Serialize)]
-struct DatabasePipelineStatus {
-    database: DatabaseInfo,
-    status: PipelineStatus,
+#[derive(Serialize, ToSchema)]
+pub struct DatabasePipelineStatus {
+    pub database: DatabaseInfo,
+    pub status: PipelineStatus,
 }
 
-#[derive(Serialize)]
-struct AllPipelineStatuses {
-    databases: Vec<DatabasePipelineStatus>,
+#[derive(Serialize, ToSchema)]
+pub struct AllPipelineStatuses {
+    pub databases: Vec<DatabasePipelineStatus>,
 }
 
 #[utoipa::path(post, path = "/api/embeddings/process-pending", responses((status = 200, description = "Number of atoms queued for embedding")), tag = "embeddings")]
@@ -101,7 +102,7 @@ pub async fn reset_stuck_processing(db: Db) -> HttpResponse {
     }
 }
 
-#[utoipa::path(get, path = "/api/embeddings/status", responses((status = 200, description = "Pipeline status summary")), tag = "embeddings")]
+#[utoipa::path(get, path = "/api/embeddings/status", responses((status = 200, description = "Pipeline status summary", body = atomic_core::PipelineStatus)), tag = "embeddings")]
 pub async fn get_pipeline_status(db: Db) -> HttpResponse {
     match db.0.get_pipeline_status().await {
         Ok(status) => HttpResponse::Ok().json(status),
@@ -109,7 +110,7 @@ pub async fn get_pipeline_status(db: Db) -> HttpResponse {
     }
 }
 
-#[utoipa::path(get, path = "/api/embeddings/status/all", responses((status = 200, description = "Pipeline status summary for all databases")), tag = "embeddings")]
+#[utoipa::path(get, path = "/api/embeddings/status/all", responses((status = 200, description = "Pipeline status summary for all databases", body = AllPipelineStatuses)), tag = "embeddings")]
 pub async fn get_all_pipeline_statuses(state: web::Data<AppState>) -> HttpResponse {
     let (databases, _) = match state.manager.list_databases().await {
         Ok(result) => result,

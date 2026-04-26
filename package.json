@@ -28,6 +28,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "tauri": "tauri",
+    "openapi:generate": "cargo run -p atomic-server --bin export-openapi -- public/openapi.json",
     "build:mcp-bridge": "node scripts/build-mcp-bridge.js",
     "build:server": "node scripts/build-server.js",
     "tauri:fresh": "ATOMIC_DB_NAME=fresh tauri dev",

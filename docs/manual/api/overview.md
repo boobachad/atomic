@@ -68,7 +68,13 @@ The raw OpenAPI document is available at:
 /api/docs/openapi.json
 ```
 
-The Atomic website also has an API explorer at `/api/explorer`, but that page uses the website's bundled OpenAPI file.
+The Atomic website also has an API explorer at `/api/explorer`. It loads the OpenAPI JSON published by the Atomic release workflow at:
+
+```text
+https://kenforthewin.github.io/atomic/openapi.json
+```
+
+Website deployments can override that source with `PUBLIC_ATOMIC_OPENAPI_URL`, which is useful for previews or forks.
 
 ## Endpoint Groups
 

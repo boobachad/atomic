@@ -809,6 +809,7 @@ pub struct SettingChangeResult {
 
 /// Embedding/tagging pipeline status summary
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct PipelineStatus {
     pub pending: i32,
     pub processing: i32,
@@ -827,6 +828,7 @@ pub struct PipelineStatus {
 
 /// An atom that failed embedding or tagging
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct FailedAtom {
     pub atom_id: String,
     pub title: String,

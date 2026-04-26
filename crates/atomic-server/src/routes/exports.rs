@@ -7,6 +7,7 @@ use actix_web::http::header::{
 };
 use actix_web::{web, HttpRequest, HttpResponse};
 use serde::Deserialize;
+use utoipa::{IntoParams, ToSchema};
 
 #[utoipa::path(post, path = "/api/databases/{id}/exports/markdown", params(("id" = String, Path, description = "Database ID")), responses((status = 202, description = "Export job started")), tag = "databases")]
 pub async fn start_markdown_export(
@@ -42,11 +43,28 @@ pub async fn cancel_or_delete_export_job(
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, IntoParams, ToSchema)]
+#[into_params(parameter_in = Query)]
 pub struct DownloadQuery {
-    token: String,
+    /// One-time download token returned by the export job status.
+    pub token: String,
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/exports/{id}/download",
+    params(
+        ("id" = String, Path, description = "Export job ID"),
+        DownloadQuery
+    ),
+    responses(
+        (status = 200, description = "Markdown export archive"),
+        (status = 400, description = "Invalid or expired download token"),
+        (status = 404, description = "Export artifact not found")
+    ),
+    tag = "databases",
+    security(())
+)]
 pub async fn download_export(
     state: web::Data<AppState>,
     req: HttpRequest,

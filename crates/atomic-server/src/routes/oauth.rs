@@ -10,10 +10,27 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use utoipa::{IntoParams, ToSchema};
 
 // ==================== Discovery Endpoints ====================
 
-/// `GET /.well-known/oauth-protected-resource`
+#[derive(Debug, Serialize, ToSchema)]
+pub struct OAuthProtectedResourceMetadata {
+    pub resource: String,
+    pub authorization_servers: Vec<String>,
+    pub bearer_methods_supported: Vec<String>,
+}
+
+#[utoipa::path(
+    get,
+    path = "/.well-known/oauth-protected-resource",
+    responses(
+        (status = 200, description = "OAuth protected resource metadata", body = OAuthProtectedResourceMetadata),
+        (status = 404, description = "OAuth is not configured")
+    ),
+    tag = "oauth",
+    security(())
+)]
 pub async fn resource_metadata(state: web::Data<AppState>) -> HttpResponse {
     let public_url = match &state.public_url {
         Some(url) => url.trim_end_matches('/'),
@@ -24,14 +41,35 @@ pub async fn resource_metadata(state: web::Data<AppState>) -> HttpResponse {
         }
     };
 
-    HttpResponse::Ok().json(serde_json::json!({
-        "resource": public_url,
-        "authorization_servers": [public_url],
-        "bearer_methods_supported": ["header"],
-    }))
+    HttpResponse::Ok().json(OAuthProtectedResourceMetadata {
+        resource: public_url.to_string(),
+        authorization_servers: vec![public_url.to_string()],
+        bearer_methods_supported: vec!["header".to_string()],
+    })
 }
 
-/// `GET /.well-known/oauth-authorization-server`
+#[derive(Debug, Serialize, ToSchema)]
+pub struct OAuthAuthorizationServerMetadata {
+    pub issuer: String,
+    pub authorization_endpoint: String,
+    pub token_endpoint: String,
+    pub registration_endpoint: String,
+    pub response_types_supported: Vec<String>,
+    pub grant_types_supported: Vec<String>,
+    pub code_challenge_methods_supported: Vec<String>,
+    pub token_endpoint_auth_methods_supported: Vec<String>,
+}
+
+#[utoipa::path(
+    get,
+    path = "/.well-known/oauth-authorization-server",
+    responses(
+        (status = 200, description = "OAuth authorization server metadata", body = OAuthAuthorizationServerMetadata),
+        (status = 404, description = "OAuth is not configured")
+    ),
+    tag = "oauth",
+    security(())
+)]
 pub async fn metadata(state: web::Data<AppState>) -> HttpResponse {
     let public_url = match &state.public_url {
         Some(url) => url.trim_end_matches('/').to_string(),
@@ -42,21 +80,21 @@ pub async fn metadata(state: web::Data<AppState>) -> HttpResponse {
         }
     };
 
-    HttpResponse::Ok().json(serde_json::json!({
-        "issuer": public_url,
-        "authorization_endpoint": format!("{}/oauth/authorize", public_url),
-        "token_endpoint": format!("{}/oauth/token", public_url),
-        "registration_endpoint": format!("{}/oauth/register", public_url),
-        "response_types_supported": ["code"],
-        "grant_types_supported": ["authorization_code"],
-        "code_challenge_methods_supported": ["S256"],
-        "token_endpoint_auth_methods_supported": ["client_secret_post"],
-    }))
+    HttpResponse::Ok().json(OAuthAuthorizationServerMetadata {
+        issuer: public_url.clone(),
+        authorization_endpoint: format!("{}/oauth/authorize", public_url),
+        token_endpoint: format!("{}/oauth/token", public_url),
+        registration_endpoint: format!("{}/oauth/register", public_url),
+        response_types_supported: vec!["code".to_string()],
+        grant_types_supported: vec!["authorization_code".to_string()],
+        code_challenge_methods_supported: vec!["S256".to_string()],
+        token_endpoint_auth_methods_supported: vec!["client_secret_post".to_string()],
+    })
 }
 
 // ==================== Dynamic Client Registration ====================
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 #[allow(dead_code)]
 pub struct RegisterRequest {
     pub client_name: String,
@@ -69,7 +107,7 @@ pub struct RegisterRequest {
     pub token_endpoint_auth_method: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct RegisterResponse {
     pub client_id: String,
     pub client_secret: String,
@@ -80,7 +118,18 @@ pub struct RegisterResponse {
     pub token_endpoint_auth_method: String,
 }
 
-/// `POST /oauth/register` — Dynamic Client Registration
+#[utoipa::path(
+    post,
+    path = "/oauth/register",
+    request_body = RegisterRequest,
+    responses(
+        (status = 201, description = "OAuth client registered", body = RegisterResponse),
+        (status = 400, description = "Invalid client metadata"),
+        (status = 404, description = "OAuth is not configured")
+    ),
+    tag = "oauth",
+    security(())
+)]
 pub async fn register(
     state: web::Data<AppState>,
     body: web::Json<RegisterRequest>,
@@ -145,7 +194,8 @@ pub async fn register(
 
 // ==================== Authorization Endpoint ====================
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, IntoParams, ToSchema)]
+#[into_params(parameter_in = Query)]
 pub struct AuthorizeQuery {
     pub client_id: String,
     pub redirect_uri: String,
@@ -155,7 +205,18 @@ pub struct AuthorizeQuery {
     pub state: Option<String>,
 }
 
-/// `GET /oauth/authorize` — Serves the consent page HTML
+#[utoipa::path(
+    get,
+    path = "/oauth/authorize",
+    params(AuthorizeQuery),
+    responses(
+        (status = 200, description = "OAuth consent page HTML"),
+        (status = 302, description = "Redirect with OAuth error"),
+        (status = 404, description = "OAuth is not configured")
+    ),
+    tag = "oauth",
+    security(())
+)]
 pub async fn authorize_page(
     state: web::Data<AppState>,
     query: web::Query<AuthorizeQuery>,
@@ -204,7 +265,7 @@ pub async fn authorize_page(
     HttpResponse::Ok().content_type("text/html").body(html)
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct AuthorizeApproveForm {
     pub client_id: String,
     pub redirect_uri: String,
@@ -215,7 +276,18 @@ pub struct AuthorizeApproveForm {
     pub action: String, // "approve" or "deny"
 }
 
-/// `POST /oauth/authorize` — Processes the consent form submission
+#[utoipa::path(
+    post,
+    path = "/oauth/authorize",
+    request_body(content = AuthorizeApproveForm, content_type = "application/x-www-form-urlencoded"),
+    responses(
+        (status = 200, description = "Validation error page HTML"),
+        (status = 302, description = "Redirect with authorization code or OAuth error"),
+        (status = 400, description = "Invalid authorization request")
+    ),
+    tag = "oauth",
+    security(())
+)]
 pub async fn authorize_approve(
     state: web::Data<AppState>,
     form: web::Form<AuthorizeApproveForm>,
@@ -295,7 +367,7 @@ pub async fn authorize_approve(
 
 // ==================== Token Exchange ====================
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 #[allow(dead_code)]
 pub struct TokenRequest {
     pub grant_type: String,
@@ -306,7 +378,24 @@ pub struct TokenRequest {
     pub redirect_uri: Option<String>,
 }
 
-/// `POST /oauth/token` — Exchange authorization code for access token
+#[derive(Debug, Serialize, ToSchema)]
+pub struct TokenResponse {
+    pub access_token: String,
+    pub token_type: String,
+}
+
+#[utoipa::path(
+    post,
+    path = "/oauth/token",
+    request_body(content = TokenRequest, content_type = "application/x-www-form-urlencoded"),
+    responses(
+        (status = 200, description = "Access token response", body = TokenResponse),
+        (status = 400, description = "Invalid token request"),
+        (status = 401, description = "Invalid OAuth client")
+    ),
+    tag = "oauth",
+    security(())
+)]
 pub async fn token(state: web::Data<AppState>, form: web::Form<TokenRequest>) -> HttpResponse {
     let req = form.into_inner();
 
@@ -470,10 +559,10 @@ pub async fn token(state: web::Data<AppState>, form: web::Form<TokenRequest>) ->
         .mark_oauth_code_used(&code_hash, Some(&token_info.id))
         .await;
 
-    HttpResponse::Ok().json(serde_json::json!({
-        "access_token": raw_token,
-        "token_type": "bearer",
-    }))
+    HttpResponse::Ok().json(TokenResponse {
+        access_token: raw_token,
+        token_type: "bearer".to_string(),
+    })
 }
 
 // ==================== Helpers ====================
