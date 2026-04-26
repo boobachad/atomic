@@ -2,6 +2,12 @@
 
 All notable changes to Atomic are documented here.
 
+## v1.32.0 — 2026-04-26
+
+- Add tab navigation — open atoms, wiki articles, and graphs in persistent tabs with per-tab back/forward history, drag-and-drop reordering, and Cmd/middle-click to open in a new tab
+- Improve reader layout to use container queries so the two-column editor + side-panel split adapts to actual pane width instead of viewport width (fixes cramped layout when the chat sidebar is open)
+- Fix URL and tab state drifting out of sync when dismissing overlays via Escape or tag-chip clicks, which previously caused a reload to silently reopen the dismissed entry
+
 ## v1.31.0 — 2026-04-26
 
 - Add database export as a markdown ZIP archive with progress tracking, available from the Databases tab in Settings
