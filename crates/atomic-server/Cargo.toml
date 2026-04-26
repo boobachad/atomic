@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 description = "Standalone HTTP server for Atomic knowledge base"
 license = "MIT"
+default-run = "atomic-server"
 
 [lib]
 name = "atomic_server"
