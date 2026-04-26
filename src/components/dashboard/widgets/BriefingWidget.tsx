@@ -68,7 +68,15 @@ export function BriefingWidget() {
     return () => unsub();
   }, [fetchLatest]);
 
-  const handleOpenCanvas = () => setViewMode('canvas');
+  const handleOpenCanvas = () => {
+    // Carry the preview's current framing into the main canvas so it opens
+    // showing whatever the user was just looking at (e.g. an atom they
+    // focused via a citation click) instead of the default fit-to-graph view.
+    const store = useCanvasStore.getState();
+    const cam = store.previewController?.getCameraState() ?? null;
+    store.setPendingCamera(cam);
+    setViewMode('canvas');
+  };
 
   // Citation popover state
   const [activeCitation, setActiveCitation] = useState<BriefingCitation | null>(null);

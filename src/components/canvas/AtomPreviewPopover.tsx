@@ -71,17 +71,6 @@ export function AtomPreviewPopover({ atomId, anchorRect, onClose, onViewAtom }: 
 
   useKeyboard('Escape', onClose, true);
 
-  // Click outside dismisses the popover and unselects the node on the canvas.
-  useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
-      if (popoverRef.current && !popoverRef.current.contains(event.target as Node)) {
-        onClose();
-      }
-    };
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, [onClose]);
-
   // Fetch atom data
   useEffect(() => {
     setIsLoading(true);
