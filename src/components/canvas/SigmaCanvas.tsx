@@ -452,6 +452,26 @@ export function SigmaCanvas({ mode = 'main', onPreviewClick }: SigmaCanvasProps 
         ctx.strokeStyle = 'rgba(255, 255, 255, 0.75)';
         ctx.lineWidth = 2;
         ctx.stroke();
+
+        // Keep the popover anchored to the node as the camera pans/zooms.
+        // The popover ignores these updates after the user manually drags it,
+        // so this doesn't fight with intentional repositioning.
+        const cRect = container!.getBoundingClientRect();
+        const aSize = (pAttrs.size as number) || 4;
+        const newAnchor = {
+          top: cRect.top + pPos.y - aSize,
+          left: cRect.left + pPos.x - aSize,
+          bottom: cRect.top + pPos.y + aSize,
+          width: aSize * 2,
+        };
+        setPreviewAnchorRect(prev => {
+          if (
+            prev &&
+            Math.abs(prev.top - newAnchor.top) < 0.5 &&
+            Math.abs(prev.left - newAnchor.left) < 0.5
+          ) return prev;
+          return newAnchor;
+        });
       }
 
       // === Hover pill + ring (drawn last so it paints above everything) ===
