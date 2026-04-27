@@ -13,13 +13,7 @@ A personal knowledge base that turns markdown notes into a semantically-connecte
 
 Atomic stores knowledge as **atoms** — markdown notes that are automatically chunked, embedded, tagged, and linked by semantic similarity. Your atoms can be synthesized into wiki articles, explored on a spatial canvas, and queried through an agentic chat interface.
 
-https://github.com/user-attachments/assets/e8cd771f-6e23-46cf-86d1-3c70cb8d1954
-
-*Daily briefing — AI summary of recent atoms with inline citations that highlight the source on a mini-canvas*
-
-https://github.com/user-attachments/assets/282da0e3-4969-42dd-b591-7da974078e87
-
-*Atoms — markdown notes with tags, sources, and neighborhood graph*
+https://github.com/user-attachments/assets/1992fcf7-1d6b-41b1-a177-2da2e8b57676
 
 ![Atom Viewer](./docs/images/atom.png)
 
