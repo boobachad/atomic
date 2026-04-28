@@ -73,6 +73,7 @@ cargo run -p atomic-bench -- run \
   --dataset data/longmemeval_s_cleaned.json \
   --limit 10 \
   --top-k 10 \
+  --sample-strategy stratified \
   --output bench/runs/longmemeval-s.jsonl
 ```
 
@@ -91,6 +92,7 @@ cargo run -p atomic-bench -- run \
   --enable-auto-tagging \
   --limit 10 \
   --top-k 10 \
+  --sample-strategy stratified \
   --output bench/runs/longmemeval-s-openrouter.jsonl
 ```
 
@@ -107,10 +109,19 @@ for the benchmark question, and the returned session ids are scored against
 Emitted metrics include:
 
 - `longmemeval.evidence_session_recall_at_k`
+- `longmemeval.evidence_session_recall_at_5`
 - `longmemeval.evidence_session_mrr`
+- `longmemeval.evidence_session_mrr_at_5`
+- `longmemeval.retrieved_session_rank`
+- `longmemeval.evidence_session_rank`
 - `longmemeval.evidence_session_hit_at_k_rate`
+- `longmemeval.evidence_session_hit_at_5_rate`
 - ingest/search/duration timings
 - provider request counts
+
+When `--limit` is used, the default `--sample-strategy first` preserves dataset
+order. Use `--sample-strategy stratified` to round-robin across question-type
+groups, with abstention examples separated into their own group.
 
 This is the judge-free foundation for the full LongMemEval benchmark. Answer
 generation and LLM-judge scoring can be layered on top while preserving the same

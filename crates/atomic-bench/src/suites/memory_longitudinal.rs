@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 use std::time::Instant;
 
@@ -12,7 +12,7 @@ use tokio::sync::mpsc::UnboundedReceiver;
 use crate::dataset::BenchDataset;
 use crate::mock_ai::MockAiServer;
 use crate::report::{JsonlReporter, MetricRecord, RunContext};
-use crate::runner::{BenchAiConfig, BenchProvider};
+use crate::runner::{BenchAiConfig, BenchProvider, BenchSampleStrategy};
 
 type EventRx = UnboundedReceiver<EmbeddingEvent>;
 
@@ -86,6 +86,78 @@ pub async fn run(
     )
 }
 
+fn select_instances<'a>(
+    dataset: &'a LongMemEvalDataset,
+    limit: Option<usize>,
+    strategy: BenchSampleStrategy,
+) -> Vec<&'a LongMemEvalInstance> {
+    let target = limit
+        .unwrap_or(dataset.instances.len())
+        .min(dataset.instances.len());
+    match strategy {
+        BenchSampleStrategy::First => dataset.instances.iter().take(target).collect(),
+        BenchSampleStrategy::Stratified => {
+            let mut groups: BTreeMap<String, Vec<&LongMemEvalInstance>> = BTreeMap::new();
+            for instance in &dataset.instances {
+                groups
+                    .entry(instance.sample_group())
+                    .or_default()
+                    .push(instance);
+            }
+
+            let mut selected = Vec::with_capacity(target);
+            let mut index = 0usize;
+            while selected.len() < target {
+                let mut added = false;
+                for group in groups.values() {
+                    if let Some(instance) = group.get(index) {
+                        selected.push(*instance);
+                        added = true;
+                        if selected.len() == target {
+                            break;
+                        }
+                    }
+                }
+                if !added {
+                    break;
+                }
+                index += 1;
+            }
+            selected
+        }
+    }
+}
+
+fn emit_sample_group_metrics(
+    ctx: &RunContext,
+    reporter: &mut JsonlReporter,
+    instances: &[&LongMemEvalInstance],
+) -> Result<()> {
+    let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+    for instance in instances {
+        *counts.entry(instance.sample_group()).or_default() += 1;
+    }
+
+    reporter.emit(&MetricRecord::new(
+        ctx,
+        "longmemeval.sample_groups_total",
+        counts.len() as f64,
+        "count",
+    ))?;
+    for (group, count) in counts {
+        reporter.emit(
+            &MetricRecord::new(
+                ctx,
+                "longmemeval.sample_group_instances_total",
+                count as f64,
+                "count",
+            )
+            .with_label("group", group),
+        )?;
+    }
+    Ok(())
+}
+
 pub async fn run_longmemeval(
     ctx: &RunContext,
     dataset: &LongMemEvalDataset,
@@ -93,16 +165,14 @@ pub async fn run_longmemeval(
     keep_db: bool,
     limit: Option<usize>,
     top_k: usize,
+    sample_strategy: BenchSampleStrategy,
     ai_config: &BenchAiConfig,
 ) -> Result<()> {
     let top_k = top_k.max(1);
+    let search_k = top_k.max(5);
     let run_start = Instant::now();
     let ai = BenchAiRuntime::start(ai_config).await?;
-    let instances: Vec<_> = dataset
-        .instances
-        .iter()
-        .take(limit.unwrap_or(dataset.instances.len()))
-        .collect();
+    let instances = select_instances(dataset, limit, sample_strategy);
 
     reporter.emit(&MetricRecord::new(
         ctx,
@@ -110,16 +180,33 @@ pub async fn run_longmemeval(
         instances.len() as f64,
         "count",
     ))?;
+    reporter.emit(
+        &MetricRecord::new(
+            ctx,
+            "longmemeval.sample_stratified_enabled",
+            if sample_strategy == BenchSampleStrategy::Stratified {
+                1.0
+            } else {
+                0.0
+            },
+            "bool",
+        )
+        .with_label("strategy", sample_strategy.label()),
+    )?;
+    emit_sample_group_metrics(ctx, reporter, &instances)?;
 
     let mut non_abstention_count = 0usize;
     let mut abstention_count = 0usize;
     let mut recall_sum = 0.0f64;
     let mut hit_sum = 0.0f64;
     let mut mrr_sum = 0.0f64;
+    let mut recall_at_5_sum = 0.0f64;
+    let mut hit_at_5_sum = 0.0f64;
+    let mut mrr_at_5_sum = 0.0f64;
     let mut sessions_ingested = 0usize;
 
     for instance in instances {
-        let result = run_instance(ctx, instance, reporter, &ai, keep_db, top_k).await?;
+        let result = run_instance(ctx, instance, reporter, &ai, keep_db, top_k, search_k).await?;
         sessions_ingested += result.sessions_ingested;
 
         if instance.is_abstention() {
@@ -129,6 +216,9 @@ pub async fn run_longmemeval(
             recall_sum += result.recall_at_k;
             hit_sum += if result.hit_at_k { 1.0 } else { 0.0 };
             mrr_sum += result.mrr;
+            recall_at_5_sum += result.recall_at_5;
+            hit_at_5_sum += if result.hit_at_5 { 1.0 } else { 0.0 };
+            mrr_at_5_sum += result.mrr_at_5;
         }
     }
 
@@ -178,6 +268,24 @@ pub async fn run_longmemeval(
         )
         .with_label("k", top_k.to_string()),
     )?;
+    reporter.emit(&MetricRecord::new(
+        ctx,
+        "longmemeval.evidence_session_recall_at_5_mean",
+        recall_at_5_sum / denom,
+        "ratio",
+    ))?;
+    reporter.emit(&MetricRecord::new(
+        ctx,
+        "longmemeval.evidence_session_hit_at_5_rate",
+        hit_at_5_sum / denom,
+        "ratio",
+    ))?;
+    reporter.emit(&MetricRecord::new(
+        ctx,
+        "longmemeval.evidence_session_mrr_at_5_mean",
+        mrr_at_5_sum / denom,
+        "ratio",
+    ))?;
     ai.emit_provider_metrics(ctx, reporter)?;
     reporter.emit(&MetricRecord::new(
         ctx,
@@ -193,6 +301,170 @@ struct InstanceResult {
     recall_at_k: f64,
     hit_at_k: bool,
     mrr: f64,
+    recall_at_5: f64,
+    hit_at_5: bool,
+    mrr_at_5: f64,
+}
+
+struct RetrievedSession {
+    session_id: String,
+    rank: usize,
+    score: f32,
+}
+
+struct RetrievalScore {
+    retrieved_evidence: usize,
+    recall: f64,
+    hit: bool,
+    mrr: f64,
+    first_rank: Option<usize>,
+}
+
+fn score_retrieval(
+    retrieved_sessions: &[RetrievedSession],
+    evidence: &HashSet<&str>,
+    cutoff: usize,
+) -> RetrievalScore {
+    let retrieved_evidence = retrieved_sessions
+        .iter()
+        .filter(|session| session.rank <= cutoff && evidence.contains(session.session_id.as_str()))
+        .count();
+    let recall = if evidence.is_empty() {
+        0.0
+    } else {
+        retrieved_evidence as f64 / evidence.len() as f64
+    };
+    let first_rank = retrieved_sessions
+        .iter()
+        .filter(|session| session.rank <= cutoff)
+        .find(|session| evidence.contains(session.session_id.as_str()))
+        .map(|session| session.rank);
+    let mrr = first_rank.map(|rank| 1.0 / rank as f64).unwrap_or(0.0);
+
+    RetrievalScore {
+        retrieved_evidence,
+        recall,
+        hit: first_rank.is_some(),
+        mrr,
+        first_rank,
+    }
+}
+
+fn emit_retrieval_detail_metrics(
+    ctx: &RunContext,
+    reporter: &mut JsonlReporter,
+    instance: &LongMemEvalInstance,
+    retrieved_sessions: &[RetrievedSession],
+    evidence: &HashSet<&str>,
+    top_k: usize,
+) -> Result<()> {
+    let score_at_k = score_retrieval(retrieved_sessions, evidence, top_k);
+    let score_at_5 = score_retrieval(retrieved_sessions, evidence, 5);
+
+    reporter.emit(
+        &MetricRecord::new(
+            ctx,
+            "longmemeval.evidence_sessions_total",
+            evidence.len() as f64,
+            "count",
+        )
+        .with_label("question_id", &instance.question_id)
+        .with_label("question_type", &instance.question_type)
+        .with_label("abstention", instance.is_abstention().to_string()),
+    )?;
+    reporter.emit(
+        &MetricRecord::new(
+            ctx,
+            "longmemeval.retrieved_sessions_total",
+            retrieved_sessions.len() as f64,
+            "count",
+        )
+        .with_label("question_id", &instance.question_id)
+        .with_label("question_type", &instance.question_type),
+    )?;
+    reporter.emit(
+        &MetricRecord::new(
+            ctx,
+            "longmemeval.evidence_sessions_retrieved_at_k",
+            score_at_k.retrieved_evidence as f64,
+            "count",
+        )
+        .with_label("question_id", &instance.question_id)
+        .with_label("question_type", &instance.question_type)
+        .with_label("k", top_k.to_string()),
+    )?;
+    reporter.emit(
+        &MetricRecord::new(
+            ctx,
+            "longmemeval.evidence_sessions_retrieved_at_5",
+            score_at_5.retrieved_evidence as f64,
+            "count",
+        )
+        .with_label("question_id", &instance.question_id)
+        .with_label("question_type", &instance.question_type),
+    )?;
+    reporter.emit(
+        &MetricRecord::new(
+            ctx,
+            "longmemeval.first_evidence_rank",
+            score_at_k.first_rank.unwrap_or(0) as f64,
+            "rank",
+        )
+        .with_label("question_id", &instance.question_id)
+        .with_label("question_type", &instance.question_type)
+        .with_label("k", top_k.to_string()),
+    )?;
+
+    let mut rank_by_session = HashMap::new();
+    for session in retrieved_sessions {
+        let is_evidence = evidence.contains(session.session_id.as_str());
+        rank_by_session.insert(session.session_id.as_str(), session.rank);
+        reporter.emit(
+            &MetricRecord::new(
+                ctx,
+                "longmemeval.retrieved_session_rank",
+                session.rank as f64,
+                "rank",
+            )
+            .with_label("question_id", &instance.question_id)
+            .with_label("question_type", &instance.question_type)
+            .with_label("session_id", &session.session_id)
+            .with_label("is_evidence", is_evidence.to_string()),
+        )?;
+        reporter.emit(
+            &MetricRecord::new(
+                ctx,
+                "longmemeval.retrieved_session_score",
+                session.score as f64,
+                "score",
+            )
+            .with_label("question_id", &instance.question_id)
+            .with_label("question_type", &instance.question_type)
+            .with_label("session_id", &session.session_id)
+            .with_label("rank", session.rank.to_string())
+            .with_label("is_evidence", is_evidence.to_string()),
+        )?;
+    }
+
+    for evidence_session_id in evidence {
+        reporter.emit(
+            &MetricRecord::new(
+                ctx,
+                "longmemeval.evidence_session_rank",
+                rank_by_session
+                    .get(evidence_session_id)
+                    .copied()
+                    .unwrap_or(0) as f64,
+                "rank",
+            )
+            .with_label("question_id", &instance.question_id)
+            .with_label("question_type", &instance.question_type)
+            .with_label("session_id", *evidence_session_id)
+            .with_label("k", top_k.to_string()),
+        )?;
+    }
+
+    Ok(())
 }
 
 enum BenchAiRuntime {
@@ -274,6 +546,7 @@ async fn run_instance(
     ai: &BenchAiRuntime,
     keep_db: bool,
     top_k: usize,
+    search_k: usize,
 ) -> Result<InstanceResult> {
     let instance_start = Instant::now();
     let tempdir = TempDir::new().context("create LongMemEval tempdir")?;
@@ -285,8 +558,10 @@ async fn run_instance(
     configure_core(&core, ai).await?;
 
     let mut atom_to_session = HashMap::new();
-    let mut sessions_ingested = 0usize;
     let ingest_start = Instant::now();
+    let mut requests = Vec::new();
+    let mut source_to_session = HashMap::new();
+
     for (idx, turns) in instance.haystack_sessions.iter().enumerate() {
         if turns.is_empty() {
             continue;
@@ -298,27 +573,54 @@ async fn run_instance(
             .unwrap_or_else(|| format!("session-{idx}"));
         let session_date = instance.haystack_dates.get(idx).cloned();
         let content = render_session_atom(instance, &session_id, session_date.as_deref(), turns);
+        let source_url = format!(
+            "bench://longmemeval/{}/{}",
+            instance.question_id, session_id
+        );
+        source_to_session.insert(source_url.clone(), session_id);
+        requests.push(CreateAtomRequest {
+            content,
+            source_url: Some(source_url),
+            published_at: session_date,
+            ..Default::default()
+        });
+    }
+
+    let sessions_ingested = requests.len();
+    if !requests.is_empty() {
         let (on_event, mut rx) = event_collector();
         let created = core
-            .create_atom(
-                CreateAtomRequest {
-                    content,
-                    source_url: Some(format!(
-                        "bench://longmemeval/{}/{}",
-                        instance.question_id, session_id
-                    )),
-                    published_at: session_date,
-                    ..Default::default()
-                },
-                on_event,
-            )
+            .create_atoms_bulk(requests, on_event)
             .await
-            .context("create LongMemEval session atom")?
-            .ok_or_else(|| anyhow!("LongMemEval session atom creation was unexpectedly skipped"))?;
-        await_pipeline(&mut rx, &created.atom.id).await?;
-        atom_to_session.insert(created.atom.id, session_id);
-        sessions_ingested += 1;
+            .context("bulk create LongMemEval session atoms")?;
+        if created.skipped > 0 {
+            bail!(
+                "LongMemEval bulk import unexpectedly skipped {} session atoms",
+                created.skipped
+            );
+        }
+
+        let created_atom_ids: Vec<String> = created
+            .atoms
+            .iter()
+            .map(|created| created.atom.id.clone())
+            .collect();
+        for created in created.atoms {
+            let source_url = created.atom.source_url.as_deref().ok_or_else(|| {
+                anyhow!(
+                    "LongMemEval session atom {} missing source URL",
+                    created.atom.id
+                )
+            })?;
+            let session_id = source_to_session
+                .get(source_url)
+                .cloned()
+                .ok_or_else(|| anyhow!("unknown LongMemEval source URL: {source_url}"))?;
+            atom_to_session.insert(created.atom.id, session_id);
+        }
+        await_pipeline_many(&mut rx, &created_atom_ids).await?;
     }
+
     reporter.emit(
         &MetricRecord::new(
             ctx,
@@ -333,7 +635,7 @@ async fn run_instance(
     let search_start = Instant::now();
     let results = core
         .search(
-            SearchOptions::new(&instance.question, SearchMode::Hybrid, top_k as i32)
+            SearchOptions::new(&instance.question, SearchMode::Hybrid, search_k as i32)
                 .with_threshold(0.0),
         )
         .await
@@ -349,36 +651,42 @@ async fn run_instance(
         .with_label("question_type", &instance.question_type),
     )?;
 
-    let retrieved_session_ids: Vec<String> = results
+    let retrieved_sessions: Vec<RetrievedSession> = results
         .iter()
-        .filter_map(|result| atom_to_session.get(&result.atom.atom.id).cloned())
+        .enumerate()
+        .filter_map(|(idx, result)| {
+            atom_to_session
+                .get(&result.atom.atom.id)
+                .cloned()
+                .map(|session_id| RetrievedSession {
+                    session_id,
+                    rank: idx + 1,
+                    score: result.similarity_score,
+                })
+        })
         .collect();
     let evidence: HashSet<&str> = instance
         .answer_session_ids
         .iter()
         .map(String::as_str)
         .collect();
-    let retrieved_evidence = retrieved_session_ids
-        .iter()
-        .filter(|id| evidence.contains(id.as_str()))
-        .count();
-    let recall_at_k = if evidence.is_empty() {
-        0.0
-    } else {
-        retrieved_evidence as f64 / evidence.len() as f64
-    };
-    let first_rank = retrieved_session_ids
-        .iter()
-        .position(|id| evidence.contains(id.as_str()))
-        .map(|idx| idx + 1);
-    let mrr = first_rank.map(|rank| 1.0 / rank as f64).unwrap_or(0.0);
-    let hit_at_k = first_rank.is_some();
+    let scoring_at_k = score_retrieval(&retrieved_sessions, &evidence, top_k);
+    let scoring_at_5 = score_retrieval(&retrieved_sessions, &evidence, 5);
+
+    emit_retrieval_detail_metrics(
+        ctx,
+        reporter,
+        instance,
+        &retrieved_sessions,
+        &evidence,
+        top_k,
+    )?;
 
     reporter.emit(
         &MetricRecord::new(
             ctx,
             "longmemeval.evidence_session_recall_at_k",
-            recall_at_k,
+            scoring_at_k.recall,
             "ratio",
         )
         .with_label("question_id", &instance.question_id)
@@ -387,11 +695,61 @@ async fn run_instance(
         .with_label("k", top_k.to_string()),
     )?;
     reporter.emit(
-        &MetricRecord::new(ctx, "longmemeval.evidence_session_mrr", mrr, "ratio")
-            .with_label("question_id", &instance.question_id)
-            .with_label("question_type", &instance.question_type)
-            .with_label("abstention", instance.is_abstention().to_string())
-            .with_label("k", top_k.to_string()),
+        &MetricRecord::new(
+            ctx,
+            "longmemeval.evidence_session_hit_at_k",
+            if scoring_at_k.hit { 1.0 } else { 0.0 },
+            "bool",
+        )
+        .with_label("question_id", &instance.question_id)
+        .with_label("question_type", &instance.question_type)
+        .with_label("abstention", instance.is_abstention().to_string())
+        .with_label("k", top_k.to_string()),
+    )?;
+    reporter.emit(
+        &MetricRecord::new(
+            ctx,
+            "longmemeval.evidence_session_mrr",
+            scoring_at_k.mrr,
+            "ratio",
+        )
+        .with_label("question_id", &instance.question_id)
+        .with_label("question_type", &instance.question_type)
+        .with_label("abstention", instance.is_abstention().to_string())
+        .with_label("k", top_k.to_string()),
+    )?;
+    reporter.emit(
+        &MetricRecord::new(
+            ctx,
+            "longmemeval.evidence_session_recall_at_5",
+            scoring_at_5.recall,
+            "ratio",
+        )
+        .with_label("question_id", &instance.question_id)
+        .with_label("question_type", &instance.question_type)
+        .with_label("abstention", instance.is_abstention().to_string()),
+    )?;
+    reporter.emit(
+        &MetricRecord::new(
+            ctx,
+            "longmemeval.evidence_session_hit_at_5",
+            if scoring_at_5.hit { 1.0 } else { 0.0 },
+            "bool",
+        )
+        .with_label("question_id", &instance.question_id)
+        .with_label("question_type", &instance.question_type)
+        .with_label("abstention", instance.is_abstention().to_string()),
+    )?;
+    reporter.emit(
+        &MetricRecord::new(
+            ctx,
+            "longmemeval.evidence_session_mrr_at_5",
+            scoring_at_5.mrr,
+            "ratio",
+        )
+        .with_label("question_id", &instance.question_id)
+        .with_label("question_type", &instance.question_type)
+        .with_label("abstention", instance.is_abstention().to_string()),
     )?;
     reporter.emit(
         &MetricRecord::new(
@@ -415,15 +773,26 @@ async fn run_instance(
 
     Ok(InstanceResult {
         sessions_ingested,
-        recall_at_k,
-        hit_at_k,
-        mrr,
+        recall_at_k: scoring_at_k.recall,
+        hit_at_k: scoring_at_k.hit,
+        mrr: scoring_at_k.mrr,
+        recall_at_5: scoring_at_5.recall,
+        hit_at_5: scoring_at_5.hit,
+        mrr_at_5: scoring_at_5.mrr,
     })
 }
 
 impl LongMemEvalInstance {
     fn is_abstention(&self) -> bool {
         self.question_id.ends_with("_abs")
+    }
+
+    fn sample_group(&self) -> String {
+        if self.is_abstention() {
+            format!("{}::abstention", self.question_type)
+        } else {
+            self.question_type.clone()
+        }
     }
 }
 
@@ -523,37 +892,54 @@ fn event_collector() -> (
     (cb, rx)
 }
 
-async fn await_pipeline(rx: &mut EventRx, atom_id: &str) -> Result<()> {
-    let mut embedding_done = false;
-    let mut tagging_done = false;
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(20);
+async fn await_pipeline_many(rx: &mut EventRx, atom_ids: &[String]) -> Result<()> {
+    if atom_ids.is_empty() {
+        return Ok(());
+    }
 
-    while !(embedding_done && tagging_done) {
+    let expected: HashSet<&str> = atom_ids.iter().map(String::as_str).collect();
+    let mut embedding_done: HashSet<String> = HashSet::new();
+    let mut tagging_done: HashSet<String> = HashSet::new();
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(120);
+
+    while embedding_done.len() < expected.len() || tagging_done.len() < expected.len() {
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         if remaining.is_zero() {
-            return Err(anyhow!("pipeline timed out for atom {atom_id}"));
+            let missing_embeddings = expected.len().saturating_sub(embedding_done.len());
+            let missing_tagging = expected.len().saturating_sub(tagging_done.len());
+            return Err(anyhow!(
+                "pipeline timed out for LongMemEval bulk import: {missing_embeddings} embeddings and {missing_tagging} tagging jobs still pending"
+            ));
         }
 
         let event = tokio::time::timeout(remaining, rx.recv())
             .await
-            .context("wait for pipeline event")?
-            .ok_or_else(|| anyhow!("pipeline event channel closed for atom {atom_id}"))?;
+            .context("wait for bulk pipeline event")?
+            .ok_or_else(|| {
+                anyhow!("pipeline event channel closed during LongMemEval bulk import")
+            })?;
 
         match event {
-            EmbeddingEvent::EmbeddingComplete { atom_id: id } if id == atom_id => {
-                embedding_done = true;
-            }
-            EmbeddingEvent::EmbeddingFailed { atom_id: id, error } if id == atom_id => {
-                return Err(anyhow!("embedding failed for atom {id}: {error}"));
-            }
-            EmbeddingEvent::TaggingComplete { atom_id: id, .. }
-            | EmbeddingEvent::TaggingSkipped { atom_id: id }
-                if id == atom_id =>
+            EmbeddingEvent::EmbeddingComplete { atom_id }
+                if expected.contains(atom_id.as_str()) =>
             {
-                tagging_done = true;
+                embedding_done.insert(atom_id);
             }
-            EmbeddingEvent::TaggingFailed { atom_id: id, error } if id == atom_id => {
-                return Err(anyhow!("tagging failed for atom {id}: {error}"));
+            EmbeddingEvent::EmbeddingFailed { atom_id, error }
+                if expected.contains(atom_id.as_str()) =>
+            {
+                return Err(anyhow!("embedding failed for atom {atom_id}: {error}"));
+            }
+            EmbeddingEvent::TaggingComplete { atom_id, .. }
+            | EmbeddingEvent::TaggingSkipped { atom_id }
+                if expected.contains(atom_id.as_str()) =>
+            {
+                tagging_done.insert(atom_id);
+            }
+            EmbeddingEvent::TaggingFailed { atom_id, error }
+                if expected.contains(atom_id.as_str()) =>
+            {
+                return Err(anyhow!("tagging failed for atom {atom_id}: {error}"));
             }
             _ => {}
         }

@@ -16,6 +16,7 @@ pub struct RunConfig {
     pub keep_db: bool,
     pub limit: Option<usize>,
     pub top_k: usize,
+    pub sample_strategy: BenchSampleStrategy,
     pub ai: BenchAiConfig,
 }
 
@@ -33,6 +34,21 @@ pub enum BenchProvider {
     Mock,
     #[value(name = "openrouter", alias = "open-router")]
     OpenRouter,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum BenchSampleStrategy {
+    First,
+    Stratified,
+}
+
+impl BenchSampleStrategy {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::First => "first",
+            Self::Stratified => "stratified",
+        }
+    }
 }
 
 impl Default for BenchAiConfig {
@@ -88,6 +104,7 @@ pub async fn run(config: RunConfig) -> Result<()> {
             config.keep_db,
             config.limit,
             config.top_k,
+            config.sample_strategy,
             &config.ai,
         )
         .await;

@@ -1,7 +1,9 @@
 use std::path::PathBuf;
 
 use anyhow::Result;
-use atomic_bench::runner::{list_suites, BenchAiConfig, BenchProvider, RunConfig};
+use atomic_bench::runner::{
+    list_suites, BenchAiConfig, BenchProvider, BenchSampleStrategy, RunConfig,
+};
 use clap::{Parser, Subcommand};
 
 #[derive(Debug, Parser)]
@@ -36,6 +38,9 @@ enum Command {
         /// Retrieval cutoff for recall/MRR-style metrics.
         #[arg(long, default_value_t = 10)]
         top_k: usize,
+        /// How to choose instances when --limit is set.
+        #[arg(long, value_enum, default_value_t = BenchSampleStrategy::First)]
+        sample_strategy: BenchSampleStrategy,
         /// AI provider for suites that exercise Atomic's AI pipeline.
         #[arg(long, value_enum, default_value_t = BenchProvider::Mock)]
         provider: BenchProvider,
@@ -78,6 +83,7 @@ async fn main() -> Result<()> {
             keep_db,
             limit,
             top_k,
+            sample_strategy,
             provider,
             openrouter_api_key,
             embedding_model,
@@ -91,6 +97,7 @@ async fn main() -> Result<()> {
                 keep_db,
                 limit,
                 top_k,
+                sample_strategy,
                 ai: BenchAiConfig {
                     provider,
                     openrouter_api_key,
