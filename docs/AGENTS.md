@@ -34,7 +34,7 @@ Verify docs against implementation before editing:
 - CLI flags and environment variables: `crates/atomic-server/src/config.rs`, `Dockerfile`, `server.dockerfile`, `docker-compose*.yml`, `package.json`, and `src-tauri/`.
 - AI provider settings and defaults: `crates/atomic-core/src/settings.rs` and `crates/atomic-core/src/providers/`.
 - MCP behavior: `crates/atomic-server/src/mcp/`, `crates/mcp-bridge/`, and the MCP integration UI under `src/components/settings/`.
-- Native mobile behavior: `ios/project.yml`, `ios/AtomicMobile/`, and any shared HTTP API expectations in `src/lib/transport/`.
+- Mobile behavior: `mobile/ios/`, `mobile/android/`, `capacitor.config.ts`, and any shared HTTP API expectations in `src/lib/transport/`.
 
 ## Documentation Workflow
 
@@ -112,7 +112,7 @@ The current manual is intentionally small and several implemented features need 
 - Browser extension configuration and real installation/build steps from `extension/`.
 - MCP remote OAuth/discovery behavior, Streamable HTTP endpoint details, bridge environment variables, and multi-database `db` query use.
 - Docker and reverse proxy production details: bind address, `PUBLIC_URL`, storage backend, persistent volumes, WebSocket forwarding, and token bootstrapping.
-- Native iOS setup and capabilities as actually implemented in `ios/AtomicMobile/`.
+- Capacitor mobile setup and capabilities as actually implemented in `mobile/ios/` and `mobile/android/`.
 
 When adding any of these, verify the current behavior from code first. This list is a backlog, not a specification.
 

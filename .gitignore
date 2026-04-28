@@ -24,11 +24,6 @@ docker-compose.prod.yml
 fly.toml
 exports/
 
-# iOS
-ios/AtomicMobile.xcodeproj/
-ios/DerivedData/
-ios/build/
-
 # Discord bot
 plugins/discord/data/
 plugins/discord/dist/

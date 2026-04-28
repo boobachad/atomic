@@ -187,7 +187,6 @@ crates/atomic-server/       # REST + WebSocket + MCP server
 crates/mcp-bridge/          # HTTP-to-stdio MCP bridge
 src-tauri/                  # Tauri desktop app (launches server as sidecar)
 src/                        # React frontend (TypeScript)
-ios/                        # Native iOS app (SwiftUI)
 extension/                  # Chromium browser extension
 scripts/                    # Import and utility scripts
 ```
@@ -231,7 +230,6 @@ npx tsc --noEmit                  # Frontend type check
 | Frontend | React 18, TypeScript, Vite 6, Tailwind CSS v4, Zustand 5 |
 | Editor | CodeMirror 6 |
 | Canvas | Sigma.js, Graphology |
-| iOS | SwiftUI, XcodeGen |
 | AI | OpenRouter, Ollama, or OpenAI-compatible (pluggable) |
 
 ## License

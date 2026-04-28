@@ -82,22 +82,6 @@ Two implementations exist: **OpenRouter** (cloud, default) and **Ollama** (local
 
 Provider configuration is stored in the settings table (SQLite key-value pairs). OpenRouter uses separate model settings for embedding, tagging, wiki, and chat. Ollama auto-discovers available models from the running server.
 
-### `ios/` — Native iOS App
-
-A SwiftUI app that connects to `atomic-server` over HTTP. It's another thin client — no local database, no Rust bindings, just a REST API client. Focused on reading and writing atoms on the go.
-
-The project uses **XcodeGen** (`project.yml`) to generate the Xcode project, so `AtomicMobile.xcodeproj` is a build artifact — edit `project.yml` and Swift sources, not the `.xcodeproj` directly.
-
-Key files:
-- `ios/project.yml` — XcodeGen project definition (deployment target, build settings)
-- `ios/AtomicMobile/AtomicApp.swift` — Entry point, routes to setup or main view
-- `ios/AtomicMobile/APIClient.swift` — HTTP client for `atomic-server` REST API
-- `ios/AtomicMobile/AtomStore.swift` — Observable state management
-- `ios/AtomicMobile/Theme.swift` — Colors matching the shared design system
-- `ios/AtomicMobile/Models.swift` — Codable models matching server JSON shapes
-
-Development is fully headless (no Xcode GUI required). Uses `xcodebuild` + `xcrun simctl` from the terminal, with screen sharing to view the simulator.
-
 ## Workspace Structure
 
 ```
@@ -107,7 +91,6 @@ crates/atomic-server/       # Headless REST + WS + MCP server
 crates/mcp-bridge/          # stdio-to-HTTP MCP bridge (for Claude Desktop, etc.)
 src-tauri/                  # Tauri desktop app (sidecar launcher)
 src/                        # React frontend (TypeScript)
-ios/                        # Native iOS app (SwiftUI, HTTP client)
 mobile/ios/                 # Capacitor iOS wrapper around the React frontend
 mobile/android/             # Capacitor Android wrapper around the React frontend
 scripts/                    # Import, build, and database utilities
@@ -120,7 +103,6 @@ databases/                  # Local data dir (registry.db + per-DB files)
 - **Desktop**: Tauri v2
 - **Server**: actix-web, clap (CLI), tokio broadcast channels
 - **Frontend**: React 18, TypeScript, Vite 6, Tailwind CSS v4, Zustand 5
-- **iOS**: SwiftUI, Swift 6, XcodeGen, URLSession
 - **Editor**: CodeMirror 6 (markdown editing), react-markdown (rendering)
 - **Canvas**: d3-force (simulation), react-zoom-pan-pinch (interaction)
 - **Virtualization**: @tanstack/react-virtual
@@ -144,16 +126,6 @@ cargo run -p atomic-server -- --data-dir /path/to/data serve --port 8080
 cargo run -p atomic-server -- token create --name "my-laptop"
 cargo run -p atomic-server -- token list
 cargo run -p atomic-server -- token revoke <token-id>
-
-# iOS app (headless dev workflow)
-cd ios && xcodegen generate                      # Regenerate .xcodeproj from project.yml
-xcodebuild -project ios/AtomicMobile.xcodeproj \
-  -scheme AtomicMobile \
-  -destination 'platform=iOS Simulator,name=iPhone 17 Pro' build
-xcrun simctl install booted <path-to-.app>       # Install on running simulator
-xcrun simctl launch booted com.atomic.mobile     # Launch app
-xcrun simctl terminate booted com.atomic.mobile  # Stop app before reinstall
-open -a Simulator                                # Show simulator window (view via screen sharing)
 
 # Capacitor mobile (shared React frontend packaged as a webview)
 npm run dev:mobile:ios         # Build, install, launch iOS Capacitor app with Vite HMR
