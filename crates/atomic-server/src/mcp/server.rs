@@ -236,9 +236,9 @@ impl AtomicMcpServer {
 
         let request = atomic_core::IngestionRequest {
             url,
-            tag_ids: params.tag_ids,
-            title_hint: params.title_hint,
-            published_at: params.published_at,
+            tag_ids: vec![],
+            title_hint: None,
+            published_at: None,
         };
 
         let on_ingest = ingestion_event_callback(self.event_tx.clone());

@@ -64,18 +64,6 @@ pub struct UpdateAtomParams {
 pub struct IngestUrlParams {
     /// URL to fetch, extract, and save as an atom. Exact source_url matches return the existing atom.
     pub url: String,
-
-    /// Optional tag IDs to assign when a new atom is created. Ignored if the URL already exists.
-    #[serde(default)]
-    pub tag_ids: Vec<String>,
-
-    /// Optional title hint to use instead of the extracted article title for a new atom.
-    #[serde(default)]
-    pub title_hint: Option<String>,
-
-    /// Optional publication date override for a new atom, as an ISO 8601 string.
-    #[serde(default)]
-    pub published_at: Option<String>,
 }
 
 // ==================== Tool Output Types ====================

@@ -19,7 +19,7 @@ Atomic exposes five MCP tools:
 
 The server instructions tell agents to search before answering from memory, remember durable context, and update stale atoms instead of duplicating them.
 
-`ingest_url` returns the `atom_id`, source `url`, extracted or hinted `title`, `content_length`, and `already_exists`. If the URL already exists as an atom `source_url`, the tool returns the existing atom with `already_exists: true` instead of creating a duplicate.
+`ingest_url` accepts a single `url` argument and returns the `atom_id`, source `url`, extracted `title`, `content_length`, and `already_exists`. If the URL already exists as an atom `source_url`, the tool returns the existing atom with `already_exists: true` instead of creating a duplicate.
 
 ## Desktop App: Local Bridge
 
