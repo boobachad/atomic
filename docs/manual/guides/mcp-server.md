@@ -3,24 +3,27 @@ title: MCP Server
 description: Give AI agents long-term memory by connecting them to Atomic through the Model Context Protocol.
 ---
 
-Atomic exposes an MCP server so AI agents can search, read, create, and update atoms. You can use it locally through the desktop app bridge or remotely through the self-hosted HTTP endpoint.
+Atomic exposes an MCP server so AI agents can search, read, create, update, and ingest atoms. You can use it locally through the desktop app bridge or remotely through the self-hosted HTTP endpoint.
 
 ## Tools
 
-Atomic exposes four MCP tools:
+Atomic exposes five MCP tools:
 
 | Tool | What It Does |
 |------|--------------|
 | `semantic_search` | Hybrid keyword + semantic search over atoms, with optional `since_days` recency filtering |
 | `read_atom` | Read full atom content by ID, with line-based pagination |
 | `create_atom` | Store new markdown memory as an atom |
+| `ingest_url` | Fetch a URL, extract article content, and save it as an atom |
 | `update_atom` | Replace an existing atom's markdown content |
 
 The server instructions tell agents to search before answering from memory, remember durable context, and update stale atoms instead of duplicating them.
 
+`ingest_url` returns the `atom_id`, source `url`, extracted or hinted `title`, `content_length`, and `already_exists`. If the URL already exists as an atom `source_url`, the tool returns the existing atom with `already_exists: true` instead of creating a duplicate.
+
 ## Desktop App: Local Bridge
 
-The desktop app bundles `atomic-mcp-bridge`, a stdio-to-HTTP bridge. It reads the local sidecar connection automatically, so you do not need to create or paste a token.
+The desktop app bundles `atomic-mcp-bridge`, a stdio-to-HTTP bridge. It reads the local sidecar connection automatically, so you do not need to create or paste a token. The bridge forwards MCP requests to Atomic's `/mcp` endpoint; tools are advertised by the server, so new server-side tools do not require bridge-specific configuration.
 
 Open **Settings > Integrations > MCP Integration** in the desktop app for the exact bridge path.
 

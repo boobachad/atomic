@@ -59,6 +59,25 @@ pub struct UpdateAtomParams {
     pub source_url: Option<String>,
 }
 
+/// Input parameters for ingest_url tool
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct IngestUrlParams {
+    /// URL to fetch, extract, and save as an atom. Exact source_url matches return the existing atom.
+    pub url: String,
+
+    /// Optional tag IDs to assign when a new atom is created. Ignored if the URL already exists.
+    #[serde(default)]
+    pub tag_ids: Vec<String>,
+
+    /// Optional title hint to use instead of the extracted article title for a new atom.
+    #[serde(default)]
+    pub title_hint: Option<String>,
+
+    /// Optional publication date override for a new atom, as an ISO 8601 string.
+    #[serde(default)]
+    pub published_at: Option<String>,
+}
+
 // ==================== Tool Output Types ====================
 
 /// A search result with atom content and similarity score
@@ -90,4 +109,14 @@ pub struct AtomResponse {
     pub content_preview: String,
     pub tags: Vec<String>,
     pub embedding_status: String,
+}
+
+/// Ingested URL response
+#[derive(Debug, Serialize)]
+pub struct IngestUrlResponse {
+    pub atom_id: String,
+    pub url: String,
+    pub title: String,
+    pub content_length: usize,
+    pub already_exists: bool,
 }
