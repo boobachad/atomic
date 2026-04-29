@@ -535,6 +535,29 @@ impl Registry {
         crate::settings::set_setting(&conn, key, value)
     }
 
+    /// Delete a setting from the registry. Used by the resolver when clearing
+    /// a workspace default (rare — most clears target per-DB overrides).
+    pub fn delete_setting(&self, key: &str) -> Result<(), AtomicCoreError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+        crate::settings::delete_setting(&conn, key)
+    }
+
+    /// Number of databases currently registered. Cheap COUNT — used by the
+    /// settings resolver to decide whether per-DB writes are meaningful
+    /// (with N=1, writes go to the registry as workspace defaults so a
+    /// future second DB can inherit them).
+    pub fn database_count(&self) -> Result<usize, AtomicCoreError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM databases", [], |row| row.get(0))?;
+        Ok(count as usize)
+    }
+
     // ==================== API Tokens (shared across databases) ====================
 
     /// Create a new named API token.

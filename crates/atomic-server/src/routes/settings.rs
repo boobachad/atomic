@@ -1,4 +1,15 @@
 //! Settings routes
+//!
+//! Settings come in two flavors (see `atomic_core::settings`): workspace-only
+//! keys live exclusively in `registry.db`; overridable keys default in the
+//! registry but each database can override them in its own settings table.
+//! `GET /api/settings` returns the resolved values *with their source* so the
+//! frontend can render override affordances. Three companion routes make the
+//! override layer editable: `DELETE /api/settings/{key}` clears an override
+//! on the active DB, `PUT /api/settings/defaults/{key}` writes a workspace
+//! default explicitly, and `GET /api/settings/{key}/overrides` lists which
+//! databases currently override the key (powering the "overridden in N other
+//! DBs" badge).
 
 use crate::db_extractor::Db;
 use crate::error::{ok_or_error, ApiErrorResponse};
@@ -7,9 +18,9 @@ use actix_web::{web, HttpResponse};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-#[utoipa::path(get, path = "/api/settings", responses((status = 200, description = "All settings as key-value map")), tag = "settings")]
+#[utoipa::path(get, path = "/api/settings", responses((status = 200, description = "All resolved settings tagged with source")), tag = "settings")]
 pub async fn get_settings(db: Db) -> HttpResponse {
-    ok_or_error(db.0.get_settings().await)
+    ok_or_error(db.0.get_settings_with_source().await)
 }
 
 #[derive(Deserialize, Serialize, ToSchema)]
@@ -105,6 +116,78 @@ pub async fn set_setting(
     } else {
         ok_or_error(db.0.set_setting(&key, &value).await)
     }
+}
+
+#[utoipa::path(delete, path = "/api/settings/{key}", params(("key" = String, Path, description = "Setting key")), responses((status = 200, description = "Override cleared"), (status = 400, description = "Key is workspace-only", body = ApiErrorResponse)), tag = "settings")]
+pub async fn clear_setting_override(db: Db, path: web::Path<String>) -> HttpResponse {
+    let key = path.into_inner();
+    ok_or_error(db.0.clear_override(&key).await)
+}
+
+#[utoipa::path(put, path = "/api/settings/defaults/{key}", params(("key" = String, Path, description = "Setting key")), request_body = SetSettingBody, responses((status = 200, description = "Workspace default updated"), (status = 400, description = "Key is workspace-only", body = ApiErrorResponse)), tag = "settings")]
+pub async fn set_workspace_default(
+    db: Db,
+    path: web::Path<String>,
+    body: web::Json<SetSettingBody>,
+) -> HttpResponse {
+    let key = path.into_inner();
+    let value = body.into_inner().value;
+    // Routes through any AtomicCore — the registry write is shared, so it
+    // doesn't matter which database's `Db` extractor resolved.
+    ok_or_error(db.0.set_workspace_default(&key, &value).await)
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct OverrideEntry {
+    pub db_id: String,
+    pub db_name: String,
+    pub value: String,
+}
+
+#[utoipa::path(get, path = "/api/settings/{key}/overrides", params(("key" = String, Path, description = "Setting key")), responses((status = 200, description = "List of databases overriding the key", body = Vec<OverrideEntry>)), tag = "settings")]
+pub async fn list_setting_overrides(
+    state: web::Data<AppState>,
+    path: web::Path<String>,
+) -> HttpResponse {
+    let key = path.into_inner();
+
+    // Workspace-only keys can't be overridden — short-circuit so the frontend
+    // can render "no overrides" without spinning up cores for every DB.
+    if atomic_core::settings::is_workspace_only(&key) {
+        return HttpResponse::Ok().json(Vec::<OverrideEntry>::new());
+    }
+
+    let (databases, _active) = match state.manager.list_databases().await {
+        Ok(v) => v,
+        Err(e) => return crate::error::error_response(e),
+    };
+
+    let mut overrides: Vec<OverrideEntry> = Vec::new();
+    for info in databases {
+        let core = match state.manager.get_core(&info.id).await {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::error!(db_id = %info.id, "Failed to load core for override lookup: {}", e);
+                continue;
+            }
+        };
+        match core.get_setting_override(&key).await {
+            Ok(Some(value)) => overrides.push(OverrideEntry {
+                db_id: info.id,
+                db_name: info.name,
+                value,
+            }),
+            Ok(None) => {}
+            Err(e) => tracing::error!(
+                db_id = %info.id,
+                key = %key,
+                "Failed to read override: {}",
+                e
+            ),
+        }
+    }
+
+    HttpResponse::Ok().json(overrides)
 }
 
 #[derive(Deserialize, Serialize, ToSchema)]

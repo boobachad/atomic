@@ -500,15 +500,37 @@ impl AtomicCore {
     }
 
     // ==================== Settings ====================
+    //
+    // Resolution model (see `settings::WORKSPACE_ONLY_KEYS` and
+    // `settings::SettingSource`):
+    //
+    //   * Workspace-only keys (theme, font, credentials, machine URLs) live
+    //     ONLY in `registry.db`. Reads and writes always target the registry;
+    //     per-DB rows are ignored.
+    //
+    //   * Overridable keys read with the precedence
+    //         per-DB row > registry row > DEFAULT_SETTINGS constant.
+    //     Writes go to the per-DB table when the workspace has more than one
+    //     database (so the user's change is scoped to the active DB and other
+    //     DBs keep inheriting). With a single database — the common case —
+    //     writes go to the registry instead, so adding a second database
+    //     later naturally inherits the user's existing preferences without
+    //     any copy-on-promotion gymnastics.
+    //
+    // Frontends call `get_settings_with_source` to render override
+    // affordances; internal Rust callers use `get_settings` for plain values.
 
-    /// Get all settings, reading from registry if available.
+    /// Get all settings as a flat key→value map, with per-DB overrides
+    /// merged on top of registry defaults. Internal Rust callers (briefing,
+    /// agent, embedding pipeline) use this — they don't need source info.
     pub async fn get_settings(
         &self,
     ) -> Result<std::collections::HashMap<String, String>, AtomicCoreError> {
-        if let Some(ref reg) = self.registry {
-            return reg.get_all_settings();
-        }
-        self.storage.get_all_settings_sync().await
+        let resolved = self.get_settings_with_source().await?;
+        Ok(resolved
+            .into_iter()
+            .map(|(k, v)| (k, v.value))
+            .collect())
     }
 
     /// Get all settings as a HashMap. Internal helper used by embedding/agent code.
@@ -516,12 +538,133 @@ impl AtomicCore {
         self.get_settings().await
     }
 
-    /// Set a setting value.
-    pub async fn set_setting(&self, key: &str, value: &str) -> Result<(), AtomicCoreError> {
-        if let Some(ref reg) = self.registry {
-            return reg.set_setting(key, value);
+    /// Get all resolved settings tagged with their source (workspace-only,
+    /// workspace default, per-DB override, or builtin default). Used by the
+    /// settings API to power inline override UI.
+    pub async fn get_settings_with_source(
+        &self,
+    ) -> Result<HashMap<String, settings::SettingValue>, AtomicCoreError> {
+        let mut merged: HashMap<String, settings::SettingValue> = HashMap::new();
+
+        // Layer 1: builtin defaults (lowest priority). Defensive — registry
+        // is normally seeded with these via `migrate_settings`, but we
+        // include them so a fresh-but-empty registry still resolves.
+        for (key, value) in settings::DEFAULT_SETTINGS {
+            merged.insert(
+                (*key).to_string(),
+                settings::SettingValue {
+                    value: (*value).to_string(),
+                    source: settings::SettingSource::BuiltinDefault,
+                },
+            );
         }
-        self.storage.set_setting_sync(key, value).await
+
+        // Layer 2: registry — workspace defaults (overridable keys) and the
+        // single source of truth for workspace-only keys.
+        if let Some(ref reg) = self.registry {
+            for (key, value) in reg.get_all_settings()? {
+                let source = if settings::is_workspace_only(&key) {
+                    settings::SettingSource::Workspace
+                } else {
+                    settings::SettingSource::WorkspaceDefault
+                };
+                merged.insert(key, settings::SettingValue { value, source });
+            }
+        }
+
+        // Layer 3: per-DB overrides. Only applied to overridable keys —
+        // a per-DB row for a workspace-only key (legacy data) is ignored.
+        let per_db = self.storage.get_all_settings_sync().await?;
+        for (key, value) in per_db {
+            if settings::is_workspace_only(&key) {
+                continue;
+            }
+            merged.insert(
+                key,
+                settings::SettingValue {
+                    value,
+                    source: settings::SettingSource::Override,
+                },
+            );
+        }
+
+        Ok(merged)
+    }
+
+    /// Set a setting value. Routing (see module docs above):
+    /// workspace-only → registry; overridable + N≤1 → registry as workspace
+    /// default; overridable + N>1 → per-DB as override for the active DB.
+    pub async fn set_setting(&self, key: &str, value: &str) -> Result<(), AtomicCoreError> {
+        let registry = match &self.registry {
+            Some(r) => r,
+            None => {
+                // No registry attached (single-DB embedded use): there's no
+                // workspace layer, so writes always go to the per-DB table.
+                return self.storage.set_setting_sync(key, value).await;
+            }
+        };
+
+        if settings::is_workspace_only(key) {
+            return registry.set_setting(key, value);
+        }
+
+        // Overridable: route based on database count.
+        if registry.database_count()? <= 1 {
+            registry.set_setting(key, value)
+        } else {
+            self.storage.set_setting_sync(key, value).await
+        }
+    }
+
+    /// Explicitly write a value as the workspace default (registry), even
+    /// when the workspace has more than one database. Used by the
+    /// "edit workspace defaults" surface. Errors for workspace-only keys —
+    /// those are written via `set_setting`.
+    pub async fn set_workspace_default(
+        &self,
+        key: &str,
+        value: &str,
+    ) -> Result<(), AtomicCoreError> {
+        if settings::is_workspace_only(key) {
+            return Err(AtomicCoreError::Validation(format!(
+                "Setting '{}' is workspace-only; use set_setting instead",
+                key
+            )));
+        }
+        let registry = self.registry.as_ref().ok_or_else(|| {
+            AtomicCoreError::Configuration(
+                "Workspace defaults require a registry-backed deployment".to_string(),
+            )
+        })?;
+        registry.set_setting(key, value)
+    }
+
+    /// Clear the active database's per-DB override for `key`. The next read
+    /// will resolve to the workspace default (registry) or the builtin
+    /// default. Errors for workspace-only keys — those have no override to
+    /// clear.
+    pub async fn clear_override(&self, key: &str) -> Result<(), AtomicCoreError> {
+        if settings::is_workspace_only(key) {
+            return Err(AtomicCoreError::Validation(format!(
+                "Setting '{}' is workspace-only and has no per-database override",
+                key
+            )));
+        }
+        self.storage.delete_setting_sync(key).await
+    }
+
+    /// Read the per-DB override row for `key`, if any. Skips the registry
+    /// fallback — used by the "overrides across all databases" endpoint that
+    /// needs just the override layer for one key, not the merged value.
+    /// Returns Ok(None) for workspace-only keys (they cannot have overrides).
+    pub async fn get_setting_override(
+        &self,
+        key: &str,
+    ) -> Result<Option<String>, AtomicCoreError> {
+        if settings::is_workspace_only(key) {
+            return Ok(None);
+        }
+        self.storage.get_setting_sync(key).await
     }
 
     // ==================== API Token Operations ====================
@@ -2590,12 +2733,12 @@ impl AtomicCore {
             }
         }
 
-        // Write to registry if present, otherwise to storage
-        if let Some(ref reg) = self.registry {
-            reg.set_setting(key, value)?;
-        } else {
-            self.storage.set_setting_sync(key, value).await?;
-        }
+        // Route through the standard resolver: workspace-only keys land in
+        // registry, overridable keys land in registry while N≤1 and per-DB
+        // (override for the active DB) when N>1. Re-embedding below targets
+        // only the active DB, which matches that routing — when an override
+        // creates divergence, only the changed DB needs re-embedding.
+        self.set_setting(key, value).await?;
 
         let mut queued_reembedding = 0i32;
         if dimension_changed {
@@ -4159,6 +4302,191 @@ mod tests {
         .await
         .unwrap()
         .unwrap()
+    }
+
+    // ==================== Settings Resolver Tests ====================
+    //
+    // These exercise the registry-defaults + per-DB-overrides model end-to-end:
+    // workspace-only keys go to the registry, overridable keys route by N,
+    // and `get_settings_with_source` reports the right source for each layer.
+
+    use crate::settings::SettingSource;
+    use registry::Registry;
+    use std::sync::Arc;
+    use tempfile::TempDir;
+
+    /// Build a registry plus N AtomicCore instances bound to that registry,
+    /// one per "database". The registry already starts with a "default" DB,
+    /// so requesting `extra_dbs=0` gives N=1.
+    fn make_workspace(extra_dbs: usize) -> (Arc<Registry>, Vec<AtomicCore>, TempDir) {
+        let dir = TempDir::new().unwrap();
+        let registry = Arc::new(Registry::open_or_create(dir.path()).unwrap());
+        for i in 0..extra_dbs {
+            registry.create_database(&format!("db-{i}")).unwrap();
+        }
+        let dbs = registry.list_databases().unwrap();
+        let cores: Vec<AtomicCore> = dbs
+            .iter()
+            .map(|info| {
+                let path = dir.path().join(format!("{}.db", info.id));
+                AtomicCore::open_for_server_with_registry(&path, Some(Arc::clone(&registry)))
+                    .unwrap()
+            })
+            .collect();
+        (registry, cores, dir)
+    }
+
+    #[tokio::test]
+    async fn test_workspace_only_writes_always_hit_registry() {
+        // theme is workspace-only — even with multiple DBs, set_setting on
+        // any core lands in registry.db, and every core sees the same value.
+        let (registry, cores, _dir) = make_workspace(2);
+        cores[0].set_setting("theme", "dracula").await.unwrap();
+
+        for core in &cores {
+            let settings = core.get_settings().await.unwrap();
+            assert_eq!(settings.get("theme").map(String::as_str), Some("dracula"));
+        }
+        assert_eq!(registry.get_setting("theme").unwrap(), "dracula");
+    }
+
+    #[tokio::test]
+    async fn test_overridable_with_n1_writes_to_registry() {
+        // With one DB, set_setting(provider, ...) goes to the registry as a
+        // workspace default — so a future second DB inherits it instead of
+        // starting on the builtin default.
+        let (registry, cores, dir) = make_workspace(0);
+        cores[0].set_setting("chat_model", "openai/gpt-4o").await.unwrap();
+
+        // The single DB's per-DB settings table stays empty for this key.
+        let per_db = cores[0]
+            .storage
+            .get_all_settings_sync()
+            .await
+            .unwrap();
+        assert!(!per_db.contains_key("chat_model"));
+        assert_eq!(registry.get_setting("chat_model").unwrap(), "openai/gpt-4o");
+
+        // Spin up a second DB; it inherits the workspace default.
+        registry.create_database("second").unwrap();
+        let second_path = dir.path().join("second.db");
+        let second = AtomicCore::open_for_server_with_registry(
+            &second_path,
+            Some(Arc::clone(&registry)),
+        )
+        .unwrap();
+        let settings = second.get_settings().await.unwrap();
+        assert_eq!(
+            settings.get("chat_model").map(String::as_str),
+            Some("openai/gpt-4o"),
+        );
+    }
+
+    #[tokio::test]
+    async fn test_overridable_with_n2_writes_per_db() {
+        // With two DBs, set_setting(provider, ...) on one core writes only
+        // to that DB's per-DB table. The other DB keeps inheriting from
+        // the workspace default.
+        let (registry, cores, _dir) = make_workspace(1);
+        registry.set_setting("chat_model", "workspace/default").unwrap();
+
+        cores[0]
+            .set_setting("chat_model", "override/for-first")
+            .await
+            .unwrap();
+
+        // First DB sees its override.
+        let s0 = cores[0].get_settings().await.unwrap();
+        assert_eq!(
+            s0.get("chat_model").map(String::as_str),
+            Some("override/for-first"),
+        );
+
+        // Second DB still sees the workspace default.
+        let s1 = cores[1].get_settings().await.unwrap();
+        assert_eq!(
+            s1.get("chat_model").map(String::as_str),
+            Some("workspace/default"),
+        );
+    }
+
+    #[tokio::test]
+    async fn test_clear_override_falls_back_to_default() {
+        let (registry, cores, _dir) = make_workspace(1);
+        registry.set_setting("chat_model", "workspace/default").unwrap();
+        cores[0]
+            .set_setting("chat_model", "override/for-first")
+            .await
+            .unwrap();
+
+        cores[0].clear_override("chat_model").await.unwrap();
+
+        let s = cores[0].get_settings().await.unwrap();
+        assert_eq!(
+            s.get("chat_model").map(String::as_str),
+            Some("workspace/default"),
+            "after clearing override, resolves back to workspace default"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_clear_override_rejects_workspace_only() {
+        let (_registry, cores, _dir) = make_workspace(0);
+        let result = cores[0].clear_override("theme").await;
+        assert!(
+            result.is_err(),
+            "clear_override on a workspace-only key must error"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_get_settings_with_source_labels_each_layer() {
+        let (registry, cores, _dir) = make_workspace(1);
+        // Workspace default for an overridable key.
+        registry.set_setting("chat_model", "workspace/default").unwrap();
+        // Per-DB override for another overridable key on the first DB.
+        cores[0]
+            .set_setting("tagging_model", "override/tag")
+            .await
+            .unwrap();
+        // Workspace-only key (theme).
+        registry.set_setting("theme", "dracula").unwrap();
+
+        let s = cores[0].get_settings_with_source().await.unwrap();
+
+        assert_eq!(s["theme"].source, SettingSource::Workspace);
+        assert_eq!(s["theme"].value, "dracula");
+
+        assert_eq!(s["chat_model"].source, SettingSource::WorkspaceDefault);
+        assert_eq!(s["chat_model"].value, "workspace/default");
+
+        assert_eq!(s["tagging_model"].source, SettingSource::Override);
+        assert_eq!(s["tagging_model"].value, "override/tag");
+
+        // The second DB sees the same workspace default but no override.
+        let s2 = cores[1].get_settings_with_source().await.unwrap();
+        assert_eq!(s2["tagging_model"].source, SettingSource::WorkspaceDefault);
+    }
+
+    #[tokio::test]
+    async fn test_per_db_row_for_workspace_only_key_is_ignored() {
+        // A legacy per-DB row for a workspace-only key (left over from before
+        // the resolver landed) must not poison the resolved value.
+        let (registry, cores, _dir) = make_workspace(0);
+        registry.set_setting("theme", "registry-value").unwrap();
+        // Sneak a legacy row directly into the per-DB table.
+        cores[0]
+            .storage
+            .set_setting_sync("theme", "stale-per-db-value")
+            .await
+            .unwrap();
+
+        let s = cores[0].get_settings().await.unwrap();
+        assert_eq!(
+            s.get("theme").map(String::as_str),
+            Some("registry-value"),
+            "workspace-only keys ignore per-DB rows even when present"
+        );
     }
 
     // ==================== Atom CRUD Tests ====================

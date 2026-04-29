@@ -921,7 +921,12 @@ impl Database {
             )?;
         }
 
-        crate::settings::migrate_settings(conn)?;
+        // NOTE: per-DB settings tables intentionally start empty under the
+        // registry-defaults + per-DB-overrides model. Defaults live in
+        // `registry.db` (seeded by `Registry::open` via `migrate_settings_to`);
+        // per-DB rows only exist when the user explicitly overrides a value.
+        // Legacy databases that were created before this change may still
+        // contain seeded rows — pre-alpha, we don't migrate them out.
 
         Ok(())
     }

@@ -623,6 +623,8 @@ dispatch! {
         => sqlite: get_setting_sync, pg_trait: SettingsStore, pg_method: get_setting;
     fn set_setting_sync(&self, key: &str, value: &str) -> Result<(), AtomicCoreError>
         => sqlite: set_setting_sync, pg_trait: SettingsStore, pg_method: set_setting;
+    fn delete_setting_sync(&self, key: &str) -> Result<(), AtomicCoreError>
+        => sqlite: delete_setting_sync, pg_trait: SettingsStore, pg_method: delete_setting;
 
     // ---- TokenStore ----
     fn create_api_token_sync(&self, name: &str) -> Result<(crate::tokens::ApiTokenInfo, String), AtomicCoreError>

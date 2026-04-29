@@ -343,6 +343,20 @@ export const COMMAND_MAP: Record<string, CommandSpec> = {
     argsMode: 'body',
     transformArgs: (a) => ({ value: a.value }),
   },
+  clear_setting_override: {
+    method: 'DELETE',
+    path: (a) => `/api/settings/${encodeURIComponent(a.key as string)}`,
+  },
+  set_workspace_default: {
+    method: 'PUT',
+    path: (a) => `/api/settings/defaults/${encodeURIComponent(a.key as string)}`,
+    argsMode: 'body',
+    transformArgs: (a) => ({ value: a.value }),
+  },
+  list_setting_overrides: {
+    method: 'GET',
+    path: (a) => `/api/settings/${encodeURIComponent(a.key as string)}/overrides`,
+  },
   test_openrouter_connection: {
     method: 'POST',
     path: '/api/settings/test-openrouter',

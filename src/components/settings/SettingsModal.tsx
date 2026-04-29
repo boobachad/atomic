@@ -74,6 +74,7 @@ const MACOS_FULL_DISK_ACCESS_URL =
   'x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_AllFiles';
 import { formatRelativeDate } from '../../lib/date';
 import { useDatabasesStore, type DatabaseInfo, type DatabaseStats } from '../../stores/databases';
+import { OverrideControls } from './OverrideControls';
 
 export type SettingsTab = 'general' | 'ai' | 'tag-categories' | 'connection' | 'integrations' | 'databases';
 
@@ -1566,30 +1567,33 @@ export function SettingsModal({ isOpen, onClose, initialTab }: SettingsModalProp
                   </div>
 
                   {/* Auto-tagging Toggle Section */}
-                  <div className="flex items-center justify-between">
-                    <div className="space-y-1">
-                      <label className="block text-sm font-medium text-[var(--color-text-primary)]">
-                        Automatic Tag Extraction
-                      </label>
-                      <p className="text-xs text-[var(--color-text-secondary)]">
-                        Automatically suggest tags when creating atoms
-                      </p>
-                    </div>
-                    <button
-                      type="button"
-                      role="switch"
-                      aria-checked={autoTaggingEnabled}
-                      onClick={() => { const next = !autoTaggingEnabled; setAutoTaggingEnabled(next); autoSave('auto_tagging_enabled', next ? 'true' : 'false'); }}
-                      className={`relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)] focus:ring-offset-2 focus:ring-offset-[var(--color-bg-panel)] ${
-                        autoTaggingEnabled ? 'bg-[var(--color-accent)]' : 'bg-[var(--color-bg-hover)]'
-                      }`}
-                    >
-                      <span
-                        className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
-                          autoTaggingEnabled ? 'translate-x-5' : 'translate-x-0'
+                  <div className="space-y-1">
+                    <div className="flex items-center justify-between">
+                      <div className="space-y-1">
+                        <label className="block text-sm font-medium text-[var(--color-text-primary)]">
+                          Automatic Tag Extraction
+                        </label>
+                        <p className="text-xs text-[var(--color-text-secondary)]">
+                          Automatically suggest tags when creating atoms
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        role="switch"
+                        aria-checked={autoTaggingEnabled}
+                        onClick={() => { const next = !autoTaggingEnabled; setAutoTaggingEnabled(next); autoSave('auto_tagging_enabled', next ? 'true' : 'false'); }}
+                        className={`relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)] focus:ring-offset-2 focus:ring-offset-[var(--color-bg-panel)] ${
+                          autoTaggingEnabled ? 'bg-[var(--color-accent)]' : 'bg-[var(--color-bg-hover)]'
                         }`}
-                      />
-                    </button>
+                      >
+                        <span
+                          className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
+                            autoTaggingEnabled ? 'translate-x-5' : 'translate-x-0'
+                          }`}
+                        />
+                      </button>
+                    </div>
+                    <OverrideControls settingKey="auto_tagging_enabled" />
                   </div>
 
                   {/* Troubleshooting */}
@@ -1664,6 +1668,7 @@ export function SettingsModal({ isOpen, onClose, initialTab }: SettingsModalProp
                         {testError || 'Connection failed'}
                       </div>
                     )}
+                    <OverrideControls settingKey="provider" />
                   </div>
 
                   {/* OpenRouter Settings */}
@@ -1723,6 +1728,7 @@ export function SettingsModal({ isOpen, onClose, initialTab }: SettingsModalProp
                             }))}
                             placeholder="Select embedding model..."
                           />
+                          <OverrideControls settingKey="embedding_model" />
                         </div>
 
                         {/* Tagging Model */}
@@ -1740,6 +1746,7 @@ export function SettingsModal({ isOpen, onClose, initialTab }: SettingsModalProp
                             isLoading={isLoadingModels}
                             placeholder="Select tagging model..."
                           />
+                          <OverrideControls settingKey="tagging_model" />
                         </div>
 
                         {/* Wiki Model */}
@@ -1757,6 +1764,7 @@ export function SettingsModal({ isOpen, onClose, initialTab }: SettingsModalProp
                             isLoading={isLoadingModels}
                             placeholder="Select wiki model..."
                           />
+                          <OverrideControls settingKey="wiki_model" />
                         </div>
 
                         {/* Wiki Strategy */}
@@ -1775,6 +1783,7 @@ export function SettingsModal({ isOpen, onClose, initialTab }: SettingsModalProp
                               { value: 'agentic', label: 'Agentic — AI agent searches and curates sources' },
                             ]}
                           />
+                          <OverrideControls settingKey="wiki_strategy" />
                         </div>
 
                         {/* Wiki Generation Prompt */}
@@ -1801,6 +1810,7 @@ export function SettingsModal({ isOpen, onClose, initialTab }: SettingsModalProp
                               Reset to default
                             </button>
                           )}
+                          <OverrideControls settingKey="wiki_generation_prompt" />
                         </div>
 
                         {/* Wiki Update Prompt */}
@@ -1827,6 +1837,7 @@ export function SettingsModal({ isOpen, onClose, initialTab }: SettingsModalProp
                               Reset to default
                             </button>
                           )}
+                          <OverrideControls settingKey="wiki_update_prompt" />
                         </div>
 
                         {/* Chat Model */}
@@ -1844,6 +1855,7 @@ export function SettingsModal({ isOpen, onClose, initialTab }: SettingsModalProp
                             isLoading={isLoadingModels}
                             placeholder="Select chat model..."
                           />
+                          <OverrideControls settingKey="chat_model" />
                         </div>
 
                         {/* Context Length */}
@@ -1868,6 +1880,7 @@ export function SettingsModal({ isOpen, onClose, initialTab }: SettingsModalProp
                               { value: '1000000', label: '1M' },
                             ]}
                           />
+                          <OverrideControls settingKey="openrouter_context_length" />
                         </div>
                       </div>
                     </>
@@ -1917,6 +1930,7 @@ export function SettingsModal({ isOpen, onClose, initialTab }: SettingsModalProp
                                 No embedding models found. Run: ollama pull nomic-embed-text
                               </div>
                             )}
+                            <OverrideControls settingKey="ollama_embedding_model" />
                           </div>
 
                           {/* Ollama LLM Model */}
@@ -1940,6 +1954,7 @@ export function SettingsModal({ isOpen, onClose, initialTab }: SettingsModalProp
                                 No LLM models found. Run: ollama pull llama3.2
                               </div>
                             )}
+                            <OverrideControls settingKey="ollama_llm_model" />
                           </div>
 
                           {/* Context Length */}
@@ -1965,6 +1980,7 @@ export function SettingsModal({ isOpen, onClose, initialTab }: SettingsModalProp
                                 { value: '1000000', label: '1M' },
                               ]}
                             />
+                            <OverrideControls settingKey="ollama_context_length" />
                           </div>
 
                           {/* Timeout */}
@@ -1987,6 +2003,7 @@ export function SettingsModal({ isOpen, onClose, initialTab }: SettingsModalProp
                                 { value: '600', label: '10 minutes' },
                               ]}
                             />
+                            <OverrideControls settingKey="ollama_timeout_secs" />
                           </div>
                         </div>
                       )}
@@ -2107,6 +2124,7 @@ export function SettingsModal({ isOpen, onClose, initialTab }: SettingsModalProp
                             placeholder="text-embedding-3-small"
                             className="w-full px-3 py-2 bg-[var(--color-bg-card)] border border-[var(--color-border)] rounded-md text-[var(--color-text-primary)] placeholder-[var(--color-text-secondary)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)] focus:border-transparent transition-colors duration-150"
                           />
+                          <OverrideControls settingKey="openai_compat_embedding_model" />
                         </div>
 
                         {/* Embedding Dimension */}
@@ -2129,6 +2147,7 @@ export function SettingsModal({ isOpen, onClose, initialTab }: SettingsModalProp
                             placeholder="1536"
                             className="w-full px-3 py-2 bg-[var(--color-bg-card)] border border-[var(--color-border)] rounded-md text-[var(--color-text-primary)] placeholder-[var(--color-text-secondary)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)] focus:border-transparent transition-colors duration-150"
                           />
+                          <OverrideControls settingKey="openai_compat_embedding_dimension" />
                         </div>
 
                         {/* LLM Model */}
@@ -2147,6 +2166,7 @@ export function SettingsModal({ isOpen, onClose, initialTab }: SettingsModalProp
                             placeholder="meta-llama/Llama-3.1-8B-Instruct"
                             className="w-full px-3 py-2 bg-[var(--color-bg-card)] border border-[var(--color-border)] rounded-md text-[var(--color-text-primary)] placeholder-[var(--color-text-secondary)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)] focus:border-transparent transition-colors duration-150"
                           />
+                          <OverrideControls settingKey="openai_compat_llm_model" />
                         </div>
 
                         {/* Context Length */}
@@ -2172,6 +2192,7 @@ export function SettingsModal({ isOpen, onClose, initialTab }: SettingsModalProp
                               { value: '1000000', label: '1M' },
                             ]}
                           />
+                          <OverrideControls settingKey="openai_compat_context_length" />
                         </div>
 
                         {/* Timeout */}
@@ -2194,6 +2215,7 @@ export function SettingsModal({ isOpen, onClose, initialTab }: SettingsModalProp
                               { value: '600', label: '10 minutes' },
                             ]}
                           />
+                          <OverrideControls settingKey="openai_compat_timeout_secs" />
                         </div>
                       </div>
                     </>
