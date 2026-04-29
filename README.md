@@ -107,7 +107,7 @@ Captures are queued offline and synced when the server is available.
 
 ## MCP Server
 
-Atomic exposes an MCP endpoint for Claude and other AI tools to search and create atoms.
+Atomic exposes an MCP endpoint for Claude and other AI tools to search, read, create, update, and ingest atoms.
 
 ### Desktop App (Local Mode)
 
@@ -149,7 +149,7 @@ Create a token from Settings > Connection > API Tokens, or via the CLI:
 atomic-server token create --name "claude"
 ```
 
-**Available tools:** `semantic_search`, `read_atom`, `create_atom`, `update_atom`
+**Available tools:** `semantic_search`, `read_atom`, `create_atom`, `ingest_url`, `update_atom`
 
 ## Architecture
 

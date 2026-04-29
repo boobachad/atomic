@@ -1,4 +1,4 @@
-use crate::event_bridge::embedding_event_callback;
+use crate::event_bridge::{embedding_event_callback, ingestion_event_callback};
 use crate::mcp::types::*;
 use crate::state::ServerEvent;
 use atomic_core::manager::DatabaseManager;
@@ -194,6 +194,67 @@ impl AtomicMcpServer {
             content_preview: result.atom.content.chars().take(200).collect(),
             tags: result.tags.iter().map(|t| t.name.clone()).collect(),
             embedding_status: result.atom.embedding_status.clone(),
+        };
+
+        let response_text = serde_json::to_string_pretty(&response)
+            .map_err(|e| ErrorData::internal_error(format!("Serialization error: {}", e), None))?;
+
+        Ok(CallToolResult::success(vec![Content::text(response_text)]))
+    }
+
+    /// Ingest a URL into Atomic
+    #[tool(
+        description = "Fetch a URL, extract its article content, and save it as an atom. Use this when the user asks to remember, save, or ingest a web page. If the URL already exists as an atom source_url, returns the existing atom_id with already_exists=true instead of creating a duplicate."
+    )]
+    async fn ingest_url(
+        &self,
+        context: RequestContext<RoleServer>,
+        Parameters(params): Parameters<IngestUrlParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let core = self.resolve_core(&context).await?;
+        let url = params.url;
+
+        if let Some(existing) = core
+            .get_atom_by_source_url(&url)
+            .await
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?
+        {
+            let response = IngestUrlResponse {
+                atom_id: existing.atom.id,
+                url: existing.atom.source_url.unwrap_or(url),
+                title: existing.atom.title,
+                content_length: existing.atom.content.len(),
+                already_exists: true,
+            };
+
+            let response_text = serde_json::to_string_pretty(&response).map_err(|e| {
+                ErrorData::internal_error(format!("Serialization error: {}", e), None)
+            })?;
+
+            return Ok(CallToolResult::success(vec![Content::text(response_text)]));
+        }
+
+        let request = atomic_core::IngestionRequest {
+            url,
+            tag_ids: vec![],
+            title_hint: None,
+            published_at: None,
+        };
+
+        let on_ingest = ingestion_event_callback(self.event_tx.clone());
+        let on_embed = embedding_event_callback(self.event_tx.clone());
+
+        let result = core
+            .ingest_url(request, on_ingest, on_embed)
+            .await
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+
+        let response = IngestUrlResponse {
+            atom_id: result.atom_id,
+            url: result.url,
+            title: result.title,
+            content_length: result.content_length,
+            already_exists: false,
         };
 
         let response_text = serde_json::to_string_pretty(&response)
