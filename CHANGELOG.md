@@ -2,6 +2,11 @@
 
 All notable changes to Atomic are documented here.
 
+## v1.33.0 — 2026-04-29
+
+- Add MCP `ingest_url` tool — AI clients (Claude, etc.) can now save web pages as atoms by URL, with automatic duplicate detection
+- Remove the legacy native iOS app (replaced by the Capacitor-based mobile app)
+
 ## v1.32.4 — 2026-04-26
 
 - Redesign briefing mini-canvas into an interactive subset view showing only the briefing's referenced atoms and their neighbors, with pan/zoom and clickable nodes that open the main canvas focused on the selected atom
