@@ -4,12 +4,17 @@
 //! keys live exclusively in `registry.db`; overridable keys default in the
 //! registry but each database can override them in its own settings table.
 //! `GET /api/settings` returns the resolved values *with their source* so the
-//! frontend can render override affordances. Three companion routes make the
-//! override layer editable: `DELETE /api/settings/{key}` clears an override
-//! on the active DB, `PUT /api/settings/defaults/{key}` writes a workspace
-//! default explicitly, and `GET /api/settings/{key}/overrides` lists which
-//! databases currently override the key (powering the "overridden in N other
-//! DBs" badge).
+//! frontend can render override affordances. `DELETE /api/settings/{key}`
+//! clears an override on the active DB. `GET /api/settings/{key}/overrides`
+//! lists which databases currently override the key.
+//!
+//! There is intentionally no endpoint to write a workspace default
+//! out-of-band: changing the registry value for an embedding-space key would
+//! silently shift every inheriting DB's resolved setting without recreating
+//! their vector indexes or re-embedding their atoms, leaving them in a
+//! broken state. If a "change for all DBs" feature ever ships it will need
+//! its own dedicated route that walks every inheriting DB and queues
+//! reembeds.
 
 use crate::db_extractor::Db;
 use crate::error::{ok_or_error, ApiErrorResponse};
@@ -77,19 +82,6 @@ pub async fn set_setting(
 pub async fn clear_setting_override(db: Db, path: web::Path<String>) -> HttpResponse {
     let key = path.into_inner();
     ok_or_error(db.0.clear_override(&key).await)
-}
-
-#[utoipa::path(put, path = "/api/settings/defaults/{key}", params(("key" = String, Path, description = "Setting key")), request_body = SetSettingBody, responses((status = 200, description = "Workspace default updated"), (status = 400, description = "Key is workspace-only", body = ApiErrorResponse)), tag = "settings")]
-pub async fn set_workspace_default(
-    db: Db,
-    path: web::Path<String>,
-    body: web::Json<SetSettingBody>,
-) -> HttpResponse {
-    let key = path.into_inner();
-    let value = body.into_inner().value;
-    // Routes through any AtomicCore — the registry write is shared, so it
-    // doesn't matter which database's `Db` extractor resolved.
-    ok_or_error(db.0.set_workspace_default(&key, &value).await)
 }
 
 #[derive(Serialize, ToSchema)]

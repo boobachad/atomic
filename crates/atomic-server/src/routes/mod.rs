@@ -146,10 +146,6 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
         web::delete().to(settings::clear_setting_override),
     );
     cfg.route(
-        "/settings/defaults/{key}",
-        web::put().to(settings::set_workspace_default),
-    );
-    cfg.route(
         "/settings/{key}/overrides",
         web::get().to(settings::list_setting_overrides),
     );

@@ -578,9 +578,14 @@ impl AtomicCore {
 
         // Layer 3: per-DB. Two cases:
         //   * Registry attached (the SQLite multi-DB shape): per-DB rows are
-        //     true overrides on top of the registry. Workspace-only rows in
-        //     this layer are legacy data — the registry is the single source
-        //     of truth for those keys, so we ignore them here.
+        //     overrides on top of the registry — *but only when the value
+        //     actually differs from the workspace default*. A row whose
+        //     value matches the registry is treated as inherited; this makes
+        //     legacy seed rows from earlier versions transparent (they were
+        //     written with the same defaults the registry holds), so we
+        //     don't need a schema migration to clean them up. Workspace-only
+        //     rows in this layer are legacy data — the registry is the
+        //     single source of truth for those keys, so we ignore them.
         //   * No registry (Postgres deployments today): the storage layer's
         //     settings table is the only place anything lives. Treat its
         //     values like a registry layer would — workspace-only → Workspace,
@@ -589,17 +594,47 @@ impl AtomicCore {
         let per_db = self.storage.get_all_settings_sync().await?;
         let has_registry = self.registry.is_some();
         for (key, value) in per_db {
-            let source = if settings::is_workspace_only(&key) {
+            if settings::is_workspace_only(&key) {
                 if has_registry {
                     continue;
                 }
-                settings::SettingSource::Workspace
-            } else if has_registry {
-                settings::SettingSource::Override
+                merged.insert(
+                    key,
+                    settings::SettingValue {
+                        value,
+                        source: settings::SettingSource::Workspace,
+                    },
+                );
+                continue;
+            }
+
+            if has_registry {
+                // Same-value per-DB rows are no-ops (legacy seeds or
+                // accidental same-value writes) — skip them so the resolved
+                // source stays at the registry/builtin layer above.
+                let same_as_default = merged
+                    .get(&key)
+                    .map(|existing| existing.value == value)
+                    .unwrap_or(false);
+                if same_as_default {
+                    continue;
+                }
+                merged.insert(
+                    key,
+                    settings::SettingValue {
+                        value,
+                        source: settings::SettingSource::Override,
+                    },
+                );
             } else {
-                settings::SettingSource::WorkspaceDefault
-            };
-            merged.insert(key, settings::SettingValue { value, source });
+                merged.insert(
+                    key,
+                    settings::SettingValue {
+                        value,
+                        source: settings::SettingSource::WorkspaceDefault,
+                    },
+                );
+            }
         }
 
         Ok(merged)
@@ -628,29 +663,6 @@ impl AtomicCore {
         } else {
             self.storage.set_setting_sync(key, value).await
         }
-    }
-
-    /// Explicitly write a value as the workspace default (registry), even
-    /// when the workspace has more than one database. Used by the
-    /// "edit workspace defaults" surface. Errors for workspace-only keys —
-    /// those are written via `set_setting`.
-    pub async fn set_workspace_default(
-        &self,
-        key: &str,
-        value: &str,
-    ) -> Result<(), AtomicCoreError> {
-        if settings::is_workspace_only(key) {
-            return Err(AtomicCoreError::Validation(format!(
-                "Setting '{}' is workspace-only; use set_setting instead",
-                key
-            )));
-        }
-        let registry = self.registry.as_ref().ok_or_else(|| {
-            AtomicCoreError::Configuration(
-                "Workspace defaults require a registry-backed deployment".to_string(),
-            )
-        })?;
-        registry.set_setting(key, value)
     }
 
     /// Clear the active database's per-DB override for `key`. The next read
@@ -4480,6 +4492,41 @@ mod tests {
         // The second DB sees the same workspace default but no override.
         let s2 = cores[1].get_settings_with_source().await.unwrap();
         assert_eq!(s2["tagging_model"].source, SettingSource::WorkspaceDefault);
+    }
+
+    #[tokio::test]
+    async fn test_per_db_row_matching_registry_is_treated_as_default() {
+        // Legacy databases from earlier versions seeded every key in
+        // DEFAULT_SETTINGS into the per-DB settings table. The resolver must
+        // treat those rows as inherited (not as overrides), so they don't
+        // shadow registry writes — this is what lets us avoid a cleanup
+        // migration. Same logic protects against accidental "override to
+        // the same value" writes too.
+        let (registry, cores, _dir) = make_workspace(0);
+        registry.set_setting("chat_model", "workspace/default").unwrap();
+        // Stash a per-DB row with the same value (mimicking a legacy seed).
+        cores[0]
+            .storage
+            .set_setting_sync("chat_model", "workspace/default")
+            .await
+            .unwrap();
+
+        let s = cores[0].get_settings_with_source().await.unwrap();
+        assert_eq!(
+            s["chat_model"].source,
+            SettingSource::WorkspaceDefault,
+            "matching per-DB row should resolve as WorkspaceDefault, not Override"
+        );
+
+        // Now flip the registry value — the stale per-DB row no longer
+        // matches, so it must show up as an override (same behavior as a
+        // user explicitly setting that value today).
+        registry
+            .set_setting("chat_model", "workspace/different")
+            .unwrap();
+        let s = cores[0].get_settings_with_source().await.unwrap();
+        assert_eq!(s["chat_model"].source, SettingSource::Override);
+        assert_eq!(s["chat_model"].value, "workspace/default");
     }
 
     #[tokio::test]
