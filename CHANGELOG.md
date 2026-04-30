@@ -2,6 +2,12 @@
 
 All notable changes to Atomic are documented here.
 
+## v1.34.0 — 2026-04-30
+
+- Add per-database settings overrides — when running multiple databases, AI provider, model, and other settings can now be customized independently for each database while inheriting workspace defaults
+- Add override indicators in Settings showing whether each field uses the workspace default or a per-database override, with a one-click reset to restore the default
+- Move the Auto-tagging toggle from the AI tab to the Tag Categories tab, where it can also be overridden per database
+
 ## v1.33.0 — 2026-04-29
 
 - Add MCP `ingest_url` tool — AI clients (Claude, etc.) can now save web pages as atoms by URL, with automatic duplicate detection
