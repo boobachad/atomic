@@ -1530,7 +1530,16 @@ where
     };
 
     // Build message history for API
-    let mut api_messages = vec![Message::system(get_system_prompt(&scope_description))];
+    let custom_chat_prefix = settings_map
+        .get("chat_prompt")
+        .filter(|s| !s.is_empty())
+        .map(|s| s.as_str());
+    let base_system = get_system_prompt(&scope_description);
+    let system_prompt = match custom_chat_prefix {
+        Some(prefix) => format!("{prefix}\n\n{base_system}"),
+        None => base_system,
+    };
+    let mut api_messages = vec![Message::system(system_prompt)];
     api_messages.extend(messages);
 
     // Truncate to fit context window for providers with limited context
@@ -1734,7 +1743,15 @@ where
     };
 
     // Build message history for API, with canvas context appended to system prompt
-    let mut system_prompt = get_system_prompt(&scope_description);
+    let custom_chat_prefix = settings_map
+        .get("chat_prompt")
+        .filter(|s| !s.is_empty())
+        .map(|s| s.as_str());
+    let base_system = get_system_prompt(&scope_description);
+    let mut system_prompt = match custom_chat_prefix {
+        Some(prefix) => format!("{prefix}\n\n{base_system}"),
+        None => base_system,
+    };
     if page_context.is_some() {
         system_prompt.push_str(get_page_context_system_prompt());
     }

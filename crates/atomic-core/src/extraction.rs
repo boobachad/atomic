@@ -261,8 +261,8 @@ pub async fn extract_tags_from_content(
     tag_tree_json: &str,
     model: &str,
     supported_params: Option<Vec<String>>,
+    custom_system_prompt: Option<&str>,
 ) -> Result<Vec<TagApplication>, String> {
-    // Truncate based on provider's context length
     let max_chars = max_tagging_chars(provider_config, tag_tree_json, model);
     let text = if content.len() > max_chars {
         // Find the nearest char boundary at or before max_chars
@@ -280,7 +280,10 @@ pub async fn extract_tags_from_content(
         tag_tree_json, text
     );
 
-    let messages = vec![Message::system(SYSTEM_PROMPT), Message::user(user_content)];
+    let system = custom_system_prompt
+        .filter(|s| !s.is_empty())
+        .unwrap_or(SYSTEM_PROMPT);
+    let messages = vec![Message::system(system), Message::user(user_content)];
 
     let call = StructuredCall::<ExtractionResult>::new(
         provider_config,

@@ -320,7 +320,7 @@ struct AgentState {
     done_called: bool,
 }
 
-async fn resolve_model(core: &AtomicCore) -> Result<(ProviderConfig, String), String> {
+async fn resolve_model(core: &AtomicCore) -> Result<(ProviderConfig, String, Option<String>), String> {
     let settings = core
         .get_settings()
         .await
@@ -336,7 +336,11 @@ async fn resolve_model(core: &AtomicCore) -> Result<(ProviderConfig, String), St
             .cloned()
             .unwrap_or_else(|| "anthropic/claude-sonnet-4.6".to_string()),
     };
-    Ok((config, model))
+    let custom_prompt = settings
+        .get("briefing_prompt")
+        .filter(|s| !s.is_empty())
+        .cloned();
+    Ok((config, model, custom_prompt))
 }
 
 async fn run_research(
@@ -501,14 +505,15 @@ pub(crate) async fn generate(
     new_atoms: &[AtomWithTags],
     total_new: i32,
 ) -> Result<(String, Vec<(i32, String, String)>), String> {
-    let (provider_config, model) = resolve_model(core).await?;
+    let (provider_config, model, custom_system_prompt) = resolve_model(core).await?;
     tracing::info!(model = %model, atoms = new_atoms.len(), "[briefing/agentic] Running agent");
 
     let user_prompt = build_user_prompt(since, new_atoms, total_new);
 
+    let system = custom_system_prompt.as_deref().unwrap_or(SYSTEM_PROMPT);
     let mut state = AgentState {
         messages: vec![
-            Message::system(SYSTEM_PROMPT.to_string()),
+            Message::system(system.to_string()),
             Message::user(user_prompt),
         ],
         done_called: false,

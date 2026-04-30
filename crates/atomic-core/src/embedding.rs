@@ -792,6 +792,10 @@ async fn process_tagging_only_inner(
         return Ok(TaggingOutcome::Skipped);
     }
 
+    let custom_tagging_prompt = settings_map
+        .get("tagging_prompt")
+        .filter(|s| !s.is_empty())
+        .map(|s| s.as_str());
     let tags = run_tagging_strategy(
         tagging_strategy,
         &provider_config,
@@ -799,6 +803,7 @@ async fn process_tagging_only_inner(
         &tag_tree_json,
         &tagging_model,
         supported_params,
+        custom_tagging_prompt,
     )
     .await?;
 
@@ -852,7 +857,6 @@ async fn process_tagging_only_inner(
         new_tags_created: all_new_tag_ids,
     })
 }
-
 async fn run_tagging_strategy(
     strategy: TaggingStrategy,
     provider_config: &ProviderConfig,
@@ -860,6 +864,7 @@ async fn run_tagging_strategy(
     tag_tree_json: &str,
     model: &str,
     supported_params: Option<Vec<String>>,
+    custom_system_prompt: Option<&str>,
 ) -> Result<Vec<crate::extraction::TagApplication>, String> {
     match strategy {
         TaggingStrategy::TruncatedFullContent => {
@@ -869,6 +874,7 @@ async fn run_tagging_strategy(
                 tag_tree_json,
                 model,
                 supported_params,
+                custom_system_prompt,
             )
             .await
         }
@@ -882,6 +888,7 @@ async fn run_tagging_strategy(
                 tag_tree_json,
                 model,
                 supported_params,
+                custom_system_prompt,
             )
             .await
         }
