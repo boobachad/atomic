@@ -69,9 +69,7 @@ pub async fn set_setting(
         // A future "change for all DBs" operation that updates the workspace
         // default cascade-style would need its own dedicated route that
         // walks every DB without an override and re-embeds them.
-        let result =
-            db.0.set_setting_with_reembed(&key, &value, on_event)
-                .await;
+        let result = db.0.set_setting_with_reembed(&key, &value, on_event).await;
         ok_or_error(result)
     } else {
         ok_or_error(db.0.set_setting(&key, &value).await)

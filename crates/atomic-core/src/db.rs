@@ -68,57 +68,7 @@ impl Database {
         create: bool,
         pool_size: usize,
     ) -> Result<Self, AtomicCoreError> {
-        // Register sqlite-vec extension
-        unsafe {
-            #[allow(clippy::missing_transmute_annotations)]
-            sqlite3_auto_extension(Some(std::mem::transmute(sqlite3_vec_init as *const ())));
-        }
-
-        // Create parent directory if needed
-        if create {
-            if let Some(parent) = path.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-        }
-
-        let conn = Connection::open(path)?;
-        conn.set_prepared_statement_cache_capacity(STMT_CACHE_CAPACITY);
-
-        // Base PRAGMAs + WAL size limit (64 MB) to prevent unbounded WAL growth
-        conn.execute_batch(&format!(
-            "{} PRAGMA journal_size_limit=67108864;",
-            BASE_PRAGMAS
-        ))?;
-
-        // Checkpoint any WAL from a previous run to start clean
-        conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
-
-        // Always run migrations — idempotent, handles both new and existing DBs
-        Self::run_migrations(&conn)?;
-
-        // Update query planner statistics so the optimizer has fresh data
-        conn.execute_batch("PRAGMA optimize=0x10002;")?;
-
-        // Warm the OS page cache and SQLite page cache by touching the indexes
-        // and table pages that the most common queries need on startup.
-        Self::warm_cache(&conn);
-
-        let db_path = path.to_path_buf();
-
-        // Pre-open read connections for the pool
-        let mut read_pool = Vec::with_capacity(pool_size);
-        for _ in 0..pool_size {
-            let rc = Connection::open(&db_path)?;
-            rc.set_prepared_statement_cache_capacity(STMT_CACHE_CAPACITY);
-            rc.execute_batch(&format!("{} PRAGMA query_only=ON;", BASE_PRAGMAS))?;
-            read_pool.push(Mutex::new(rc));
-        }
-
-        Ok(Database {
-            conn: Mutex::new(conn),
-            read_pool,
-            db_path,
-        })
+        Self::open_with_pool_size_and_settings_cleanup(path, create, pool_size, false)
     }
 
     /// Acquire a read-only connection from the pool.
@@ -151,6 +101,68 @@ impl Database {
     /// Creates the DB and parent directories if they don't exist.
     pub fn open_for_server(path: impl AsRef<Path>) -> Result<Self, AtomicCoreError> {
         Self::open_with_pool_size(path.as_ref(), true, SERVER_READ_POOL_SIZE)
+    }
+
+    /// Open a registry-backed data database with a larger read pool.
+    ///
+    /// This is the same as `open_for_server`, but runs the one migration step
+    /// that is only valid when this SQLite file is a per-database store whose
+    /// defaults live in registry.db.
+    pub fn open_for_server_with_registry(path: impl AsRef<Path>) -> Result<Self, AtomicCoreError> {
+        Self::open_with_pool_size_and_settings_cleanup(
+            path.as_ref(),
+            true,
+            SERVER_READ_POOL_SIZE,
+            true,
+        )
+    }
+
+    fn open_with_pool_size_and_settings_cleanup(
+        path: &Path,
+        create: bool,
+        pool_size: usize,
+        cleanup_legacy_seed_settings: bool,
+    ) -> Result<Self, AtomicCoreError> {
+        // Register sqlite-vec extension
+        unsafe {
+            #[allow(clippy::missing_transmute_annotations)]
+            sqlite3_auto_extension(Some(std::mem::transmute(sqlite3_vec_init as *const ())));
+        }
+
+        if create {
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+        }
+
+        let conn = Connection::open(path)?;
+        conn.set_prepared_statement_cache_capacity(STMT_CACHE_CAPACITY);
+
+        conn.execute_batch(&format!(
+            "{} PRAGMA journal_size_limit=67108864;",
+            BASE_PRAGMAS
+        ))?;
+        conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
+
+        Self::run_migrations_internal(&conn, cleanup_legacy_seed_settings)?;
+
+        conn.execute_batch("PRAGMA optimize=0x10002;")?;
+        Self::warm_cache(&conn);
+
+        let db_path = path.to_path_buf();
+        let mut read_pool = Vec::with_capacity(pool_size);
+        for _ in 0..pool_size {
+            let rc = Connection::open(&db_path)?;
+            rc.set_prepared_statement_cache_capacity(STMT_CACHE_CAPACITY);
+            rc.execute_batch(&format!("{} PRAGMA query_only=ON;", BASE_PRAGMAS))?;
+            read_pool.push(Mutex::new(rc));
+        }
+
+        Ok(Database {
+            conn: Mutex::new(conn),
+            read_pool,
+            db_path,
+        })
     }
 
     /// Walk the hot indexes and table pages into the OS + SQLite page caches.
@@ -202,6 +214,17 @@ impl Database {
     const LATEST_VERSION: i32 = 15;
 
     pub fn run_migrations(conn: &Connection) -> Result<(), AtomicCoreError> {
+        Self::run_migrations_internal(conn, false)
+    }
+
+    pub fn run_migrations_for_registry(conn: &Connection) -> Result<(), AtomicCoreError> {
+        Self::run_migrations_internal(conn, true)
+    }
+
+    fn run_migrations_internal(
+        conn: &Connection,
+        cleanup_legacy_seed_settings: bool,
+    ) -> Result<(), AtomicCoreError> {
         let version: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
 
         // --- V0 → V1: Baseline schema (tables + indexes) ---
@@ -733,7 +756,7 @@ impl Database {
             )?;
         }
 
-        // --- V14 → V15: Remove legacy per-DB seed rows for the resolver ---
+        // --- V14 → V15: Finish settings resolver migration ---
         //
         // Pre-this-version, every per-DB settings table was seeded with the
         // entire `DEFAULT_SETTINGS` map at open time. The override-aware
@@ -746,23 +769,30 @@ impl Database {
         // edits appear to do nothing. Wipe the seeds so future resolver
         // reads fall through to the registry cleanly.
         //
-        // Pre-this-version, registry-attached deployments routed all
-        // settings writes to the registry, so a per-DB row for one of these
-        // keys was definitionally a seed (never user-set). Per CLAUDE.md
-        // pre-alpha policy we accept erasing any in-flight per-DB overrides
-        // written by builds of this branch before the resolver landed.
+        // This cleanup is only valid for registry-backed data DBs. Standalone
+        // SQLite `AtomicCore::open_or_create` DBs store their canonical
+        // settings in this table, so plain Database opens preserve rows and
+        // only advance the schema version.
+        //
+        // In registry-backed deployments before this version, settings writes
+        // routed to the registry, so a per-DB row for one of these keys was
+        // definitionally a seed (never user-set). Per CLAUDE.md pre-alpha
+        // policy we accept erasing any in-flight per-DB overrides written by
+        // builds of this branch before the resolver landed.
         if version < 15 {
-            let keys: Vec<&str> = crate::settings::DEFAULT_SETTINGS
-                .iter()
-                .map(|(k, _)| *k)
-                .collect();
-            if !keys.is_empty() {
-                let placeholders = std::iter::repeat("?")
-                    .take(keys.len())
-                    .collect::<Vec<_>>()
-                    .join(",");
-                let sql = format!("DELETE FROM settings WHERE key IN ({})", placeholders);
-                conn.execute(&sql, rusqlite::params_from_iter(keys.iter()))?;
+            if cleanup_legacy_seed_settings {
+                let keys: Vec<&str> = crate::settings::DEFAULT_SETTINGS
+                    .iter()
+                    .map(|(k, _)| *k)
+                    .collect();
+                if !keys.is_empty() {
+                    let placeholders = std::iter::repeat("?")
+                        .take(keys.len())
+                        .collect::<Vec<_>>()
+                        .join(",");
+                    let sql = format!("DELETE FROM settings WHERE key IN ({})", placeholders);
+                    conn.execute(&sql, rusqlite::params_from_iter(keys.iter()))?;
+                }
             }
             conn.execute_batch("PRAGMA user_version = 15;")?;
         }
@@ -959,8 +989,9 @@ impl Database {
         // registry-defaults + per-DB-overrides model. Defaults live in
         // `registry.db` (seeded by `Registry::open` via `migrate_settings_to`);
         // per-DB rows only exist when the user explicitly overrides a value.
-        // The V14→V15 migration above purges any legacy seed rows so the
-        // resolver's "any per-DB row is an override" rule stays correct.
+        // Registry-backed opens run the V14→V15 cleanup above to purge any
+        // legacy seed rows so the resolver's "any per-DB row is an override"
+        // rule stays correct.
 
         Ok(())
     }
@@ -1068,7 +1099,7 @@ mod tests {
             );
 
             // Run migrations again — V15 should fire and wipe the seed rows.
-            Database::run_migrations(&conn).unwrap();
+            Database::run_migrations_for_registry(&conn).unwrap();
 
             let version: i32 = conn
                 .query_row("PRAGMA user_version", [], |row| row.get(0))
@@ -1081,17 +1112,34 @@ mod tests {
             // Every key in DEFAULT_SETTINGS must be gone — they were seeds.
             for (key, _) in crate::settings::DEFAULT_SETTINGS {
                 let exists: bool = conn
-                    .query_row(
-                        "SELECT 1 FROM settings WHERE key = ?1",
-                        [key],
-                        |_| Ok(true),
-                    )
+                    .query_row("SELECT 1 FROM settings WHERE key = ?1", [key], |_| Ok(true))
                     .unwrap_or(false);
                 assert!(
                     !exists,
                     "V15 should have removed legacy seed row for '{key}'"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn test_v15_preserves_standalone_settings_rows() {
+        // Registry-less SQLite cores use the data DB's settings table as the
+        // canonical settings store. The V15 seed cleanup is only valid when a
+        // registry is attached, so the plain migration path must preserve
+        // those rows.
+        let temp_file = NamedTempFile::new().unwrap();
+        let db = Database::open_or_create(temp_file.path()).unwrap();
+
+        {
+            let conn = db.conn.lock().unwrap();
+            conn.execute_batch("PRAGMA user_version = 14;").unwrap();
+            crate::settings::set_setting(&conn, "chat_model", "custom/model").unwrap();
+
+            Database::run_migrations(&conn).unwrap();
+
+            let value = crate::settings::get_setting(&conn, "chat_model").unwrap();
+            assert_eq!(value, "custom/model");
         }
     }
 

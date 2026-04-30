@@ -281,7 +281,11 @@ impl AtomicCore {
         db_path: impl AsRef<Path>,
         registry: Option<Arc<registry::Registry>>,
     ) -> Result<Self, AtomicCoreError> {
-        let db = Database::open_for_server(db_path)?;
+        let db = if registry.is_some() {
+            Database::open_for_server_with_registry(db_path)?
+        } else {
+            Database::open_for_server(db_path)?
+        };
         Self::seed_and_backfill(db, registry)
     }
 
@@ -531,10 +535,7 @@ impl AtomicCore {
         &self,
     ) -> Result<std::collections::HashMap<String, String>, AtomicCoreError> {
         let resolved = self.get_settings_with_source().await?;
-        Ok(resolved
-            .into_iter()
-            .map(|(k, v)| (k, v.value))
-            .collect())
+        Ok(resolved.into_iter().map(|(k, v)| (k, v.value)).collect())
     }
 
     /// Get all settings as a HashMap. Internal helper used by embedding/agent code.
@@ -650,10 +651,7 @@ impl AtomicCore {
     /// fallback — used by the "overrides across all databases" endpoint that
     /// needs just the override layer for one key, not the merged value.
     /// Returns Ok(None) for workspace-only keys (they cannot have overrides).
-    pub async fn get_setting_override(
-        &self,
-        key: &str,
-    ) -> Result<Option<String>, AtomicCoreError> {
+    pub async fn get_setting_override(&self, key: &str) -> Result<Option<String>, AtomicCoreError> {
         if settings::is_workspace_only(key) {
             return Ok(None);
         }
@@ -4349,25 +4347,22 @@ mod tests {
         // workspace default — so a future second DB inherits it instead of
         // starting on the builtin default.
         let (registry, cores, dir) = make_workspace(0);
-        cores[0].set_setting("chat_model", "openai/gpt-4o").await.unwrap();
-
-        // The single DB's per-DB settings table stays empty for this key.
-        let per_db = cores[0]
-            .storage
-            .get_all_settings_sync()
+        cores[0]
+            .set_setting("chat_model", "openai/gpt-4o")
             .await
             .unwrap();
+
+        // The single DB's per-DB settings table stays empty for this key.
+        let per_db = cores[0].storage.get_all_settings_sync().await.unwrap();
         assert!(!per_db.contains_key("chat_model"));
         assert_eq!(registry.get_setting("chat_model").unwrap(), "openai/gpt-4o");
 
         // Spin up a second DB; it inherits the workspace default.
         registry.create_database("second").unwrap();
         let second_path = dir.path().join("second.db");
-        let second = AtomicCore::open_for_server_with_registry(
-            &second_path,
-            Some(Arc::clone(&registry)),
-        )
-        .unwrap();
+        let second =
+            AtomicCore::open_for_server_with_registry(&second_path, Some(Arc::clone(&registry)))
+                .unwrap();
         let settings = second.get_settings().await.unwrap();
         assert_eq!(
             settings.get("chat_model").map(String::as_str),
@@ -4381,7 +4376,9 @@ mod tests {
         // to that DB's per-DB table. The other DB keeps inheriting from
         // the workspace default.
         let (registry, cores, _dir) = make_workspace(1);
-        registry.set_setting("chat_model", "workspace/default").unwrap();
+        registry
+            .set_setting("chat_model", "workspace/default")
+            .unwrap();
 
         cores[0]
             .set_setting("chat_model", "override/for-first")
@@ -4406,7 +4403,9 @@ mod tests {
     #[tokio::test]
     async fn test_clear_override_falls_back_to_default() {
         let (registry, cores, _dir) = make_workspace(1);
-        registry.set_setting("chat_model", "workspace/default").unwrap();
+        registry
+            .set_setting("chat_model", "workspace/default")
+            .unwrap();
         cores[0]
             .set_setting("chat_model", "override/for-first")
             .await
@@ -4436,7 +4435,9 @@ mod tests {
     async fn test_get_settings_with_source_labels_each_layer() {
         let (registry, cores, _dir) = make_workspace(1);
         // Workspace default for an overridable key.
-        registry.set_setting("chat_model", "workspace/default").unwrap();
+        registry
+            .set_setting("chat_model", "workspace/default")
+            .unwrap();
         // Per-DB override for another overridable key on the first DB.
         cores[0]
             .set_setting("tagging_model", "override/tag")

@@ -202,7 +202,10 @@ mod tests {
         migrate_settings(&conn).unwrap();
         let settings = get_all_settings(&conn).unwrap();
 
-        assert!(!settings.is_empty(), "migrate_settings should seed defaults");
+        assert!(
+            !settings.is_empty(),
+            "migrate_settings should seed defaults"
+        );
         assert_eq!(
             settings.get("provider").map(String::as_str),
             Some("openrouter"),
