@@ -340,11 +340,16 @@ async fn generate_section_ops_proposal(
     // Enumerate current section headings for the LLM to reference verbatim.
     let heading_list = extract_current_headings(&existing.article.content);
     let headings_block = if heading_list.is_empty() {
-        "(no ## headings — the article has no sections yet; use InsertSection with after_heading=\"\" to add one at the end)".to_string()
+        "(no section headings — the article has no sections yet; use InsertSection with after_heading=\"\" to add one at the end)".to_string()
     } else {
         heading_list
             .iter()
-            .map(|h| format!("- {}", h))
+            .map(|(level, h)| {
+                // Indent sub-headings so the LLM can see the hierarchy.
+                // Level 2 = no indent; each extra level adds two spaces.
+                let indent = "  ".repeat((*level as usize).saturating_sub(2));
+                format!("{}{}", indent, h)
+            })
             .collect::<Vec<_>>()
             .join("\n")
     };
@@ -498,7 +503,7 @@ async fn generate_section_ops_proposal(
 /// stay embedded in their parent section's body. Surfacing `###` headings to
 /// the LLM would let it target a heading the applier can't resolve, which
 /// discards the entire proposal as a hallucination.
-fn extract_current_headings(content: &str) -> Vec<String> {
+fn extract_current_headings(content: &str) -> Vec<(u8, String)> {
     let mut headings = Vec::new();
     for line in content.lines() {
         let stripped = line.trim_start();
@@ -507,8 +512,8 @@ fn extract_current_headings(content: &str) -> Vec<String> {
         while hashes < bytes.len() && bytes[hashes] == b'#' {
             hashes += 1;
         }
-        if hashes == 2 && hashes < bytes.len() && bytes[hashes] == b' ' {
-            headings.push(stripped[hashes + 1..].trim().to_string());
+        if hashes >= 2 && hashes < bytes.len() && bytes[hashes] == b' ' {
+            headings.push((hashes as u8, stripped[hashes + 1..].trim().to_string()));
         }
     }
     headings
@@ -561,7 +566,7 @@ Operations (value of the `op` field):
 - "InsertSection": add a brand-new section (use only for genuinely new topics not covered elsewhere). Set `heading` to the new section's heading. Set `after_heading` to the exact existing heading you want to insert AFTER, or leave it empty ("") to append the new section at the end of the article. Set `content` to the new section body.
 
 Rules:
-- `heading` and `after_heading` values must EXACTLY match one of the headings listed under CURRENT SECTION HEADINGS when they reference existing sections. Do not paraphrase, reword, or change capitalization. Do not include the ## prefix.
+- `heading` and `after_heading` values must EXACTLY match one of the headings listed under CURRENT SECTION HEADINGS when they reference existing sections. Do not paraphrase, reword, or change capitalization. Sub-headings appear indented under their parent in the list; use the exact heading text without any # prefix characters.
 - Prefer AppendToSection over ReplaceSection. Prefer editing an existing section over creating a new one.
 - Every new factual claim MUST have a [N] citation using the next-available citation numbers shown in the user message.
 - Keep tone consistent with the existing article.

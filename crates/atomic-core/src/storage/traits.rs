@@ -700,6 +700,13 @@ pub trait WikiStore: Send + Sync {
 
     /// Delete the pending wiki proposal for a tag (idempotent).
     async fn delete_wiki_proposal(&self, tag_id: &str) -> StorageResult<()>;
+
+    /// Advance the article baseline without changing content: update `atom_count`
+    /// to the current tag-hierarchy total and `updated_at` to now. Called when a
+    /// generate-update pass finds no changes worth proposing so the "N new atoms"
+    /// banner clears and the same atoms are not re-evaluated on every subsequent
+    /// "Generate Update" click.
+    async fn advance_wiki_baseline(&self, tag_id: &str) -> StorageResult<()>;
 }
 
 // ==================== Briefing Storage ====================

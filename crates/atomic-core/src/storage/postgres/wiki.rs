@@ -533,11 +533,18 @@ impl WikiStore for PostgresStorage {
         last_update: &str,
         max_source_tokens: usize,
     ) -> StorageResult<Option<(Vec<ChunkWithContext>, i32)>> {
-        // Get atoms added after the last update
+        // Get atoms added after the last update, spanning the full tag hierarchy.
         let new_atom_ids: Vec<String> = sqlx::query_scalar(
-            "SELECT DISTINCT a.id FROM atoms a
+            "WITH RECURSIVE descendant_tags(id) AS (
+                 SELECT $1
+                 UNION ALL
+                 SELECT t.id FROM tags t
+                 INNER JOIN descendant_tags dt ON t.parent_id = dt.id
+             )
+             SELECT DISTINCT a.id FROM atoms a
              INNER JOIN atom_tags at ON a.id = at.atom_id
-             WHERE at.tag_id = $1 AND a.created_at > $2 AND a.db_id = $3 AND at.db_id = $3",
+             WHERE at.tag_id IN (SELECT id FROM descendant_tags)
+               AND a.created_at > $2 AND a.db_id = $3 AND at.db_id = $3",
         )
         .bind(tag_id)
         .bind(last_update)
@@ -626,13 +633,22 @@ impl WikiStore for PostgresStorage {
             return Ok(None);
         }
 
-        let atom_count: Option<i64> =
-            sqlx::query_scalar("SELECT COUNT(*) FROM atom_tags WHERE tag_id = $1 AND db_id = $2")
-                .bind(tag_id)
-                .bind(&self.db_id)
-                .fetch_one(&self.pool)
-                .await
-                .map_err(|e| AtomicCoreError::Wiki(e.to_string()))?;
+        // Count uses the same descendant CTE as get_article_status.
+        let atom_count: Option<i64> = sqlx::query_scalar(
+            "WITH RECURSIVE descendant_tags(id) AS (
+                 SELECT $1
+                 UNION ALL
+                 SELECT t.id FROM tags t
+                 INNER JOIN descendant_tags dt ON t.parent_id = dt.id
+             )
+             SELECT COUNT(DISTINCT atom_id) FROM atom_tags
+             WHERE tag_id IN (SELECT id FROM descendant_tags) AND db_id = $2",
+        )
+        .bind(tag_id)
+        .bind(&self.db_id)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| AtomicCoreError::Wiki(e.to_string()))?;
 
         Ok(Some((new_chunks, atom_count.unwrap_or(0) as i32)))
     }
@@ -800,6 +816,37 @@ impl WikiStore for PostgresStorage {
             .execute(&self.pool)
             .await
             .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+        Ok(())
+    }
+
+    async fn advance_wiki_baseline(&self, tag_id: &str) -> StorageResult<()> {
+        // Use the same descendant CTE as get_article_status so the counts agree.
+        let current_count: Option<i64> = sqlx::query_scalar(
+            "WITH RECURSIVE descendant_tags(id) AS (
+                SELECT $1
+                UNION ALL
+                SELECT t.id FROM tags t
+                INNER JOIN descendant_tags dt ON t.parent_id = dt.id
+            )
+            SELECT COUNT(DISTINCT atom_id) FROM atom_tags
+            WHERE tag_id IN (SELECT id FROM descendant_tags) AND db_id = $2",
+        )
+        .bind(tag_id)
+        .bind(&self.db_id)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| AtomicCoreError::Wiki(e.to_string()))?;
+        let now = chrono::Utc::now().to_rfc3339();
+        sqlx::query(
+            "UPDATE wiki_articles SET atom_count = $1, updated_at = $2 WHERE tag_id = $3 AND db_id = $4",
+        )
+        .bind(current_count.unwrap_or(0) as i32)
+        .bind(&now)
+        .bind(tag_id)
+        .bind(&self.db_id)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| AtomicCoreError::Wiki(e.to_string()))?;
         Ok(())
     }
 }

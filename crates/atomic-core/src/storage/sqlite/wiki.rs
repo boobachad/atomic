@@ -233,12 +233,21 @@ impl SqliteStorage {
     ) -> StorageResult<Option<(Vec<ChunkWithContext>, i32)>> {
         let conn = self.db.read_conn()?;
 
-        // Get atoms added after the last update
+        // Get atoms added after the last update, spanning the full tag hierarchy
+        // (same scope as generation and get_article_status — prevents "N new atoms"
+        // banners for atoms in child tags that the LLM can never see as updates).
         let mut new_atom_stmt = conn
             .prepare(
-                "SELECT DISTINCT a.id FROM atoms a
+                "WITH RECURSIVE descendant_tags(id) AS (
+                     SELECT ?1
+                     UNION ALL
+                     SELECT t.id FROM tags t
+                     INNER JOIN descendant_tags dt ON t.parent_id = dt.id
+                 )
+                 SELECT DISTINCT a.id FROM atoms a
                  INNER JOIN atom_tags at ON a.id = at.atom_id
-                 WHERE at.tag_id = ?1 AND a.created_at > ?2",
+                 WHERE at.tag_id IN (SELECT id FROM descendant_tags)
+                   AND a.created_at > ?2",
             )
             .map_err(|e| {
                 AtomicCoreError::Wiki(format!("Failed to prepare new atoms query: {}", e))
@@ -283,9 +292,18 @@ impl SqliteStorage {
             return Ok(None);
         }
 
+        // Count uses the same descendant CTE as get_article_status so the
+        // stored atom_count stays in sync with what the banner reports.
         let atom_count: i32 = conn
             .query_row(
-                "SELECT COUNT(*) FROM atom_tags WHERE tag_id = ?1",
+                "WITH RECURSIVE descendant_tags(id) AS (
+                     SELECT ?1
+                     UNION ALL
+                     SELECT t.id FROM tags t
+                     INNER JOIN descendant_tags dt ON t.parent_id = dt.id
+                 )
+                 SELECT COUNT(DISTINCT atom_id) FROM atom_tags
+                 WHERE tag_id IN (SELECT id FROM descendant_tags)",
                 [tag_id],
                 |row| row.get(0),
             )
@@ -411,6 +429,36 @@ impl SqliteStorage {
             .map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
         conn.execute("DELETE FROM wiki_proposals WHERE tag_id = ?1", [tag_id])
             .map_err(|e| AtomicCoreError::Wiki(format!("Failed to delete wiki proposal: {}", e)))?;
+        Ok(())
+    }
+
+    pub(crate) fn advance_wiki_baseline_sync(&self, tag_id: &str) -> StorageResult<()> {
+        let conn = self
+            .db
+            .conn
+            .lock()
+            .map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+        // Use the same descendant CTE as get_article_status so the counts agree.
+        let current_count: i32 = conn
+            .query_row(
+                "WITH RECURSIVE descendant_tags(id) AS (
+                    SELECT ?1
+                    UNION ALL
+                    SELECT t.id FROM tags t
+                    INNER JOIN descendant_tags dt ON t.parent_id = dt.id
+                )
+                SELECT COUNT(DISTINCT atom_id) FROM atom_tags
+                WHERE tag_id IN (SELECT id FROM descendant_tags)",
+                [tag_id],
+                |row| row.get(0),
+            )
+            .map_err(|e| AtomicCoreError::Wiki(format!("Failed to count atoms for baseline advance: {}", e)))?;
+        let now = chrono::Utc::now().to_rfc3339();
+        conn.execute(
+            "UPDATE wiki_articles SET atom_count = ?1, updated_at = ?2 WHERE tag_id = ?3",
+            (current_count, &now, tag_id),
+        )
+        .map_err(|e| AtomicCoreError::Wiki(format!("Failed to advance wiki baseline: {}", e)))?;
         Ok(())
     }
 }
@@ -570,6 +618,14 @@ impl WikiStore for SqliteStorage {
         let storage = self.clone();
         let tag_id = tag_id.to_string();
         tokio::task::spawn_blocking(move || storage.delete_wiki_proposal_sync(&tag_id))
+            .await
+            .map_err(|e| AtomicCoreError::Lock(e.to_string()))?
+    }
+
+    async fn advance_wiki_baseline(&self, tag_id: &str) -> StorageResult<()> {
+        let storage = self.clone();
+        let tag_id = tag_id.to_string();
+        tokio::task::spawn_blocking(move || storage.advance_wiki_baseline_sync(&tag_id))
             .await
             .map_err(|e| AtomicCoreError::Lock(e.to_string()))?
     }

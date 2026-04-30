@@ -1568,7 +1568,16 @@ impl AtomicCore {
         {
             Some(d) => d,
             None => {
-                tracing::info!(tag_id, "[wiki] No update warranted; no proposal created");
+                // The LLM either found no new chunks or evaluated them and decided
+                // nothing needs to change. Advance the article's atom_count and
+                // updated_at to the current values so the "N new atoms" banner
+                // clears and the same atoms are not re-evaluated on every
+                // subsequent "Generate Update" click.
+                if let Err(e) = self.storage.advance_wiki_baseline_sync(tag_id).await {
+                    tracing::warn!(tag_id, error = %e, "[wiki] Failed to advance article baseline on no-change");
+                } else {
+                    tracing::info!(tag_id, "[wiki] No update warranted; article baseline advanced");
+                }
                 return Ok(None);
             }
         };
@@ -1640,13 +1649,12 @@ impl AtomicCore {
             ));
         }
 
-        let now = chrono::Utc::now().to_rfc3339();
         let article = WikiArticle {
             id: existing.article.id.clone(),
             tag_id: tag_id.to_string(),
             content: proposal.content.clone(),
             created_at: existing.article.created_at.clone(),
-            updated_at: now,
+            updated_at: proposal.created_at.clone(),
             atom_count: existing.article.atom_count + proposal.new_atom_count,
         };
 
