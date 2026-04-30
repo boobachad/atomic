@@ -199,7 +199,7 @@ impl Database {
     ///   1. Add a new `if version < N` block at the end (before the virtual-table section)
     ///   2. End the block with `PRAGMA user_version = N;`
     ///   3. Bump LATEST_VERSION
-    const LATEST_VERSION: i32 = 14;
+    const LATEST_VERSION: i32 = 15;
 
     pub fn run_migrations(conn: &Connection) -> Result<(), AtomicCoreError> {
         let version: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
@@ -733,6 +733,38 @@ impl Database {
             )?;
         }
 
+        // --- V14 → V15: Remove legacy per-DB seed rows for the resolver ---
+        //
+        // Pre-this-version, every per-DB settings table was seeded with the
+        // entire `DEFAULT_SETTINGS` map at open time. The new override-aware
+        // resolver in `AtomicCore::get_settings_with_source` treats any
+        // per-DB row as an override on top of the registry default, so those
+        // legacy seeds silently shadow registry writes — on an upgraded
+        // single-DB install, editing `chat_model` would change the registry
+        // value but reads would keep returning the seeded per-DB row.
+        //
+        // Wipe rows whose key is in `DEFAULT_SETTINGS`. Pre-this-version,
+        // registry-attached deployments routed all settings writes to the
+        // registry, so a per-DB row for one of these keys was definitionally
+        // a seed (never user-set). Per CLAUDE.md pre-alpha policy we accept
+        // erasing any in-flight per-DB overrides written by builds of this
+        // branch before the resolver landed.
+        if version < 15 {
+            let keys: Vec<&str> = crate::settings::DEFAULT_SETTINGS
+                .iter()
+                .map(|(k, _)| *k)
+                .collect();
+            if !keys.is_empty() {
+                let placeholders = std::iter::repeat("?")
+                    .take(keys.len())
+                    .collect::<Vec<_>>()
+                    .join(",");
+                let sql = format!("DELETE FROM settings WHERE key IN ({})", placeholders);
+                conn.execute(&sql, rusqlite::params_from_iter(keys.iter()))?;
+            }
+            conn.execute_batch("PRAGMA user_version = 15;")?;
+        }
+
         // --- Triggers (recreated every startup to stay current) ---
         conn.execute_batch(
             "DROP TRIGGER IF EXISTS atom_tags_insert_count;
@@ -921,12 +953,11 @@ impl Database {
             )?;
         }
 
-        // NOTE: per-DB settings tables intentionally start empty under the
+        // Per-DB settings tables intentionally start empty under the
         // registry-defaults + per-DB-overrides model. Defaults live in
         // `registry.db` (seeded by `Registry::open` via `migrate_settings_to`);
         // per-DB rows only exist when the user explicitly overrides a value.
-        // Legacy databases that were created before this change may still
-        // contain seeded rows — pre-alpha, we don't migrate them out.
+        // The V14→V15 migration above purges any legacy seed rows.
 
         Ok(())
     }
@@ -1002,6 +1033,61 @@ pub fn recreate_vec_chunks_with_dimension(
 mod tests {
     use super::*;
     use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_v15_wipes_legacy_per_db_seed_rows() {
+        // Pre-V15, every per-DB connection got the entire DEFAULT_SETTINGS
+        // map seeded into its `settings` table. The new resolver treats per-DB
+        // rows as overrides on top of registry defaults — those legacy seeds
+        // would silently shadow registry writes, making setting edits look
+        // broken on upgraded databases. V15 deletes them.
+        //
+        // We simulate the pre-V15 state by opening a fresh DB (which now runs
+        // *all* migrations including V15), forcibly downgrading the
+        // user_version, re-inserting seed rows, then re-running the migration.
+        let temp_file = NamedTempFile::new().unwrap();
+        let db = Database::open_or_create(temp_file.path()).unwrap();
+
+        {
+            let conn = db.conn.lock().unwrap();
+            // Force the schema back to V14 and re-seed the legacy rows.
+            conn.execute_batch("PRAGMA user_version = 14;").unwrap();
+            crate::settings::migrate_settings(&conn).unwrap();
+            let pre_count: i64 = conn
+                .query_row("SELECT COUNT(*) FROM settings", [], |row| row.get(0))
+                .unwrap();
+            assert!(
+                pre_count > 0,
+                "test setup: legacy rows should be present before V15"
+            );
+
+            // Run migrations again — V15 should fire and wipe the seed rows.
+            Database::run_migrations(&conn).unwrap();
+
+            let version: i32 = conn
+                .query_row("PRAGMA user_version", [], |row| row.get(0))
+                .unwrap();
+            assert!(
+                version >= 15,
+                "user_version should be ≥15 after migration, got {version}"
+            );
+
+            // Every key in DEFAULT_SETTINGS must be gone — they were seeds.
+            for (key, _) in crate::settings::DEFAULT_SETTINGS {
+                let exists: bool = conn
+                    .query_row(
+                        "SELECT 1 FROM settings WHERE key = ?1",
+                        [key],
+                        |_| Ok(true),
+                    )
+                    .unwrap_or(false);
+                assert!(
+                    !exists,
+                    "V15 should have removed legacy seed row for '{key}'"
+                );
+            }
+        }
+    }
 
     #[test]
     fn test_create_database() {

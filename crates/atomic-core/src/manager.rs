@@ -477,35 +477,6 @@ impl DatabaseManager {
         self.sqlite_registry().set_default_database(id)
     }
 
-    /// Recreate vector indexes on all known databases *except* `skip_id` with the
-    /// given dimension. Existing chunk rows are preserved so embed-only jobs can
-    /// reuse current chunk boundaries. `skip_id` is typically the active database
-    /// whose index was already recreated.
-    pub async fn recreate_other_vector_indexes(
-        &self,
-        new_dim: usize,
-        skip_id: &str,
-    ) -> Result<(), AtomicCoreError> {
-        #[cfg(feature = "postgres")]
-        if self.is_postgres() {
-            // In Postgres mode all databases share the same atom_chunks table —
-            // the caller already recreated it, nothing more to do.
-            return Ok(());
-        }
-
-        // SQLite: each database has its own vec_chunks table.
-        let databases = self.sqlite_registry().list_databases()?;
-        for db_info in &databases {
-            if db_info.id == skip_id {
-                continue;
-            }
-            let core = self.get_core(&db_info.id).await?;
-            core.storage.recreate_vector_index_sync(new_dim).await?;
-            tracing::info!(db_id = %db_info.id, db_name = %db_info.name, new_dim, "Recreated vector index");
-        }
-        Ok(())
-    }
-
     /// Optimize all loaded cores (call on shutdown).
     pub fn optimize_all(&self) {
         if let Ok(cores) = self.cores.read() {

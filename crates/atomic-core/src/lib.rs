@@ -473,12 +473,16 @@ impl AtomicCore {
         Ok(core)
     }
 
-    /// Get settings map for passing to background tasks when registry is present.
-    /// Returns Some if registry is available, None if settings should be read from data db.
-    fn settings_for_background(&self) -> Option<HashMap<String, String>> {
-        self.registry
-            .as_ref()
-            .and_then(|reg| reg.get_all_settings().ok())
+    /// Resolved settings map for background AI operations (embedding,
+    /// tagging, search, chat, agent). Returns the same merged view as
+    /// `get_settings` — registry workspace defaults + this DB's per-DB
+    /// overrides + builtin fallbacks — so background helpers see exactly
+    /// what the API surfaces. Returning `None` here would make callers fall
+    /// back to reading just the storage layer, which would skip registry
+    /// defaults; we never want that, so we always return `Some` (or `None`
+    /// only on a hard read failure).
+    async fn settings_for_background(&self) -> Option<HashMap<String, String>> {
+        self.get_settings().await.ok()
     }
 
     /// Get the storage path (for display purposes).
@@ -572,20 +576,30 @@ impl AtomicCore {
             }
         }
 
-        // Layer 3: per-DB overrides. Only applied to overridable keys —
-        // a per-DB row for a workspace-only key (legacy data) is ignored.
+        // Layer 3: per-DB. Two cases:
+        //   * Registry attached (the SQLite multi-DB shape): per-DB rows are
+        //     true overrides on top of the registry. Workspace-only rows in
+        //     this layer are legacy data — the registry is the single source
+        //     of truth for those keys, so we ignore them here.
+        //   * No registry (Postgres deployments today): the storage layer's
+        //     settings table is the only place anything lives. Treat its
+        //     values like a registry layer would — workspace-only → Workspace,
+        //     overridable → WorkspaceDefault. Without a registry there's no
+        //     "per-DB override" concept to surface.
         let per_db = self.storage.get_all_settings_sync().await?;
+        let has_registry = self.registry.is_some();
         for (key, value) in per_db {
-            if settings::is_workspace_only(&key) {
-                continue;
-            }
-            merged.insert(
-                key,
-                settings::SettingValue {
-                    value,
-                    source: settings::SettingSource::Override,
-                },
-            );
+            let source = if settings::is_workspace_only(&key) {
+                if has_registry {
+                    continue;
+                }
+                settings::SettingSource::Workspace
+            } else if has_registry {
+                settings::SettingSource::Override
+            } else {
+                settings::SettingSource::WorkspaceDefault
+            };
+            merged.insert(key, settings::SettingValue { value, source });
         }
 
         Ok(merged)
@@ -1268,7 +1282,7 @@ impl AtomicCore {
             return search::search_atoms_with_settings(
                 &sqlite.db,
                 options,
-                self.settings_for_background(),
+                self.settings_for_background().await,
             )
             .await
             .map_err(|e| AtomicCoreError::Search(e));
@@ -1825,7 +1839,7 @@ impl AtomicCore {
     {
         let on_event = self.wrap_event_for_cache(on_event);
         let canvas_cache = Some(self.canvas_cache.clone());
-        match self.settings_for_background() {
+        match self.settings_for_background().await {
             Some(s) => embedding::process_pending_embeddings_with_settings(
                 self.storage.clone(),
                 on_event,
@@ -1849,7 +1863,7 @@ impl AtomicCore {
     {
         let on_event = self.wrap_event_for_cache(on_event);
         let canvas_cache = Some(self.canvas_cache.clone());
-        match self.settings_for_background() {
+        match self.settings_for_background().await {
             Some(s) => embedding::process_queued_pipeline_jobs_with_settings(
                 self.storage.clone(),
                 on_event,
@@ -1882,7 +1896,7 @@ impl AtomicCore {
         let cutoff_rfc3339 = cutoff.to_rfc3339();
         let on_event = self.wrap_event_for_cache(on_event);
         let canvas_cache = Some(self.canvas_cache.clone());
-        let count = match self.settings_for_background() {
+        let count = match self.settings_for_background().await {
             Some(s) => {
                 embedding::process_pending_embeddings_due_with_settings(
                     self.storage.clone(),
@@ -2051,7 +2065,7 @@ impl AtomicCore {
             .set_tagging_status_sync(atom_id, "pending", None)
             .await?;
 
-        let mut bg_settings = match self.settings_for_background() {
+        let mut bg_settings = match self.settings_for_background().await {
             Some(settings) => settings,
             None => self.storage.get_all_settings_sync().await?,
         };
@@ -2246,7 +2260,7 @@ impl AtomicCore {
             conversation_id,
             content,
             on_event,
-            self.settings_for_background(),
+            self.settings_for_background().await,
         )
         .await
         .map_err(|e| AtomicCoreError::DatabaseOperation(e))
@@ -2269,7 +2283,7 @@ impl AtomicCore {
             conversation_id,
             content,
             on_event,
-            self.settings_for_background(),
+            self.settings_for_background().await,
             canvas_context,
             page_context,
             Some(self.canvas_cache.clone()),
