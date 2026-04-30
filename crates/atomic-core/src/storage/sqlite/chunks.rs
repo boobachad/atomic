@@ -905,8 +905,20 @@ impl SqliteStorage {
                 tag_requested = MAX(atom_pipeline_jobs.tag_requested, excluded.tag_requested),
                 reason = excluded.reason,
                 not_before = MIN(atom_pipeline_jobs.not_before, excluded.not_before),
-                state = 'pending',
-                lease_until = NULL,
+                state = CASE
+                    WHEN atom_pipeline_jobs.state = 'processing'
+                         AND atom_pipeline_jobs.lease_until IS NOT NULL
+                         AND atom_pipeline_jobs.lease_until > excluded.updated_at
+                    THEN atom_pipeline_jobs.state
+                    ELSE 'pending'
+                END,
+                lease_until = CASE
+                    WHEN atom_pipeline_jobs.state = 'processing'
+                         AND atom_pipeline_jobs.lease_until IS NOT NULL
+                         AND atom_pipeline_jobs.lease_until > excluded.updated_at
+                    THEN atom_pipeline_jobs.lease_until
+                    ELSE NULL
+                END,
                 atom_updated_at = excluded.atom_updated_at,
                 last_error = NULL,
                 updated_at = excluded.updated_at"
@@ -936,8 +948,20 @@ impl SqliteStorage {
                 tag_requested = MAX(atom_pipeline_jobs.tag_requested, excluded.tag_requested),
                 reason = excluded.reason,
                 not_before = MIN(atom_pipeline_jobs.not_before, excluded.not_before),
-                state = 'pending',
-                lease_until = NULL,
+                state = CASE
+                    WHEN atom_pipeline_jobs.state = 'processing'
+                         AND atom_pipeline_jobs.lease_until IS NOT NULL
+                         AND atom_pipeline_jobs.lease_until > excluded.updated_at
+                    THEN atom_pipeline_jobs.state
+                    ELSE 'pending'
+                END,
+                lease_until = CASE
+                    WHEN atom_pipeline_jobs.state = 'processing'
+                         AND atom_pipeline_jobs.lease_until IS NOT NULL
+                         AND atom_pipeline_jobs.lease_until > excluded.updated_at
+                    THEN atom_pipeline_jobs.lease_until
+                    ELSE NULL
+                END,
                 atom_updated_at = excluded.atom_updated_at,
                 last_error = NULL,
                 updated_at = excluded.updated_at"

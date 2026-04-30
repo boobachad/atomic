@@ -57,17 +57,9 @@ impl ScheduledTask for DraftPipelineTask {
             let cb = Arc::clone(&ctx.embedding_event_cb);
             move |event| cb(event)
         };
-        let on_event_tag = {
-            let cb = Arc::clone(&ctx.embedding_event_cb);
-            move |event| cb(event)
-        };
 
-        let embedding_count = core
+        let queued_count = core
             .process_pending_embeddings_due(cutoff, on_event)
-            .await
-            .map_err(TaskError::from)?;
-        let tagging_count = core
-            .process_pending_tagging_due(cutoff, on_event_tag)
             .await
             .map_err(TaskError::from)?;
 
@@ -78,8 +70,7 @@ impl ScheduledTask for DraftPipelineTask {
         tracing::info!(
             db_id = %db_id,
             quiet_minutes,
-            embedding_queued = embedding_count,
-            tagging_queued = tagging_count,
+            queued_count,
             "[draft_pipeline] scheduler tick complete"
         );
 
