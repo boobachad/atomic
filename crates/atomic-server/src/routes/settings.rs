@@ -45,14 +45,7 @@ pub async fn set_setting(
     let value = body.into_inner().value;
 
     // Handle embedding-space settings via set_setting_with_reembed (avoids deadlock)
-    let embedding_space_keys = [
-        "provider",
-        "embedding_model",
-        "ollama_embedding_model",
-        "openai_compat_embedding_model",
-        "openai_compat_embedding_dimension",
-    ];
-    if embedding_space_keys.contains(&key.as_str()) {
+    if atomic_core::settings::is_embedding_space_key(&key) {
         let on_event = crate::event_bridge::embedding_event_callback(state.event_tx.clone());
         // `set_setting_with_reembed` writes through the resolver's routing:
         // workspace-only → registry, overridable + N≤1 → registry, overridable
@@ -77,9 +70,18 @@ pub async fn set_setting(
 }
 
 #[utoipa::path(delete, path = "/api/settings/{key}", params(("key" = String, Path, description = "Setting key")), responses((status = 200, description = "Override cleared"), (status = 400, description = "Key is workspace-only", body = ApiErrorResponse)), tag = "settings")]
-pub async fn clear_setting_override(db: Db, path: web::Path<String>) -> HttpResponse {
+pub async fn clear_setting_override(
+    state: web::Data<AppState>,
+    db: Db,
+    path: web::Path<String>,
+) -> HttpResponse {
     let key = path.into_inner();
-    ok_or_error(db.0.clear_override(&key).await)
+    if atomic_core::settings::is_embedding_space_key(&key) {
+        let on_event = crate::event_bridge::embedding_event_callback(state.event_tx.clone());
+        ok_or_error(db.0.clear_override_with_reembed(&key, on_event).await)
+    } else {
+        ok_or_error(db.0.clear_override(&key).await)
+    }
 }
 
 #[derive(Serialize, ToSchema)]

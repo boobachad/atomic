@@ -31,6 +31,21 @@ pub fn is_workspace_only(key: &str) -> bool {
     WORKSPACE_ONLY_KEYS.contains(&key)
 }
 
+/// Settings whose resolved value defines the embedding vector space. Changing
+/// or clearing any of these requires re-embedding the affected database.
+pub const EMBEDDING_SPACE_KEYS: &[&str] = &[
+    "provider",
+    "embedding_model",
+    "ollama_embedding_model",
+    "openai_compat_embedding_model",
+    "openai_compat_embedding_dimension",
+];
+
+/// True if `key` affects the embedding vector space.
+pub fn is_embedding_space_key(key: &str) -> bool {
+    EMBEDDING_SPACE_KEYS.contains(&key)
+}
+
 /// Default settings with their values
 pub const DEFAULT_SETTINGS: &[(&str, &str)] = &[
     ("provider", "openrouter"),

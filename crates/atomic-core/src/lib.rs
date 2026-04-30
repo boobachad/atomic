@@ -2691,19 +2691,12 @@ impl AtomicCore {
         let current_settings = self.get_settings().await?;
         let value_changed = current_settings.get(key).map(|s| s.as_str()) != Some(value);
 
-        let embedding_space_keys = [
-            "provider",
-            "embedding_model",
-            "ollama_embedding_model",
-            "openai_compat_embedding_model",
-            "openai_compat_embedding_dimension",
-        ];
         let mut embedding_space_changed = false;
         let mut dimension_changed = false;
         let mut old_dim = 0usize;
         let mut new_dim = 0usize;
 
-        if embedding_space_keys.contains(&key) && value_changed {
+        if settings::is_embedding_space_key(key) && value_changed {
             embedding_space_changed = true;
             let current_config = ProviderConfig::from_settings(&current_settings);
             old_dim = current_config.embedding_dimension();
@@ -2791,6 +2784,78 @@ impl AtomicCore {
             new_dim,
             total_atom_count: queued_reembedding,
             retried_failed_count: retried_failed,
+        })
+    }
+
+    /// Clear a per-DB override, handling embedding-space changes.
+    ///
+    /// Clearing an embedding-space override can change the active database's
+    /// resolved vector space just like setting one can. Dimension changes
+    /// recreate the active DB's vector index before queueing pending atoms;
+    /// same-dimension space changes re-embed all atoms so stale vectors are
+    /// not left behind.
+    pub async fn clear_override_with_reembed<F>(
+        &self,
+        key: &str,
+        on_event: F,
+    ) -> Result<SettingChangeResult, AtomicCoreError>
+    where
+        F: Fn(EmbeddingEvent) + Send + Sync + Clone + 'static,
+    {
+        let current_settings = self.get_settings().await?;
+        let current_config = ProviderConfig::from_settings(&current_settings);
+        let current_value = current_settings.get(key).cloned();
+
+        self.clear_override(key).await?;
+
+        let new_settings = self.get_settings().await?;
+        let new_config = ProviderConfig::from_settings(&new_settings);
+        let new_value = new_settings.get(key).cloned();
+        let value_changed = current_value != new_value;
+
+        let mut embedding_space_changed = false;
+        let mut dimension_changed = false;
+        let mut old_dim = 0usize;
+        let mut new_dim = 0usize;
+        let mut queued_reembedding = 0i32;
+
+        if settings::is_embedding_space_key(key) && value_changed {
+            embedding_space_changed = true;
+            old_dim = current_config.embedding_dimension();
+            new_dim = new_config.embedding_dimension();
+
+            if old_dim != new_dim {
+                dimension_changed = true;
+                tracing::info!(
+                    old_dim,
+                    new_dim,
+                    key,
+                    "Embedding dimension change detected after clearing override"
+                );
+                self.storage.recreate_vector_index_sync(new_dim).await?;
+                self.canvas_cache.invalidate();
+                queued_reembedding = self.spawn_reembed_pending(on_event.clone()).await?;
+                tracing::info!(
+                    queued_reembedding,
+                    "Queued atoms for re-embedding after clearing dimension override"
+                );
+            } else {
+                queued_reembedding = self.reembed_all_atoms(on_event.clone()).await?;
+                tracing::info!(
+                    queued_reembedding,
+                    key,
+                    "Queued atoms for re-embedding after clearing embedding-space override"
+                );
+            }
+        }
+
+        Ok(SettingChangeResult {
+            embedding_space_changed,
+            dimension_changed,
+            old_dim,
+            new_dim,
+            total_atom_count: queued_reembedding,
+            retried_failed_count: 0,
         })
     }
 
@@ -4327,6 +4392,22 @@ mod tests {
         (registry, cores, dir)
     }
 
+    fn assert_vec_chunks_dimension(core: &AtomicCore, dimension: usize) {
+        let sqlite = core.storage.as_sqlite().unwrap();
+        let conn = sqlite.db.conn.lock().unwrap();
+        let sql: String = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='vec_chunks'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(
+            sql.contains(&format!("float[{dimension}]")),
+            "vec_chunks schema should use float[{dimension}], got {sql}"
+        );
+    }
+
     #[tokio::test]
     async fn test_workspace_only_writes_always_hit_registry() {
         // theme is workspace-only — even with multiple DBs, set_setting on
@@ -4429,6 +4510,55 @@ mod tests {
             result.is_err(),
             "clear_override on a workspace-only key must error"
         );
+    }
+
+    #[tokio::test]
+    async fn test_clear_embedding_dimension_override_recreates_vector_index() {
+        let (registry, cores, _dir) = make_workspace(1);
+        registry.set_setting("provider", "openai_compat").unwrap();
+        registry
+            .set_setting("openai_compat_embedding_dimension", "1536")
+            .unwrap();
+
+        cores[0]
+            .set_setting_with_reembed("openai_compat_embedding_dimension", "768", |_| {})
+            .await
+            .unwrap();
+        assert_vec_chunks_dimension(&cores[0], 768);
+
+        let result = cores[0]
+            .clear_override_with_reembed("openai_compat_embedding_dimension", |_| {})
+            .await
+            .unwrap();
+
+        assert!(result.embedding_space_changed);
+        assert!(result.dimension_changed);
+        assert_eq!(result.old_dim, 768);
+        assert_eq!(result.new_dim, 1536);
+        assert_vec_chunks_dimension(&cores[0], 1536);
+    }
+
+    #[tokio::test]
+    async fn test_clear_embedding_model_override_marks_space_changed() {
+        let (registry, cores, _dir) = make_workspace(1);
+        registry
+            .set_setting("embedding_model", "openai/text-embedding-3-small")
+            .unwrap();
+
+        cores[0]
+            .set_setting("embedding_model", "custom/same-dimension")
+            .await
+            .unwrap();
+
+        let result = cores[0]
+            .clear_override_with_reembed("embedding_model", |_| {})
+            .await
+            .unwrap();
+
+        assert!(result.embedding_space_changed);
+        assert!(!result.dimension_changed);
+        assert_eq!(result.old_dim, 1536);
+        assert_eq!(result.new_dim, 1536);
     }
 
     #[tokio::test]
