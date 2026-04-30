@@ -21,12 +21,6 @@ export interface SettingValue {
   source: SettingSource;
 }
 
-export interface SettingOverride {
-  db_id: string;
-  db_name: string;
-  value: string;
-}
-
 /**
  * Keys that are workspace-only — lives in registry.db, cannot be overridden
  * per-DB. Mirrors `atomic_core::settings::WORKSPACE_ONLY_KEYS`. Kept in sync

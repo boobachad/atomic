@@ -1566,36 +1566,6 @@ export function SettingsModal({ isOpen, onClose, initialTab }: SettingsModalProp
                     />
                   </div>
 
-                  {/* Auto-tagging Toggle Section */}
-                  <div className="space-y-1">
-                    <div className="flex items-center justify-between">
-                      <div className="space-y-1">
-                        <label className="block text-sm font-medium text-[var(--color-text-primary)]">
-                          Automatic Tag Extraction
-                        </label>
-                        <p className="text-xs text-[var(--color-text-secondary)]">
-                          Automatically suggest tags when creating atoms
-                        </p>
-                      </div>
-                      <button
-                        type="button"
-                        role="switch"
-                        aria-checked={autoTaggingEnabled}
-                        onClick={() => { const next = !autoTaggingEnabled; setAutoTaggingEnabled(next); autoSave('auto_tagging_enabled', next ? 'true' : 'false'); }}
-                        className={`relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)] focus:ring-offset-2 focus:ring-offset-[var(--color-bg-panel)] ${
-                          autoTaggingEnabled ? 'bg-[var(--color-accent)]' : 'bg-[var(--color-bg-hover)]'
-                        }`}
-                      >
-                        <span
-                          className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
-                            autoTaggingEnabled ? 'translate-x-5' : 'translate-x-0'
-                          }`}
-                        />
-                      </button>
-                    </div>
-                    <OverrideControls settingKey="auto_tagging_enabled" />
-                  </div>
-
                   {/* Troubleshooting */}
                   <div className="space-y-2 pt-4 border-t border-[var(--color-border)]">
                     <label className="block text-sm font-medium text-[var(--color-text-primary)]">
@@ -2225,7 +2195,40 @@ export function SettingsModal({ isOpen, onClose, initialTab }: SettingsModalProp
 
               {/* ===== TAG CATEGORIES TAB ===== */}
               {activeTab === 'tag-categories' && (
-                <TagCategoriesTab />
+                <>
+                  {/* Auto-tagging master toggle — gates everything below;
+                      tag categories only matter when this is on. */}
+                  <div className="space-y-1">
+                    <div className="flex items-center justify-between">
+                      <div className="space-y-1">
+                        <label className="block text-sm font-medium text-[var(--color-text-primary)]">
+                          Automatic Tag Extraction
+                        </label>
+                        <p className="text-xs text-[var(--color-text-secondary)]">
+                          Automatically suggest tags when creating atoms
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        role="switch"
+                        aria-checked={autoTaggingEnabled}
+                        onClick={() => { const next = !autoTaggingEnabled; setAutoTaggingEnabled(next); autoSave('auto_tagging_enabled', next ? 'true' : 'false'); }}
+                        className={`relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)] focus:ring-offset-2 focus:ring-offset-[var(--color-bg-panel)] ${
+                          autoTaggingEnabled ? 'bg-[var(--color-accent)]' : 'bg-[var(--color-bg-hover)]'
+                        }`}
+                      >
+                        <span
+                          className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
+                            autoTaggingEnabled ? 'translate-x-5' : 'translate-x-0'
+                          }`}
+                        />
+                      </button>
+                    </div>
+                    <OverrideControls settingKey="auto_tagging_enabled" />
+                  </div>
+
+                  <TagCategoriesTab />
+                </>
               )}
 
               {/* ===== CONNECTION TAB ===== */}

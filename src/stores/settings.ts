@@ -2,7 +2,6 @@ import { create } from 'zustand';
 import { getTransport } from '../lib/transport';
 import {
   isWorkspaceOnly,
-  type SettingOverride,
   type SettingSource,
   type SettingValue,
 } from '../lib/settings';
@@ -14,18 +13,18 @@ import { useDatabasesStore } from './databases';
  * `sources.foo` to decide whether to render override affordances.
  *
  * Mutations:
- *   - `setSetting`           — routes per the resolver (workspace-only →
- *                              registry; overridable + N≤1 → registry default;
- *                              overridable + N>1 → per-DB override).
- *   - `clearOverride`        — DELETE the per-DB override; resolver falls back
- *                              to workspace default. Refetches to get the
- *                              new resolved source.
- *   - `setWorkspaceDefault`  — write to registry as a workspace default (used
- *                              by the multi-DB "edit defaults" surface).
- *                              Refetches because cascading inheritance can
- *                              change resolved values for any DB.
- *   - `fetchOverridesFor`    — pull the list of databases overriding `key`,
- *                              for the "overridden in N other DBs" badge.
+ *   - `setSetting`     — routes per the resolver (workspace-only → registry;
+ *                        overridable + N≤1 → registry default; overridable +
+ *                        N>1 → per-DB override).
+ *   - `clearOverride`  — DELETE the per-DB override; resolver falls back to
+ *                        the workspace default. Refetches to pick up the new
+ *                        resolved value/source.
+ *
+ * Note: `set_workspace_default` exists on the backend (`PUT
+ * /api/settings/defaults/{key}`) as a primitive for a possible future
+ * "change for all DBs" feature, but isn't wired into the store — multi-DB
+ * users edit per-DB only. Workspace defaults are the inheritance source for
+ * new DBs, frozen at whatever values were live during the N=1 phase.
  */
 interface SettingsStore {
   settings: Record<string, string>;
@@ -36,8 +35,6 @@ interface SettingsStore {
   fetchSettings: () => Promise<void>;
   setSetting: (key: string, value: string) => Promise<void>;
   clearOverride: (key: string) => Promise<void>;
-  setWorkspaceDefault: (key: string, value: string) => Promise<void>;
-  fetchOverridesFor: (key: string) => Promise<SettingOverride[]>;
   testOpenRouterConnection: (apiKey: string) => Promise<boolean>;
 }
 
@@ -108,25 +105,6 @@ export const useSettingsStore = create<SettingsStore>((set) => ({
       set({ error: String(e) });
       throw e;
     }
-  },
-
-  setWorkspaceDefault: async (key: string, value: string) => {
-    try {
-      await getTransport().invoke('set_workspace_default', { key, value });
-      // Cascading inheritance: changing the workspace default can change the
-      // resolved value for every DB without an override. Refetch to catch up.
-      await useSettingsStore.getState().fetchSettings();
-    } catch (e) {
-      set({ error: String(e) });
-      throw e;
-    }
-  },
-
-  fetchOverridesFor: async (key: string) => {
-    return await getTransport().invoke<SettingOverride[]>(
-      'list_setting_overrides',
-      { key },
-    );
   },
 
   testOpenRouterConnection: async (apiKey: string) => {
