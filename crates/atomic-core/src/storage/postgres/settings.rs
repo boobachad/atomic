@@ -154,15 +154,50 @@ impl TokenStore for PostgresStorage {
     }
 
     async fn revoke_api_token(&self, id: &str) -> StorageResult<()> {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+
+        let is_revoked: Option<bool> =
+            sqlx::query_scalar("SELECT (is_revoked != 0) FROM api_tokens WHERE id = $1")
+                .bind(id)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+
+        let Some(is_revoked) = is_revoked else {
+            return Err(AtomicCoreError::NotFound(format!("API token '{}'", id)));
+        };
+
+        if !is_revoked {
+            let active_count: i64 =
+                sqlx::query_scalar("SELECT COUNT(*) FROM api_tokens WHERE is_revoked = 0")
+                    .fetch_one(&mut *tx)
+                    .await
+                    .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+            if active_count <= 1 {
+                return Err(AtomicCoreError::Conflict(
+                    "Cannot revoke the last active API token. Create a replacement token first."
+                        .to_string(),
+                ));
+            }
+        }
+
         let result = sqlx::query("UPDATE api_tokens SET is_revoked = 1 WHERE id = $1")
             .bind(id)
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await
             .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
 
         if result.rows_affected() == 0 {
             return Err(AtomicCoreError::NotFound(format!("API token '{}'", id)));
         }
+
+        tx.commit()
+            .await
+            .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
 
         Ok(())
     }

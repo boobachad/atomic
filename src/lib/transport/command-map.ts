@@ -528,7 +528,7 @@ export const COMMAND_MAP: Record<string, CommandSpec> = {
     method: 'POST',
     path: '/api/setup/claim',
     argsMode: 'body',
-    transformArgs: (a) => ({ name: a.name }),
+    transformArgs: (a) => ({ name: a.name, setup_token: a.setupToken ?? a.setup_token }),
   },
 
   // ==================== Auth / Tokens ====================

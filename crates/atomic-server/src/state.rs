@@ -4,8 +4,77 @@ use crate::export_jobs::ExportJobManager;
 use crate::log_buffer::LogBuffer;
 use atomic_core::{AtomicCore, DatabaseManager};
 use serde::Serialize;
-use std::sync::Arc;
-use tokio::sync::broadcast;
+use sha2::{Digest, Sha256};
+use std::{
+    collections::{HashMap, VecDeque},
+    net::IpAddr,
+    sync::{Arc, Mutex},
+    time::{Duration, Instant},
+};
+use tokio::sync::{broadcast, Mutex as AsyncMutex};
+
+const SETUP_CLAIM_LIMIT: usize = 10;
+const SETUP_CLAIM_WINDOW: Duration = Duration::from_secs(60);
+
+/// Hashed setup token configured through ATOMIC_SETUP_TOKEN.
+pub struct SetupToken {
+    hash: String,
+}
+
+impl SetupToken {
+    pub fn from_raw(raw: String) -> Option<Self> {
+        let token = raw.trim();
+        if token.is_empty() {
+            return None;
+        }
+        Some(Self {
+            hash: hash_setup_token(token),
+        })
+    }
+
+    pub fn verify(&self, candidate: &str) -> bool {
+        hash_setup_token(candidate.trim()) == self.hash
+    }
+}
+
+fn hash_setup_token(raw: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(raw.as_bytes());
+    format!("{:x}", hasher.finalize())
+}
+
+/// Small in-memory limiter for the public setup claim endpoint.
+pub struct SetupClaimLimiter {
+    attempts: Mutex<HashMap<IpAddr, VecDeque<Instant>>>,
+}
+
+impl SetupClaimLimiter {
+    pub fn new() -> Self {
+        Self {
+            attempts: Mutex::new(HashMap::new()),
+        }
+    }
+
+    pub fn check(&self, ip: IpAddr) -> bool {
+        let now = Instant::now();
+        let mut attempts = match self.attempts.lock() {
+            Ok(guard) => guard,
+            Err(_) => return false,
+        };
+        let entries = attempts.entry(ip).or_default();
+        while entries
+            .front()
+            .is_some_and(|at| now.duration_since(*at) > SETUP_CLAIM_WINDOW)
+        {
+            entries.pop_front();
+        }
+        if entries.len() >= SETUP_CLAIM_LIMIT {
+            return false;
+        }
+        entries.push_back(now);
+        true
+    }
+}
 
 /// Shared application state for all route handlers
 pub struct AppState {
@@ -17,6 +86,14 @@ pub struct AppState {
     pub log_buffer: LogBuffer,
     /// Background database export jobs and temporary artifacts.
     pub export_jobs: ExportJobManager,
+    /// Optional setup token required for first-run claims.
+    pub setup_token: Option<SetupToken>,
+    /// Explicit unsafe opt-out from requiring ATOMIC_SETUP_TOKEN for setup claims.
+    pub dangerously_skip_setup_token: bool,
+    /// Serializes setup claims inside this process.
+    pub setup_claim_lock: AsyncMutex<()>,
+    /// Rate-limits setup claim attempts by client IP.
+    pub setup_claim_limiter: SetupClaimLimiter,
 }
 
 impl AppState {

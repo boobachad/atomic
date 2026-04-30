@@ -874,6 +874,7 @@ mod tests {
         let registry = Registry::open_or_create(dir.path()).unwrap();
 
         let (info, raw) = registry.create_api_token("test").unwrap();
+        registry.create_api_token("replacement").unwrap();
         assert!(raw.starts_with("at_"));
 
         let verified = registry.verify_api_token(&raw).unwrap();

@@ -171,6 +171,10 @@ mod tests {
             export_jobs: crate::export_jobs::ExportJobManager::for_tests(
                 temp.path().join("exports"),
             ),
+            setup_token: None,
+            dangerously_skip_setup_token: false,
+            setup_claim_lock: tokio::sync::Mutex::new(()),
+            setup_claim_limiter: crate::state::SetupClaimLimiter::new(),
         });
         std::mem::forget(temp);
         (state, raw_token)
@@ -262,8 +266,10 @@ mod tests {
         let (state, raw_token) = test_state(Some("https://atomic.example.com")).await;
 
         let core = state.manager.active_core().await.unwrap();
+        core.create_api_token("replacement").await.unwrap();
         let tokens = core.list_api_tokens().await.unwrap();
-        core.revoke_api_token(&tokens[0].id).await.unwrap();
+        let token_to_revoke = tokens.iter().find(|t| t.name == "test-token").unwrap();
+        core.revoke_api_token(&token_to_revoke.id).await.unwrap();
 
         let app = actix_test::init_service(
             App::new().service(

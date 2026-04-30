@@ -19,6 +19,7 @@ A production self-hosted setup usually has:
 ```bash
 git clone https://github.com/kenforthewin/atomic.git
 cd atomic
+echo "ATOMIC_SETUP_TOKEN=$(openssl rand -base64 24)" > .env
 docker compose up -d
 ```
 
@@ -28,7 +29,7 @@ The default compose file starts:
 - `ghcr.io/kenforthewin/atomic-web:latest`
 - `nginx:1.28-bookworm` as a local proxy on `http://localhost:8080`
 
-Open `http://localhost:8080` and claim the instance in the setup wizard. The server and web images are published through GitHub Container Registry:
+Open `http://localhost:8080` and claim the instance in the setup wizard with the `ATOMIC_SETUP_TOKEN` value from `.env`. The server and web images are published through GitHub Container Registry:
 
 - [atomic-server package](https://github.com/kenforthewin/atomic/pkgs/container/atomic-server)
 - [atomic-web package](https://github.com/kenforthewin/atomic/pkgs/container/atomic-web)
@@ -43,6 +44,7 @@ docker run -d \
   -p 8080:8080 \
   -v atomic-data:/data \
   -e PUBLIC_URL=https://atomic.example.com \
+  -e ATOMIC_SETUP_TOKEN="$(openssl rand -base64 24)" \
   ghcr.io/kenforthewin/atomic-server:latest
 ```
 
@@ -57,10 +59,11 @@ cargo run -p atomic-server -- --data-dir ./data serve --bind 0.0.0.0 --port 8080
 ```
 
 Open `http://localhost:8080/health` to verify the server is running. The API docs are available at `/api/docs` and `/api/docs/openapi.json`.
+Set `ATOMIC_SETUP_TOKEN` and enter that value in the setup wizard for the first claim, or create the first API token with the CLI.
 
 ## Authentication
 
-Self-hosted Atomic uses Bearer token authentication. The web setup wizard can claim a fresh instance by creating the first token. You can also create tokens from the CLI:
+Self-hosted Atomic uses Bearer token authentication. The web setup wizard can claim a fresh instance by creating the first token after you enter `ATOMIC_SETUP_TOKEN`. You can also create tokens from the CLI:
 
 ```bash
 cargo run -p atomic-server -- --data-dir ./data token create --name "my-laptop"

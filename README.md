@@ -59,10 +59,11 @@ On first launch, the setup wizard walks you through AI provider configuration.
 ```bash
 git clone https://github.com/kenforthewin/atomic.git
 cd atomic
+echo "ATOMIC_SETUP_TOKEN=$(openssl rand -base64 24)" > .env
 docker compose up -d
 ```
 
-This starts three services: the API server, the web frontend, and an nginx reverse proxy. Open `http://localhost:8080` and claim your instance through the setup wizard.
+This starts three services: the API server, the web frontend, and an nginx reverse proxy. Open `http://localhost:8080` and claim your instance through the setup wizard with the `ATOMIC_SETUP_TOKEN` value from `.env`.
 
 The proxy service is provided for convenience — if you already run your own reverse proxy (Caddy, Traefik, etc.), you can skip it and route traffic to the `server` and `web` containers directly. See `docker/nginx.conf` for an example configuration.
 
@@ -72,18 +73,20 @@ The proxy service is provided for convenience — if you already run your own re
 cp fly.toml.example fly.toml
 fly launch --copy-config --no-deploy
 fly volumes create atomic_data --region <your-region> --size 1
+fly secrets set ATOMIC_SETUP_TOKEN="$(openssl rand -base64 24)"
 fly deploy
 ```
 
-Open `https://your-app.fly.dev` and claim your instance. The public URL for OAuth/MCP is auto-detected from the Fly app name.
+Open `https://your-app.fly.dev` and claim your instance with the setup token. The public URL for OAuth/MCP is auto-detected from the Fly app name.
 
 ### Standalone Server
 
 ```bash
+ATOMIC_SETUP_TOKEN="$(openssl rand -base64 24)" \
 cargo run -p atomic-server -- --data-dir ./data serve --port 8080
 ```
 
-On first run, create an API token:
+On first run, enter `ATOMIC_SETUP_TOKEN` in the setup wizard, or create an API token directly:
 
 ```bash
 cargo run -p atomic-server -- --data-dir ./data token create --name default

@@ -35,7 +35,7 @@ Public routes:
 - `GET /api/docs`
 - `GET /api/docs/openapi.json`
 - `GET /api/setup/status`
-- `POST /api/setup/claim` while the instance has no active tokens
+- `POST /api/setup/claim` before the instance has been claimed; requires `ATOMIC_SETUP_TOKEN` unless the server uses the insecure setup-token bypass flag
 - OAuth discovery/register/authorize/token routes when enabled by `PUBLIC_URL`
 
 See [Token Management](/self-hosting/token-management/) for creating and revoking tokens.

@@ -65,6 +65,20 @@ pub enum Command {
         /// Example: postgres://user:pass@localhost:5432/atomic
         #[arg(long, env = "ATOMIC_DATABASE_URL")]
         database_url: Option<String>,
+
+        /// Setup token required for first-run claims.
+        /// Can also be set via ATOMIC_SETUP_TOKEN.
+        #[arg(long, env = "ATOMIC_SETUP_TOKEN")]
+        setup_token: Option<String>,
+
+        /// Insecurely allow first-run claims without ATOMIC_SETUP_TOKEN.
+        /// Intended only for trusted dev setups.
+        #[arg(
+            long,
+            env = "ATOMIC_DANGEROUSLY_SKIP_SETUP_TOKEN",
+            default_value_t = false
+        )]
+        dangerously_skip_setup_token: bool,
     },
 
     /// Manage API tokens
