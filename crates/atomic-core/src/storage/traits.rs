@@ -858,6 +858,10 @@ pub trait SettingsStore: Send + Sync {
 
     /// Set a setting value (upsert).
     async fn set_setting(&self, key: &str, value: &str) -> StorageResult<()>;
+
+    /// Delete a setting row. No-op if the key isn't present. Used to clear a
+    /// per-DB override so the resolver falls back to the workspace default.
+    async fn delete_setting(&self, key: &str) -> StorageResult<()>;
 }
 
 // ==================== Token Storage ====================

@@ -48,6 +48,16 @@ impl SettingsStore for PostgresStorage {
 
         Ok(())
     }
+
+    async fn delete_setting(&self, key: &str) -> StorageResult<()> {
+        sqlx::query("DELETE FROM settings WHERE key = $1")
+            .bind(key)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+
+        Ok(())
+    }
 }
 
 // ==================== Tokens ====================

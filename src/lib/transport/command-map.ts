@@ -343,6 +343,10 @@ export const COMMAND_MAP: Record<string, CommandSpec> = {
     argsMode: 'body',
     transformArgs: (a) => ({ value: a.value }),
   },
+  clear_setting_override: {
+    method: 'DELETE',
+    path: (a) => `/api/settings/${encodeURIComponent(a.key as string)}`,
+  },
   test_openrouter_connection: {
     method: 'POST',
     path: '/api/settings/test-openrouter',

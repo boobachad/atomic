@@ -77,6 +77,8 @@ pub use utoipa_scalar::{Scalar, Servable};
         // Settings
         routes::settings::get_settings,
         routes::settings::set_setting,
+        routes::settings::clear_setting_override,
+        routes::settings::list_setting_overrides,
         routes::settings::test_openrouter_connection,
         routes::settings::test_openai_compat_connection,
         routes::settings::get_available_llm_models,
@@ -248,6 +250,7 @@ pub use utoipa_scalar::{Scalar, Servable};
         routes::wiki::GenerateWikiBody,
         routes::settings::SetSettingBody,
         routes::settings::TestOpenRouterBody,
+        routes::settings::OverrideEntry,
         routes::canvas::CanvasLevelBody,
         routes::clustering::ComputeClustersBody,
         routes::chat::CreateConversationBody,

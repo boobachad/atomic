@@ -30,6 +30,15 @@ impl SqliteStorage {
             .map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
         crate::settings::set_setting(&conn, key, value)
     }
+
+    pub(crate) fn delete_setting_sync(&self, key: &str) -> StorageResult<()> {
+        let conn = self
+            .db
+            .conn
+            .lock()
+            .map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+        crate::settings::delete_setting(&conn, key)
+    }
 }
 
 #[async_trait]
@@ -44,6 +53,10 @@ impl SettingsStore for SqliteStorage {
 
     async fn set_setting(&self, key: &str, value: &str) -> StorageResult<()> {
         self.set_setting_sync(key, value)
+    }
+
+    async fn delete_setting(&self, key: &str) -> StorageResult<()> {
+        self.delete_setting_sync(key)
     }
 }
 
