@@ -876,7 +876,7 @@ impl SqliteStorage {
             .map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
         let now = chrono::Utc::now().to_rfc3339();
 
-        let sql = if max_updated_at.is_some() {
+        let count = conn.execute(
             "INSERT INTO atom_pipeline_jobs (
                 atom_id, embed_requested, tag_requested, reason, not_before,
                 state, lease_until, attempts, atom_updated_at, last_error,
@@ -895,7 +895,7 @@ impl SqliteStorage {
                     ?1,
                     ?1
              FROM atoms
-             WHERE updated_at <= ?2
+             WHERE (?2 IS NULL OR updated_at <= ?2)
                AND (
                  embedding_status = 'pending'
                  OR (embedding_status = 'complete' AND tagging_status = 'pending')
@@ -905,72 +905,17 @@ impl SqliteStorage {
                 tag_requested = MAX(atom_pipeline_jobs.tag_requested, excluded.tag_requested),
                 reason = excluded.reason,
                 not_before = MIN(atom_pipeline_jobs.not_before, excluded.not_before),
-                state = CASE
-                    WHEN atom_pipeline_jobs.state = 'processing'
-                         AND atom_pipeline_jobs.lease_until IS NOT NULL
-                         AND atom_pipeline_jobs.lease_until > excluded.updated_at
-                    THEN atom_pipeline_jobs.state
-                    ELSE 'pending'
-                END,
-                lease_until = CASE
-                    WHEN atom_pipeline_jobs.state = 'processing'
-                         AND atom_pipeline_jobs.lease_until IS NOT NULL
-                         AND atom_pipeline_jobs.lease_until > excluded.updated_at
-                    THEN atom_pipeline_jobs.lease_until
-                    ELSE NULL
-                END,
+                state = 'pending',
+                lease_until = NULL,
                 atom_updated_at = excluded.atom_updated_at,
                 last_error = NULL,
-                updated_at = excluded.updated_at"
-        } else {
-            "INSERT INTO atom_pipeline_jobs (
-                atom_id, embed_requested, tag_requested, reason, not_before,
-                state, lease_until, attempts, atom_updated_at, last_error,
-                created_at, updated_at
-             )
-             SELECT id,
-                    CASE WHEN embedding_status = 'pending' THEN 1 ELSE 0 END,
-                    CASE WHEN tagging_status = 'pending' THEN 1 ELSE 0 END,
-                    'status-backfill',
-                    ?1,
-                    'pending',
-                    NULL,
-                    0,
-                    updated_at,
-                    NULL,
-                    ?1,
-                    ?1
-             FROM atoms
-             WHERE embedding_status = 'pending'
-                OR (embedding_status = 'complete' AND tagging_status = 'pending')
-             ON CONFLICT(atom_id) DO UPDATE SET
-                embed_requested = MAX(atom_pipeline_jobs.embed_requested, excluded.embed_requested),
-                tag_requested = MAX(atom_pipeline_jobs.tag_requested, excluded.tag_requested),
-                reason = excluded.reason,
-                not_before = MIN(atom_pipeline_jobs.not_before, excluded.not_before),
-                state = CASE
-                    WHEN atom_pipeline_jobs.state = 'processing'
-                         AND atom_pipeline_jobs.lease_until IS NOT NULL
-                         AND atom_pipeline_jobs.lease_until > excluded.updated_at
-                    THEN atom_pipeline_jobs.state
-                    ELSE 'pending'
-                END,
-                lease_until = CASE
-                    WHEN atom_pipeline_jobs.state = 'processing'
-                         AND atom_pipeline_jobs.lease_until IS NOT NULL
-                         AND atom_pipeline_jobs.lease_until > excluded.updated_at
-                    THEN atom_pipeline_jobs.lease_until
-                    ELSE NULL
-                END,
-                atom_updated_at = excluded.atom_updated_at,
-                last_error = NULL,
-                updated_at = excluded.updated_at"
-        };
-
-        let count = match max_updated_at {
-            Some(cutoff) => conn.execute(sql, rusqlite::params![&now, cutoff])?,
-            None => conn.execute(sql, rusqlite::params![&now])?,
-        };
+                updated_at = excluded.updated_at
+             WHERE atom_pipeline_jobs.state != 'processing'
+                OR atom_pipeline_jobs.lease_until IS NULL
+                OR atom_pipeline_jobs.lease_until <= excluded.updated_at
+                OR atom_pipeline_jobs.atom_updated_at != excluded.atom_updated_at",
+            rusqlite::params![&now, max_updated_at],
+        )?;
         Ok(count as i32)
     }
 
@@ -1433,6 +1378,28 @@ mod tests {
     use crate::{AtomicCore, CreateAtomRequest};
     use tempfile::TempDir;
 
+    async fn enqueue_and_claim_pipeline_job(
+        core: &AtomicCore,
+        atom_id: &str,
+    ) -> Vec<crate::models::AtomPipelineJob> {
+        let initial_job = crate::models::AtomPipelineJobRequest {
+            atom_id: atom_id.to_string(),
+            embed_requested: true,
+            tag_requested: true,
+            not_before: None,
+            reason: "initial".to_string(),
+        };
+        core.storage()
+            .enqueue_pipeline_jobs_sync(&[initial_job])
+            .await
+            .expect("enqueue initial job");
+
+        core.storage()
+            .claim_pipeline_jobs_sync(10, "2099-01-01T00:30:00+00:00", "2099-01-01T00:00:00+00:00")
+            .await
+            .expect("claim job")
+    }
+
     #[tokio::test]
     async fn clear_pipeline_jobs_keeps_newer_pending_job_for_same_atom() {
         let dir = TempDir::new().expect("create tempdir");
@@ -1450,23 +1417,7 @@ mod tests {
             .expect("create atom")
             .expect("atom inserted");
 
-        let initial_job = crate::models::AtomPipelineJobRequest {
-            atom_id: created.atom.id.clone(),
-            embed_requested: true,
-            tag_requested: true,
-            not_before: None,
-            reason: "initial".to_string(),
-        };
-        core.storage()
-            .enqueue_pipeline_jobs_sync(&[initial_job])
-            .await
-            .expect("enqueue initial job");
-
-        let claimed = core
-            .storage()
-            .claim_pipeline_jobs_sync(10, "2099-01-01T00:30:00+00:00", "2099-01-01T00:00:00+00:00")
-            .await
-            .expect("claim job");
+        let claimed = enqueue_and_claim_pipeline_job(&core, &created.atom.id).await;
         assert_eq!(claimed.len(), 1);
 
         let newer_updated_at = "2026-01-01T00:00:01+00:00";
@@ -1503,6 +1454,89 @@ mod tests {
             .expect("newer pipeline job should remain");
         assert_eq!(row.0, "pending");
         assert_eq!(row.1, newer_updated_at);
+    }
+
+    #[tokio::test]
+    async fn status_backfill_requeues_newer_revision_during_active_lease() {
+        let dir = TempDir::new().expect("create tempdir");
+        let core = AtomicCore::open_or_create(dir.path().join("pipeline.db"))
+            .expect("open sqlite test db");
+        let created = core
+            .create_atom(
+                CreateAtomRequest {
+                    content: String::new(),
+                    ..Default::default()
+                },
+                |_| {},
+            )
+            .await
+            .expect("create atom")
+            .expect("atom inserted");
+
+        let claimed = enqueue_and_claim_pipeline_job(&core, &created.atom.id).await;
+        assert_eq!(claimed.len(), 1);
+
+        let newer_updated_at = "2099-01-01T00:00:01+00:00";
+        let conn = rusqlite::Connection::open(core.db_path()).expect("open sqlite db");
+        conn.execute(
+            "UPDATE atoms SET updated_at = ?1, embedding_status = 'pending', tagging_status = 'pending' WHERE id = ?2",
+            rusqlite::params![newer_updated_at, &created.atom.id],
+        )
+        .expect("advance atom timestamp");
+
+        core.storage()
+            .enqueue_pipeline_jobs_from_statuses_sync(None)
+            .await
+            .expect("backfill pending statuses");
+
+        let row: (String, Option<String>, String) = conn
+            .query_row(
+                "SELECT state, lease_until, atom_updated_at FROM atom_pipeline_jobs WHERE atom_id = ?1",
+                [&created.atom.id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("newer pipeline job should remain");
+        assert_eq!(row.0, "pending");
+        assert_eq!(row.1, None);
+        assert_eq!(row.2, newer_updated_at);
+    }
+
+    #[tokio::test]
+    async fn status_backfill_preserves_active_lease_for_same_revision() {
+        let dir = TempDir::new().expect("create tempdir");
+        let core = AtomicCore::open_or_create(dir.path().join("pipeline.db"))
+            .expect("open sqlite test db");
+        let created = core
+            .create_atom(
+                CreateAtomRequest {
+                    content: String::new(),
+                    ..Default::default()
+                },
+                |_| {},
+            )
+            .await
+            .expect("create atom")
+            .expect("atom inserted");
+
+        let claimed = enqueue_and_claim_pipeline_job(&core, &created.atom.id).await;
+        assert_eq!(claimed.len(), 1);
+
+        core.storage()
+            .enqueue_pipeline_jobs_from_statuses_sync(None)
+            .await
+            .expect("backfill pending statuses");
+
+        let conn = rusqlite::Connection::open(core.db_path()).expect("open sqlite db");
+        let row: (String, Option<String>, String) = conn
+            .query_row(
+                "SELECT state, lease_until, atom_updated_at FROM atom_pipeline_jobs WHERE atom_id = ?1",
+                [&created.atom.id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("existing pipeline job should remain");
+        assert_eq!(row.0, "processing");
+        assert_eq!(row.1.as_deref(), Some("2099-01-01T00:30:00+00:00"));
+        assert_eq!(row.2, created.atom.updated_at);
     }
 
     #[tokio::test]
