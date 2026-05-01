@@ -2,6 +2,11 @@
 
 All notable changes to Atomic are documented here.
 
+## v1.35.0 — 2026-05-01
+
+- Add custom system prompt overrides for chat, briefing, and tagging — configurable from a new Prompts tab in Settings (wiki prompts moved here too)
+- Add per-category descriptions for auto-tag targets, letting you guide the auto-tagger with natural-language instructions on what each category should capture
+
 ## v1.34.0 — 2026-04-30
 
 - Add per-database settings overrides — when running multiple databases, AI provider, model, and other settings can now be customized independently for each database while inheriting workspace defaults
