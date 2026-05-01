@@ -64,7 +64,7 @@ impl SqliteStorage {
         let mut tag_map: std::collections::HashMap<String, Vec<Tag>> =
             std::collections::HashMap::new();
         let tag_sql = format!(
-            "SELECT at.atom_id, t.id, t.name, t.parent_id, t.created_at, t.is_autotag_target
+            "SELECT at.atom_id, t.id, t.name, t.parent_id, t.created_at, t.is_autotag_target, t.autotag_description
              FROM atom_tags at
              INNER JOIN tags t ON t.id = at.tag_id
              WHERE at.atom_id IN ({})",
@@ -80,6 +80,7 @@ impl SqliteStorage {
                     parent_id: row.get(3)?,
                     created_at: row.get(4)?,
                     is_autotag_target: row.get::<_, i64>(5).unwrap_or(0) != 0,
+                    autotag_description: row.get(6)?,
                 },
             ))
         })?;

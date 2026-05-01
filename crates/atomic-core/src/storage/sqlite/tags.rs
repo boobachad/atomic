@@ -47,8 +47,11 @@ fn delete_wiki_fts_rows_for_tags(
 fn load_tags_and_counts(
     conn: &Connection,
 ) -> Result<(Vec<Tag>, HashMap<String, i32>), AtomicCoreError> {
-    let mut stmt = conn
-        .prepare("SELECT id, name, parent_id, created_at, atom_count, is_autotag_target FROM tags ORDER BY name")?;
+    let mut stmt = conn.prepare(
+        "SELECT id, name, parent_id, created_at, atom_count, is_autotag_target, autotag_description
+         FROM tags
+         ORDER BY name",
+    )?;
 
     let mut direct_counts: HashMap<String, i32> = HashMap::new();
     let all_tags: Vec<Tag> = stmt
@@ -62,6 +65,7 @@ fn load_tags_and_counts(
                 parent_id: row.get(2)?,
                 created_at: row.get(3)?,
                 is_autotag_target: row.get::<_, i32>(5)? != 0,
+                autotag_description: row.get(6)?,
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;
@@ -116,7 +120,8 @@ impl SqliteStorage {
         let mut stmt = conn.prepare(
             "SELECT t.id, t.name, t.parent_id, t.created_at, t.atom_count,
                 (SELECT COUNT(*) FROM tags c WHERE c.parent_id = t.id) AS children_total,
-                t.is_autotag_target
+                t.is_autotag_target,
+                t.autotag_description
             FROM tags t
             WHERE t.parent_id = ?1
             ORDER BY t.atom_count DESC
@@ -132,6 +137,7 @@ impl SqliteStorage {
                         parent_id: row.get(2)?,
                         created_at: row.get(3)?,
                         is_autotag_target: row.get::<_, i32>(6)? != 0,
+                        autotag_description: row.get(7)?,
                     },
                     atom_count: row.get(4)?,
                     children_total: row.get(5)?,
@@ -172,6 +178,7 @@ impl SqliteStorage {
             parent_id: parent_id.map(String::from),
             created_at: now,
             is_autotag_target: false,
+            autotag_description: String::new(),
         })
     }
 
@@ -202,7 +209,7 @@ impl SqliteStorage {
         )?;
 
         let tag = conn.query_row(
-            "SELECT id, name, parent_id, created_at, is_autotag_target FROM tags WHERE id = ?1",
+            "SELECT id, name, parent_id, created_at, is_autotag_target, autotag_description FROM tags WHERE id = ?1",
             [id],
             |row| {
                 Ok(Tag {
@@ -211,6 +218,7 @@ impl SqliteStorage {
                     parent_id: row.get(2)?,
                     created_at: row.get(3)?,
                     is_autotag_target: row.get::<_, i32>(4)? != 0,
+                    autotag_description: row.get(5)?,
                 })
             },
         )?;
@@ -231,6 +239,26 @@ impl SqliteStorage {
         )?;
         if affected == 0 {
             return Err(AtomicCoreError::NotFound(format!("tag {}", id)));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn set_tag_autotag_description_impl(
+        &self,
+        id: &str,
+        description: &str,
+    ) -> StorageResult<()> {
+        let conn = self
+            .db
+            .conn
+            .lock()
+            .map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+        let affected = conn.execute(
+            "UPDATE tags SET autotag_description = ?1 WHERE id = ?2 AND parent_id IS NULL",
+            rusqlite::params![description.trim(), id],
+        )?;
+        if affected == 0 {
+            return Err(AtomicCoreError::NotFound(format!("top-level tag {}", id)));
         }
         Ok(())
     }
@@ -372,7 +400,7 @@ impl SqliteStorage {
                 rusqlite::params![&id],
             )?;
             let tag = tx.query_row(
-                "SELECT id, name, parent_id, created_at, is_autotag_target FROM tags WHERE id = ?1",
+                "SELECT id, name, parent_id, created_at, is_autotag_target, autotag_description FROM tags WHERE id = ?1",
                 [&id],
                 |row| {
                     Ok(Tag {
@@ -381,6 +409,7 @@ impl SqliteStorage {
                         parent_id: row.get(2)?,
                         created_at: row.get(3)?,
                         is_autotag_target: row.get::<_, i32>(4)? != 0,
+                        autotag_description: row.get(5)?,
                     })
                 },
             )?;
@@ -571,6 +600,10 @@ impl TagStore for SqliteStorage {
 
     async fn set_tag_autotag_target(&self, id: &str, value: bool) -> StorageResult<()> {
         self.set_tag_autotag_target_impl(id, value)
+    }
+
+    async fn set_tag_autotag_description(&self, id: &str, description: &str) -> StorageResult<()> {
+        self.set_tag_autotag_description_impl(id, description)
     }
 
     async fn configure_autotag_targets(

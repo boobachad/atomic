@@ -22,8 +22,8 @@ fn escape_like_pattern(input: &str) -> String {
 impl PostgresStorage {
     /// Fetch tags for a single atom.
     async fn tags_for_atom(&self, atom_id: &str) -> StorageResult<Vec<Tag>> {
-        let rows: Vec<(String, String, Option<String>, String, bool)> = sqlx::query_as(
-            "SELECT t.id, t.name, t.parent_id, t.created_at, t.is_autotag_target
+        let rows: Vec<(String, String, Option<String>, String, bool, String)> = sqlx::query_as(
+            "SELECT t.id, t.name, t.parent_id, t.created_at, t.is_autotag_target, t.autotag_description
              FROM tags t
              JOIN atom_tags at ON t.id = at.tag_id
              WHERE at.atom_id = $1 AND at.db_id = $2
@@ -37,12 +37,13 @@ impl PostgresStorage {
 
         Ok(rows
             .into_iter()
-            .map(|(id, name, parent_id, created_at, is_autotag_target)| Tag {
+            .map(|(id, name, parent_id, created_at, is_autotag_target, autotag_description)| Tag {
                 id,
                 name,
                 parent_id,
                 created_at,
                 is_autotag_target,
+                autotag_description,
             })
             .collect())
     }
@@ -63,7 +64,7 @@ impl PostgresStorage {
             .map(|i| format!("${}", i))
             .collect();
         let sql = format!(
-            "SELECT at.atom_id, t.id, t.name, t.parent_id, t.created_at, t.is_autotag_target
+            "SELECT at.atom_id, t.id, t.name, t.parent_id, t.created_at, t.is_autotag_target, t.autotag_description
              FROM atom_tags at
              JOIN tags t ON t.id = at.tag_id
              WHERE at.db_id = $1 AND at.atom_id IN ({})
@@ -72,7 +73,7 @@ impl PostgresStorage {
         );
 
         let mut query =
-            sqlx::query_as::<_, (String, String, String, Option<String>, String, bool)>(&sql);
+            sqlx::query_as::<_, (String, String, String, Option<String>, String, bool, String)>(&sql);
         query = query.bind(&self.db_id);
         for id in atom_ids {
             query = query.bind(id);
@@ -84,13 +85,14 @@ impl PostgresStorage {
             .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
 
         let mut map: HashMap<String, Vec<Tag>> = HashMap::new();
-        for (atom_id, tag_id, name, parent_id, created_at, is_autotag_target) in rows {
+        for (atom_id, tag_id, name, parent_id, created_at, is_autotag_target, autotag_description) in rows {
             map.entry(atom_id).or_default().push(Tag {
                 id: tag_id,
                 name,
                 parent_id,
                 created_at,
                 is_autotag_target,
+                autotag_description,
             });
         }
 

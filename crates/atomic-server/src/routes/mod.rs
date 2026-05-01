@@ -71,6 +71,10 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
         "/tags/{id}/autotag-target",
         web::put().to(atoms::set_tag_autotag_target),
     );
+    cfg.route(
+        "/tags/{id}/autotag-description",
+        web::put().to(atoms::set_tag_autotag_description),
+    );
     cfg.route("/tags/{id}", web::put().to(atoms::update_tag));
     cfg.route("/tags/{id}", web::delete().to(atoms::delete_tag));
 

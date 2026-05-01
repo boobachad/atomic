@@ -1026,7 +1026,7 @@ fn batch_fetch_tags(
     }
     let placeholders = atom_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
     let query = format!(
-        "SELECT at.atom_id, t.id, t.name, t.parent_id, t.created_at, t.is_autotag_target
+        "SELECT at.atom_id, t.id, t.name, t.parent_id, t.created_at, t.is_autotag_target, t.autotag_description
          FROM atom_tags at
          INNER JOIN tags t ON at.tag_id = t.id
          WHERE at.atom_id IN ({})",
@@ -1046,6 +1046,7 @@ fn batch_fetch_tags(
                     parent_id: row.get(3)?,
                     created_at: row.get(4)?,
                     is_autotag_target: row.get::<_, i32>(5)? != 0,
+                    autotag_description: row.get(6)?,
                 },
             ))
         })
@@ -1112,7 +1113,7 @@ fn batch_fetch_conversation_tags(
         .collect::<Vec<_>>()
         .join(",");
     let query = format!(
-        "SELECT ct.conversation_id, t.id, t.name, t.parent_id, t.created_at, t.is_autotag_target
+        "SELECT ct.conversation_id, t.id, t.name, t.parent_id, t.created_at, t.is_autotag_target, t.autotag_description
          FROM conversation_tags ct
          INNER JOIN tags t ON t.id = ct.tag_id
          WHERE ct.conversation_id IN ({})",
@@ -1131,6 +1132,7 @@ fn batch_fetch_conversation_tags(
                     parent_id: row.get(3)?,
                     created_at: row.get(4)?,
                     is_autotag_target: row.get::<_, i32>(5)? != 0,
+                    autotag_description: row.get(6)?,
                 },
             ))
         })

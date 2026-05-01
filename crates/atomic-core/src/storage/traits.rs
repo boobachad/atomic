@@ -198,6 +198,9 @@ pub trait TagStore: Send + Sync {
     /// Mark or unmark a tag as a candidate for AI auto-tagging to extend with sub-tags.
     async fn set_tag_autotag_target(&self, id: &str, value: bool) -> StorageResult<()>;
 
+    /// Set optional guidance used when this tag is an auto-tag target.
+    async fn set_tag_autotag_description(&self, id: &str, description: &str) -> StorageResult<()>;
+
     /// Apply a full auto-tag-target configuration in a single transaction.
     /// See `AtomicCore::configure_autotag_targets` for semantics.
     async fn configure_autotag_targets(

@@ -148,6 +148,12 @@ export const COMMAND_MAP: Record<string, CommandSpec> = {
     argsMode: 'body',
     transformArgs: (a) => ({ value: a.value }),
   },
+  set_tag_autotag_description: {
+    method: 'PUT',
+    path: (a) => `/api/tags/${encodeURIComponent(a.id as string)}/autotag-description`,
+    argsMode: 'body',
+    transformArgs: (a) => ({ description: a.description ?? '' }),
+  },
   configure_autotag_targets: {
     method: 'POST',
     path: '/api/tags/configure-autotag-targets',

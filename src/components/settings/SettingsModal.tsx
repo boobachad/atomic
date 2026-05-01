@@ -76,11 +76,12 @@ import { formatRelativeDate } from '../../lib/date';
 import { useDatabasesStore, type DatabaseInfo, type DatabaseStats } from '../../stores/databases';
 import { OverrideControls } from './OverrideControls';
 
-export type SettingsTab = 'general' | 'ai' | 'tag-categories' | 'connection' | 'integrations' | 'databases';
+export type SettingsTab = 'general' | 'ai' | 'tag-categories' | 'connection' | 'integrations' | 'databases' | 'prompts';
 
 const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
   { id: 'general', label: 'General' },
   { id: 'ai', label: 'AI Models' },
+  { id: 'prompts', label: 'Prompts' },
   { id: 'tag-categories', label: 'Tags' },
   { id: 'connection', label: 'Connection' },
   { id: 'integrations', label: 'Integrations' },
@@ -91,10 +92,13 @@ function TagCategoriesTab() {
   const tags = useTagsStore(s => s.tags);
   const fetchTags = useTagsStore(s => s.fetchTags);
   const setTagAutotagTarget = useTagsStore(s => s.setTagAutotagTarget);
+  const setTagAutotagDescription = useTagsStore(s => s.setTagAutotagDescription);
   const createTag = useTagsStore(s => s.createTag);
   const [newName, setNewName] = useState('');
   const [creating, setCreating] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [expandedTagId, setExpandedTagId] = useState<string | null>(null);
+  const [descriptionDrafts, setDescriptionDrafts] = useState<Record<string, string>>({});
 
   useEffect(() => {
     fetchTags();
@@ -138,6 +142,26 @@ function TagCategoriesTab() {
     }
   };
 
+  const handleDescriptionChange = (id: string, value: string) => {
+    setDescriptionDrafts(current => ({ ...current, [id]: value }));
+  };
+
+  const handleDescriptionSave = async (tag: TagWithCount) => {
+    const draft = descriptionDrafts[tag.id] ?? tag.autotag_description ?? '';
+    if (draft === (tag.autotag_description ?? '')) return;
+    setErrorMsg(null);
+    try {
+      await setTagAutotagDescription(tag.id, draft);
+      setDescriptionDrafts(current => {
+        const next = { ...current };
+        delete next[tag.id];
+        return next;
+      });
+    } catch (e) {
+      setErrorMsg(String(e));
+    }
+  };
+
   return (
     <>
       <div className="space-y-1">
@@ -159,25 +183,62 @@ function TagCategoriesTab() {
           <p className="text-xs text-[var(--color-text-secondary)] italic">None yet.</p>
         ) : (
           <div className="space-y-1">
-            {targets.map(tag => (
+            {targets.map(tag => {
+              const isExpanded = expandedTagId === tag.id;
+              const description = tag.autotag_description ?? '';
+              const draft = descriptionDrafts[tag.id] ?? description;
+
+              return (
               <div
                 key={tag.id}
-                className="flex items-center justify-between gap-3 px-3 py-2 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-main)]"
+                className="rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-main)]"
               >
-                <div className="flex items-center gap-2 min-w-0">
-                  <span className="text-sm text-[var(--color-text-primary)] truncate">{tag.name}</span>
-                  <span className="text-[10px] text-[var(--color-text-tertiary)]">
-                    {(tag as TagWithCount).atom_count} atoms
-                  </span>
+                <div className="flex items-center justify-between gap-3 px-3 py-2">
+                  <button
+                    type="button"
+                    onClick={() => setExpandedTagId(isExpanded ? null : tag.id)}
+                    className="flex min-w-0 flex-1 items-center gap-2 text-left"
+                    title={isExpanded ? 'Hide AI description' : 'Edit AI description'}
+                  >
+                    <ChevronRight
+                      className={`h-4 w-4 flex-shrink-0 text-[var(--color-text-tertiary)] transition-transform ${isExpanded ? 'rotate-90' : ''}`}
+                      strokeWidth={2}
+                    />
+                    <span className="text-sm text-[var(--color-text-primary)] truncate">{tag.name}</span>
+                    <span className="text-[10px] text-[var(--color-text-tertiary)]">
+                      {(tag as TagWithCount).atom_count} atoms
+                    </span>
+                    {description.trim() && (
+                      <span className="text-[10px] text-[var(--color-accent)]">
+                        Description
+                      </span>
+                    )}
+                  </button>
+                  <button
+                    onClick={() => handleToggle(tag.id, false)}
+                    className="px-2 py-1 text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-hover)] rounded transition-colors"
+                  >
+                    Unflag
+                  </button>
                 </div>
-                <button
-                  onClick={() => handleToggle(tag.id, false)}
-                  className="px-2 py-1 text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-hover)] rounded transition-colors"
-                >
-                  Unflag
-                </button>
+                {isExpanded && (
+                  <div className="border-t border-[var(--color-border)] px-3 pb-3 pt-2">
+                    <label className="mb-1 block text-xs font-medium text-[var(--color-text-secondary)]">
+                      AI description
+                    </label>
+                    <textarea
+                      value={draft}
+                      onChange={e => handleDescriptionChange(tag.id, e.target.value)}
+                      onBlur={() => handleDescriptionSave(tag)}
+                      placeholder="Tell the auto-tagger when this category should be used."
+                      rows={3}
+                      className="w-full resize-y rounded border border-[var(--color-border)] bg-[var(--color-bg-panel)] px-3 py-2 text-sm text-[var(--color-text-primary)] outline-none placeholder:text-[var(--color-text-secondary)]/50 focus:border-[var(--color-accent)]"
+                    />
+                  </div>
+                )}
               </div>
-            ))}
+            );
+            })}
           </div>
         )}
       </div>
@@ -800,6 +861,9 @@ export function SettingsModal({ isOpen, onClose, initialTab }: SettingsModalProp
   const [wikiStrategy, setWikiStrategy] = useState('centroid');
   const [wikiGenerationPrompt, setWikiGenerationPrompt] = useState('');
   const [wikiUpdatePrompt, setWikiUpdatePrompt] = useState('');
+  const [briefingPrompt, setBriefingPrompt] = useState('');
+  const [chatPrompt, setChatPrompt] = useState('');
+  const [taggingPrompt, setTaggingPrompt] = useState('');
   const [chatModel, setChatModel] = useState('anthropic/claude-sonnet-4.6');
   const [saveError, setSaveError] = useState<string | null>(null);
 
@@ -1193,6 +1257,9 @@ export function SettingsModal({ isOpen, onClose, initialTab }: SettingsModalProp
     setWikiStrategy(settings.wiki_strategy || 'centroid');
     setWikiGenerationPrompt(settings.wiki_generation_prompt || '');
     setWikiUpdatePrompt(settings.wiki_update_prompt || '');
+    setBriefingPrompt(settings.briefing_prompt || '');
+    setChatPrompt(settings.chat_prompt || '');
+    setTaggingPrompt(settings.tagging_prompt || '');
     setChatModel(settings.chat_model || 'anthropic/claude-sonnet-4.6');
     setOllamaHost(settings.ollama_host || 'http://127.0.0.1:11434');
     setOllamaEmbeddingModel(settings.ollama_embedding_model || 'nomic-embed-text');
@@ -1756,60 +1823,6 @@ export function SettingsModal({ isOpen, onClose, initialTab }: SettingsModalProp
                           <OverrideControls settingKey="wiki_strategy" />
                         </div>
 
-                        {/* Wiki Generation Prompt */}
-                        <div className="space-y-1">
-                          <label className="block text-sm font-medium text-[var(--color-text-primary)]">
-                            Wiki Generation Prompt
-                          </label>
-                          <p className="text-xs text-[var(--color-text-secondary)]">
-                            System prompt for generating new wiki articles. Leave empty to use the default.
-                          </p>
-                          <textarea
-                            value={wikiGenerationPrompt}
-                            onChange={(e) => setWikiGenerationPrompt(e.target.value)}
-                            onBlur={() => autoSave('wiki_generation_prompt', wikiGenerationPrompt)}
-                            placeholder={"You are synthesizing a wiki article based on the user's personal knowledge base. Write a well-structured, informative article that summarizes what is known about the topic.\n\nGuidelines:\n- Use markdown formatting with ## for main sections and ### for subsections\n- Every factual claim MUST have a citation using [N] notation\n- Place citations immediately after the relevant statement\n- If sources contain contradictions, note them\n- Structure logically: overview first, then thematic sections\n- Keep tone informative and neutral\n- Do not invent information not present in the sources\n- When mentioning topics that have their own articles in the knowledge base, use [[Topic Name]] wiki-link notation to cross-reference them\n- Only use [[wiki links]] for topics listed in the EXISTING WIKI ARTICLES section provided\n- Do not force wiki links where they don't fit naturally"}
-                            rows={8}
-                            className="w-full px-3 py-2 rounded-md bg-[var(--color-bg-main)] border border-[var(--color-border)] text-sm text-[var(--color-text-primary)] font-mono resize-y placeholder:text-[var(--color-text-secondary)]/40"
-                          />
-                          {wikiGenerationPrompt && (
-                            <button
-                              onClick={() => { setWikiGenerationPrompt(''); autoSave('wiki_generation_prompt', ''); }}
-                              className="text-xs text-[var(--color-accent)] hover:underline"
-                            >
-                              Reset to default
-                            </button>
-                          )}
-                          <OverrideControls settingKey="wiki_generation_prompt" />
-                        </div>
-
-                        {/* Wiki Update Prompt */}
-                        <div className="space-y-1">
-                          <label className="block text-sm font-medium text-[var(--color-text-primary)]">
-                            Wiki Update Prompt
-                          </label>
-                          <p className="text-xs text-[var(--color-text-secondary)]">
-                            Custom instructions prepended to the update prompt. Use this to control tone, style, or focus. Leave empty to use the default.
-                          </p>
-                          <textarea
-                            value={wikiUpdatePrompt}
-                            onChange={(e) => setWikiUpdatePrompt(e.target.value)}
-                            onBlur={() => autoSave('wiki_update_prompt', wikiUpdatePrompt)}
-                            placeholder={"e.g. Write in a casual, conversational tone. Focus on practical implications rather than theory."}
-                            rows={4}
-                            className="w-full px-3 py-2 rounded-md bg-[var(--color-bg-main)] border border-[var(--color-border)] text-sm text-[var(--color-text-primary)] font-mono resize-y placeholder:text-[var(--color-text-secondary)]/40"
-                          />
-                          {wikiUpdatePrompt && (
-                            <button
-                              onClick={() => { setWikiUpdatePrompt(''); autoSave('wiki_update_prompt', ''); }}
-                              className="text-xs text-[var(--color-accent)] hover:underline"
-                            >
-                              Reset to default
-                            </button>
-                          )}
-                          <OverrideControls settingKey="wiki_update_prompt" />
-                        </div>
-
                         {/* Chat Model */}
                         <div className="space-y-1">
                           <label className="block text-sm font-medium text-[var(--color-text-primary)]">
@@ -2193,6 +2206,148 @@ export function SettingsModal({ isOpen, onClose, initialTab }: SettingsModalProp
                 </>
               )}
 
+
+              {/* ===== PROMPTS TAB ===== */}
+              {activeTab === 'prompts' && (
+                <div className="space-y-6">
+
+                  {/* Wiki Generation Prompt */}
+                  <div className="space-y-1">
+                    <label className="block text-sm font-medium text-[var(--color-text-primary)]">
+                      Wiki Generation Prompt
+                    </label>
+                    <p className="text-xs text-[var(--color-text-secondary)]">
+                      System prompt for generating new wiki articles. Leave empty to use the default.
+                    </p>
+                    <textarea
+                      value={wikiGenerationPrompt}
+                      onChange={(e) => setWikiGenerationPrompt(e.target.value)}
+                      onBlur={() => autoSave('wiki_generation_prompt', wikiGenerationPrompt)}
+                      placeholder={"You are synthesizing a wiki article based on the user's personal knowledge base. Write a well-structured, informative article that summarizes what is known about the topic.\n\nGuidelines:\n- Use markdown formatting with ## for main sections and ### for subsections\n- Every factual claim MUST have a citation using [N] notation\n- Place citations immediately after the relevant statement\n- If sources contain contradictions, note them\n- Structure logically: overview first, then thematic sections\n- Keep tone informative and neutral\n- Do not invent information not present in the sources\n- When mentioning topics that have their own articles in the knowledge base, use [[Topic Name]] wiki-link notation to cross-reference them\n- Only use [[wiki links]] for topics listed in the EXISTING WIKI ARTICLES section provided\n- Do not force wiki links where they don't fit naturally"}
+                      rows={8}
+                      className="w-full px-3 py-2 rounded-md bg-[var(--color-bg-main)] border border-[var(--color-border)] text-sm text-[var(--color-text-primary)] font-mono resize-y placeholder:text-[var(--color-text-secondary)]/40"
+                    />
+                    {wikiGenerationPrompt && (
+                      <button
+                        onClick={() => { setWikiGenerationPrompt(''); autoSave('wiki_generation_prompt', ''); }}
+                        className="text-xs text-[var(--color-accent)] hover:underline"
+                      >
+                        Reset to default
+                      </button>
+                    )}
+                    <OverrideControls settingKey="wiki_generation_prompt" />
+                  </div>
+
+                  {/* Wiki Update Prompt */}
+                  <div className="space-y-1">
+                    <label className="block text-sm font-medium text-[var(--color-text-primary)]">
+                      Wiki Update Prompt
+                    </label>
+                    <p className="text-xs text-[var(--color-text-secondary)]">
+                      Custom instructions prepended to the update prompt. Controls tone, style, or focus. Leave empty to use the default.
+                    </p>
+                    <textarea
+                      value={wikiUpdatePrompt}
+                      onChange={(e) => setWikiUpdatePrompt(e.target.value)}
+                      onBlur={() => autoSave('wiki_update_prompt', wikiUpdatePrompt)}
+                      placeholder={"e.g. Write in a casual, conversational tone. Focus on practical implications rather than theory."}
+                      rows={4}
+                      className="w-full px-3 py-2 rounded-md bg-[var(--color-bg-main)] border border-[var(--color-border)] text-sm text-[var(--color-text-primary)] font-mono resize-y placeholder:text-[var(--color-text-secondary)]/40"
+                    />
+                    {wikiUpdatePrompt && (
+                      <button
+                        onClick={() => { setWikiUpdatePrompt(''); autoSave('wiki_update_prompt', ''); }}
+                        className="text-xs text-[var(--color-accent)] hover:underline"
+                      >
+                        Reset to default
+                      </button>
+                    )}
+                    <OverrideControls settingKey="wiki_update_prompt" />
+                  </div>
+
+                  {/* Briefing Prompt */}
+                  <div className="space-y-1">
+                    <label className="block text-sm font-medium text-[var(--color-text-primary)]">
+                      Briefing Prompt
+                    </label>
+                    <p className="text-xs text-[var(--color-text-secondary)]">
+                      System prompt for daily briefing generation. Leave empty to use the default.
+                    </p>
+                    <textarea
+                      value={briefingPrompt}
+                      onChange={(e) => setBriefingPrompt(e.target.value)}
+                      onBlur={() => autoSave('briefing_prompt', briefingPrompt)}
+                      placeholder={"You are writing a short daily briefing of newly captured notes for a personal knowledge base.\n\nGuidelines:\n- Keep the briefing to 2-3 short paragraphs. Do not write a long digest.\n- Write in the user's voice: concise, direct, mildly analytical, no filler.\n- Use [N] inline citation markers to cite specific new atoms."}
+                      rows={6}
+                      className="w-full px-3 py-2 rounded-md bg-[var(--color-bg-main)] border border-[var(--color-border)] text-sm text-[var(--color-text-primary)] font-mono resize-y placeholder:text-[var(--color-text-secondary)]/40"
+                    />
+                    {briefingPrompt && (
+                      <button
+                        onClick={() => { setBriefingPrompt(''); autoSave('briefing_prompt', ''); }}
+                        className="text-xs text-[var(--color-accent)] hover:underline"
+                      >
+                        Reset to default
+                      </button>
+                    )}
+                    <OverrideControls settingKey="briefing_prompt" />
+                  </div>
+
+                  {/* Chat Prompt */}
+                  <div className="space-y-1">
+                    <label className="block text-sm font-medium text-[var(--color-text-primary)]">
+                      Chat Prompt
+                    </label>
+                    <p className="text-xs text-[var(--color-text-secondary)]">
+                      Prepended to the chat assistant system prompt. Leave empty to use the default.
+                    </p>
+                    <textarea
+                      value={chatPrompt}
+                      onChange={(e) => setChatPrompt(e.target.value)}
+                      onBlur={() => autoSave('chat_prompt', chatPrompt)}
+                      placeholder={"You are a helpful AI assistant with access to the user's personal knowledge base.\n\nGuidelines:\n- Use search_atoms to find relevant information before answering\n- Cite sources using [N] notation\n- Be honest if you cannot find information\n- Keep responses concise but informative"}
+                      rows={6}
+                      className="w-full px-3 py-2 rounded-md bg-[var(--color-bg-main)] border border-[var(--color-border)] text-sm text-[var(--color-text-primary)] font-mono resize-y placeholder:text-[var(--color-text-secondary)]/40"
+                    />
+                    {chatPrompt && (
+                      <button
+                        onClick={() => { setChatPrompt(''); autoSave('chat_prompt', ''); }}
+                        className="text-xs text-[var(--color-accent)] hover:underline"
+                      >
+                        Reset to default
+                      </button>
+                    )}
+                    <OverrideControls settingKey="chat_prompt" />
+                  </div>
+
+                  {/* Tagging Prompt */}
+                  <div className="space-y-1">
+                    <label className="block text-sm font-medium text-[var(--color-text-primary)]">
+                      Tagging Prompt
+                    </label>
+                    <p className="text-xs text-[var(--color-text-secondary)]">
+                      System prompt for auto-tagging. Leave empty to use the default.
+                    </p>
+                    <textarea
+                      value={taggingPrompt}
+                      onChange={(e) => setTaggingPrompt(e.target.value)}
+                      onBlur={() => autoSave('tagging_prompt', taggingPrompt)}
+                      placeholder={"You are a knowledge management assistant that categorizes text with tags.\n\nGuidelines:\n- Each tag MUST have a parent_name set to one of the existing top-level categories\n- Prefer broad tags rather than overly specific ones\n- If none of the categories feel like a natural fit, return an empty tag list"}
+                      rows={4}
+                      className="w-full px-3 py-2 rounded-md bg-[var(--color-bg-main)] border border-[var(--color-border)] text-sm text-[var(--color-text-primary)] font-mono resize-y placeholder:text-[var(--color-text-secondary)]/40"
+                    />
+                    {taggingPrompt && (
+                      <button
+                        onClick={() => { setTaggingPrompt(''); autoSave('tagging_prompt', ''); }}
+                        className="text-xs text-[var(--color-accent)] hover:underline"
+                      >
+                        Reset to default
+                      </button>
+                    )}
+                    <OverrideControls settingKey="tagging_prompt" />
+                  </div>
+
+                </div>
+              )}
               {/* ===== TAG CATEGORIES TAB ===== */}
               {activeTab === 'tag-categories' && (
                 <>

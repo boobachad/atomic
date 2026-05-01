@@ -12,8 +12,8 @@ async fn fetch_conversation_tags(
     conversation_id: &str,
     db_id: &str,
 ) -> StorageResult<Vec<Tag>> {
-    let rows = sqlx::query_as::<_, (String, String, Option<String>, String, bool)>(
-        "SELECT t.id, t.name, t.parent_id, t.created_at, t.is_autotag_target
+    let rows = sqlx::query_as::<_, (String, String, Option<String>, String, bool, String)>(
+        "SELECT t.id, t.name, t.parent_id, t.created_at, t.is_autotag_target, t.autotag_description
          FROM tags t
          JOIN conversation_tags ct ON ct.tag_id = t.id
          WHERE ct.conversation_id = $1 AND ct.db_id = $2 AND t.db_id = $2
@@ -27,12 +27,13 @@ async fn fetch_conversation_tags(
 
     Ok(rows
         .into_iter()
-        .map(|(id, name, parent_id, created_at, is_autotag_target)| Tag {
+        .map(|(id, name, parent_id, created_at, is_autotag_target, autotag_description)| Tag {
             id,
             name,
             parent_id,
             created_at,
             is_autotag_target,
+            autotag_description,
         })
         .collect())
 }
@@ -120,8 +121,8 @@ async fn batch_fetch_conversation_tags(
         return Ok(HashMap::new());
     }
 
-    let rows = sqlx::query_as::<_, (String, String, String, Option<String>, String, bool)>(
-        "SELECT ct.conversation_id, t.id, t.name, t.parent_id, t.created_at, t.is_autotag_target
+    let rows = sqlx::query_as::<_, (String, String, String, Option<String>, String, bool, String)>(
+        "SELECT ct.conversation_id, t.id, t.name, t.parent_id, t.created_at, t.is_autotag_target, t.autotag_description
          FROM conversation_tags ct
          JOIN tags t ON ct.tag_id = t.id
          WHERE ct.conversation_id = ANY($1) AND ct.db_id = $2 AND t.db_id = $2
@@ -134,13 +135,14 @@ async fn batch_fetch_conversation_tags(
     .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
 
     let mut map: HashMap<String, Vec<Tag>> = HashMap::new();
-    for (conv_id, id, name, parent_id, created_at, is_autotag_target) in rows {
+    for (conv_id, id, name, parent_id, created_at, is_autotag_target, autotag_description) in rows {
         map.entry(conv_id).or_default().push(Tag {
             id,
             name,
             parent_id,
             created_at,
             is_autotag_target,
+            autotag_description,
         });
     }
 
