@@ -32,6 +32,8 @@ pub struct Tag {
     pub parent_id: Option<String>,
     pub created_at: String,
     pub is_autotag_target: bool,
+    #[serde(default)]
+    pub autotag_description: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

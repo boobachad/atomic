@@ -11,8 +11,8 @@ use uuid::Uuid;
 impl PostgresStorage {
     /// Load all tags and their direct (denormalized) atom counts.
     async fn load_tags_and_counts(&self) -> StorageResult<(Vec<Tag>, HashMap<String, i32>)> {
-        let rows: Vec<(String, String, Option<String>, String, i32, bool)> = sqlx::query_as(
-            "SELECT id, name, parent_id, created_at, atom_count, is_autotag_target FROM tags WHERE db_id = $1 ORDER BY name",
+        let rows: Vec<(String, String, Option<String>, String, i32, bool, String)> = sqlx::query_as(
+            "SELECT id, name, parent_id, created_at, atom_count, is_autotag_target, autotag_description FROM tags WHERE db_id = $1 ORDER BY name",
         )
         .bind(&self.db_id)
         .fetch_all(&self.pool)
@@ -23,7 +23,15 @@ impl PostgresStorage {
         let all_tags: Vec<Tag> = rows
             .into_iter()
             .map(
-                |(id, name, parent_id, created_at, count, is_autotag_target)| {
+                |(
+                    id,
+                    name,
+                    parent_id,
+                    created_at,
+                    count,
+                    is_autotag_target,
+                    autotag_description,
+                )| {
                     direct_counts.insert(id.clone(), count);
                     Tag {
                         id,
@@ -31,6 +39,7 @@ impl PostgresStorage {
                         parent_id,
                         created_at,
                         is_autotag_target,
+                        autotag_description,
                     }
                 },
             )
@@ -250,10 +259,11 @@ impl TagStore for PostgresStorage {
             });
         }
 
-        let rows: Vec<(String, String, Option<String>, String, i32, i64, bool)> = sqlx::query_as(
+        let rows: Vec<(String, String, Option<String>, String, i32, i64, bool, String)> = sqlx::query_as(
             "SELECT t.id, t.name, t.parent_id, t.created_at, t.atom_count,
                 (SELECT COUNT(*) FROM tags c WHERE c.parent_id = t.id AND c.db_id = $2) AS children_total,
-                t.is_autotag_target
+                t.is_autotag_target,
+                t.autotag_description
             FROM tags t
             WHERE t.parent_id = $1 AND t.db_id = $2
             ORDER BY t.atom_count DESC
@@ -278,6 +288,7 @@ impl TagStore for PostgresStorage {
                     atom_count,
                     children_total,
                     is_autotag_target,
+                    autotag_description,
                 )| TagWithCount {
                     tag: Tag {
                         id,
@@ -285,6 +296,7 @@ impl TagStore for PostgresStorage {
                         parent_id,
                         created_at,
                         is_autotag_target,
+                        autotag_description,
                     },
                     atom_count,
                     children_total: children_total as i32,
@@ -322,6 +334,7 @@ impl TagStore for PostgresStorage {
             parent_id: parent_id.map(String::from),
             created_at: now,
             is_autotag_target: false,
+            autotag_description: String::new(),
         })
     }
 
@@ -340,8 +353,8 @@ impl TagStore for PostgresStorage {
             .await
             .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
 
-        let row: (String, String, Option<String>, String, bool) = sqlx::query_as(
-            "SELECT id, name, parent_id, created_at, is_autotag_target FROM tags WHERE id = $1 AND db_id = $2",
+        let row: (String, String, Option<String>, String, bool, String) = sqlx::query_as(
+            "SELECT id, name, parent_id, created_at, is_autotag_target, autotag_description FROM tags WHERE id = $1 AND db_id = $2",
         )
         .bind(id)
         .bind(&self.db_id)
@@ -355,6 +368,7 @@ impl TagStore for PostgresStorage {
             parent_id: row.2,
             created_at: row.3,
             is_autotag_target: row.4,
+            autotag_description: row.5,
         })
     }
 
@@ -369,6 +383,24 @@ impl TagStore for PostgresStorage {
                 .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
         if result.rows_affected() == 0 {
             return Err(AtomicCoreError::NotFound(format!("tag {}", id)));
+        }
+        Ok(())
+    }
+
+    async fn set_tag_autotag_description(&self, id: &str, description: &str) -> StorageResult<()> {
+        let result = sqlx::query(
+            "UPDATE tags
+             SET autotag_description = $1
+             WHERE id = $2 AND db_id = $3 AND parent_id IS NULL",
+        )
+        .bind(description.trim())
+        .bind(id)
+        .bind(&self.db_id)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+        if result.rows_affected() == 0 {
+            return Err(AtomicCoreError::NotFound(format!("top-level tag {}", id)));
         }
         Ok(())
     }
@@ -506,8 +538,8 @@ impl TagStore for PostgresStorage {
                 .execute(&mut *tx)
                 .await
                 .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
-            let row: (String, String, Option<String>, String, bool) = sqlx::query_as(
-                "SELECT id, name, parent_id, created_at, is_autotag_target FROM tags WHERE id = $1 AND db_id = $2",
+            let row: (String, String, Option<String>, String, bool, String) = sqlx::query_as(
+                "SELECT id, name, parent_id, created_at, is_autotag_target, autotag_description FROM tags WHERE id = $1 AND db_id = $2",
             )
             .bind(&id)
             .bind(&self.db_id)
@@ -520,6 +552,7 @@ impl TagStore for PostgresStorage {
                 parent_id: row.2,
                 created_at: row.3,
                 is_autotag_target: row.4,
+                autotag_description: row.5,
             });
         }
 
@@ -943,9 +976,12 @@ impl TagStore for PostgresStorage {
     }
 
     async fn get_tag_tree_for_llm(&self) -> StorageResult<String> {
-        // Step 1: Get top-level category tags
-        let top_level_tags: Vec<(String, String)> = sqlx::query_as(
-            "SELECT id, name FROM tags WHERE parent_id IS NULL AND db_id = $1 ORDER BY name",
+        // Step 1: Get top-level category tags flagged as auto-tag targets.
+        let top_level_tags: Vec<(String, String, String)> = sqlx::query_as(
+            "SELECT id, name, autotag_description
+             FROM tags
+             WHERE parent_id IS NULL AND is_autotag_target = TRUE AND db_id = $1
+             ORDER BY name",
         )
         .bind(&self.db_id)
         .fetch_all(&self.pool)
@@ -959,9 +995,15 @@ impl TagStore for PostgresStorage {
         // Step 2: For each top-level tag, get top 10 most-used child tags by atom count
         let mut result = String::new();
 
-        for (parent_id, parent_name) in &top_level_tags {
+        for (parent_id, parent_name, description) in &top_level_tags {
             result.push_str(parent_name);
             result.push('\n');
+            let description = description.trim();
+            if !description.is_empty() {
+                result.push_str("Description: ");
+                result.push_str(description);
+                result.push('\n');
+            }
 
             // Query top 10 children by atom count
             let children: Vec<(String,)> = sqlx::query_as(

@@ -211,7 +211,7 @@ impl Database {
     ///   1. Add a new `if version < N` block at the end (before the virtual-table section)
     ///   2. End the block with `PRAGMA user_version = N;`
     ///   3. Bump LATEST_VERSION
-    const LATEST_VERSION: i32 = 15;
+    const LATEST_VERSION: i32 = 16;
 
     pub fn run_migrations(conn: &Connection) -> Result<(), AtomicCoreError> {
         Self::run_migrations_internal(conn, false)
@@ -795,6 +795,25 @@ impl Database {
                 }
             }
             conn.execute_batch("PRAGMA user_version = 15;")?;
+        }
+
+        // --- V15 → V16: Per-target auto-tag guidance ---
+        if version < 16 {
+            let has_col: bool = conn
+                .query_row(
+                    "SELECT 1 FROM pragma_table_info('tags') WHERE name='autotag_description'",
+                    [],
+                    |_| Ok(true),
+                )
+                .unwrap_or(false);
+
+            if !has_col {
+                conn.execute_batch(
+                    "ALTER TABLE tags ADD COLUMN autotag_description TEXT NOT NULL DEFAULT '';",
+                )?;
+            }
+
+            conn.execute_batch("PRAGMA user_version = 16;")?;
         }
 
         // --- Triggers (recreated every startup to stay current) ---

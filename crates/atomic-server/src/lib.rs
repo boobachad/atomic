@@ -47,6 +47,7 @@ pub use utoipa_scalar::{Scalar, Servable};
         routes::atoms::update_tag,
         routes::atoms::delete_tag,
         routes::atoms::set_tag_autotag_target,
+        routes::atoms::set_tag_autotag_description,
         routes::atoms::configure_autotag_targets,
         // Search
         routes::search::search,

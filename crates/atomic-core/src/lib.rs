@@ -1220,6 +1220,19 @@ impl AtomicCore {
         self.storage.set_tag_autotag_target_impl(id, value).await
     }
 
+    /// Set optional guidance for a top-level auto-tag target. When present,
+    /// the guidance is injected next to the category name in the auto-tagging
+    /// prompt so the model knows how the user intends that category to be used.
+    pub async fn set_tag_autotag_description(
+        &self,
+        id: &str,
+        description: &str,
+    ) -> Result<(), AtomicCoreError> {
+        self.storage
+            .set_tag_autotag_description_impl(id, description)
+            .await
+    }
+
     /// Configure auto-tag targets in one shot — used by the onboarding wizard
     /// and the settings tab.
     ///
@@ -4125,7 +4138,7 @@ pub(crate) fn get_tags_for_atom(
     atom_id: &str,
 ) -> Result<Vec<Tag>, AtomicCoreError> {
     let mut stmt = conn.prepare(
-        "SELECT t.id, t.name, t.parent_id, t.created_at, t.is_autotag_target
+        "SELECT t.id, t.name, t.parent_id, t.created_at, t.is_autotag_target, t.autotag_description
              FROM tags t
              INNER JOIN atom_tags at ON t.id = at.tag_id
              WHERE at.atom_id = ?1",
@@ -4139,6 +4152,7 @@ pub(crate) fn get_tags_for_atom(
                 parent_id: row.get(2)?,
                 created_at: row.get(3)?,
                 is_autotag_target: row.get::<_, i32>(4)? != 0,
+                autotag_description: row.get(5)?,
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;
@@ -4152,7 +4166,7 @@ pub(crate) fn get_all_atom_tags_map(
     conn: &Connection,
 ) -> Result<std::collections::HashMap<String, Vec<Tag>>, AtomicCoreError> {
     let mut stmt = conn.prepare(
-        "SELECT at.atom_id, t.id, t.name, t.parent_id, t.created_at, t.is_autotag_target
+        "SELECT at.atom_id, t.id, t.name, t.parent_id, t.created_at, t.is_autotag_target, t.autotag_description
              FROM atom_tags at
              INNER JOIN tags t ON at.tag_id = t.id",
     )?;
@@ -4168,6 +4182,7 @@ pub(crate) fn get_all_atom_tags_map(
                 parent_id: row.get(3)?,
                 created_at: row.get(4)?,
                 is_autotag_target: row.get::<_, i32>(5)? != 0,
+                autotag_description: row.get(6)?,
             },
         ))
     })?;
@@ -4191,7 +4206,7 @@ pub(crate) fn get_atom_tags_map_for_ids(
 
     let placeholders = atom_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
     let query = format!(
-        "SELECT at.atom_id, t.id, t.name, t.parent_id, t.created_at, t.is_autotag_target
+        "SELECT at.atom_id, t.id, t.name, t.parent_id, t.created_at, t.is_autotag_target, t.autotag_description
          FROM atom_tags at
          INNER JOIN tags t ON at.tag_id = t.id
          WHERE at.atom_id IN ({})",
@@ -4211,6 +4226,7 @@ pub(crate) fn get_atom_tags_map_for_ids(
                 parent_id: row.get(3)?,
                 created_at: row.get(4)?,
                 is_autotag_target: row.get::<_, i32>(5)? != 0,
+                autotag_description: row.get(6)?,
             },
         ))
     })?;
@@ -4343,6 +4359,7 @@ mod tests {
             parent_id,
             created_at,
             is_autotag_target: is_autotag_target != 0,
+            autotag_description: String::new(),
         }
     }
 

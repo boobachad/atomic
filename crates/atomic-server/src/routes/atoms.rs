@@ -568,6 +568,12 @@ pub struct SetAutotagTargetRequest {
     pub value: bool,
 }
 
+#[derive(Deserialize, Serialize, ToSchema)]
+pub struct SetAutotagDescriptionRequest {
+    /// Optional guidance injected next to this top-level auto-tag target.
+    pub description: String,
+}
+
 #[utoipa::path(
     put,
     path = "/api/tags/{id}/autotag-target",
@@ -589,6 +595,32 @@ pub async fn set_tag_autotag_target(
     let id = path.into_inner();
     let value = body.into_inner().value;
     match db.0.set_tag_autotag_target(&id, value).await {
+        Ok(()) => HttpResponse::NoContent().finish(),
+        Err(e) => crate::error::error_response(e),
+    }
+}
+
+#[utoipa::path(
+    put,
+    path = "/api/tags/{id}/autotag-description",
+    params(
+        ("id" = String, Path, description = "Tag ID"),
+    ),
+    request_body = SetAutotagDescriptionRequest,
+    responses(
+        (status = 204, description = "Description updated"),
+        (status = 404, description = "Top-level tag not found", body = ApiErrorResponse),
+    ),
+    tag = "tags",
+)]
+pub async fn set_tag_autotag_description(
+    db: Db,
+    path: web::Path<String>,
+    body: web::Json<SetAutotagDescriptionRequest>,
+) -> HttpResponse {
+    let id = path.into_inner();
+    let description = body.into_inner().description;
+    match db.0.set_tag_autotag_description(&id, &description).await {
         Ok(()) => HttpResponse::NoContent().finish(),
         Err(e) => crate::error::error_response(e),
     }

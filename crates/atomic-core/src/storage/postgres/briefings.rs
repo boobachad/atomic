@@ -91,26 +91,30 @@ impl BriefingStore for PostgresStorage {
         }
 
         let atom_ids: Vec<String> = atoms.iter().map(|a| a.id.clone()).collect();
-        let tag_rows = sqlx::query_as::<_, (String, String, String, Option<String>, String, bool)>(
-            "SELECT at.atom_id, t.id, t.name, t.parent_id, t.created_at, t.is_autotag_target
+        let tag_rows =
+            sqlx::query_as::<_, (String, String, String, Option<String>, String, bool, String)>(
+                "SELECT at.atom_id, t.id, t.name, t.parent_id, t.created_at, t.is_autotag_target, t.autotag_description
              FROM atom_tags at
              INNER JOIN tags t ON t.id = at.tag_id
              WHERE at.atom_id = ANY($1) AND at.db_id = $2",
-        )
-        .bind(&atom_ids)
-        .bind(&self.db_id)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+            )
+            .bind(&atom_ids)
+            .bind(&self.db_id)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
 
         let mut tag_map: HashMap<String, Vec<Tag>> = HashMap::new();
-        for (atom_id, id, name, parent_id, created_at, is_autotag_target) in tag_rows {
+        for (atom_id, id, name, parent_id, created_at, is_autotag_target, autotag_description) in
+            tag_rows
+        {
             tag_map.entry(atom_id).or_default().push(Tag {
                 id,
                 name,
                 parent_id,
                 created_at,
                 is_autotag_target,
+                autotag_description,
             });
         }
 

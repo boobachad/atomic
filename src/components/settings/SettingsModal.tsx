@@ -92,10 +92,13 @@ function TagCategoriesTab() {
   const tags = useTagsStore(s => s.tags);
   const fetchTags = useTagsStore(s => s.fetchTags);
   const setTagAutotagTarget = useTagsStore(s => s.setTagAutotagTarget);
+  const setTagAutotagDescription = useTagsStore(s => s.setTagAutotagDescription);
   const createTag = useTagsStore(s => s.createTag);
   const [newName, setNewName] = useState('');
   const [creating, setCreating] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [expandedTagId, setExpandedTagId] = useState<string | null>(null);
+  const [descriptionDrafts, setDescriptionDrafts] = useState<Record<string, string>>({});
 
   useEffect(() => {
     fetchTags();
@@ -139,6 +142,26 @@ function TagCategoriesTab() {
     }
   };
 
+  const handleDescriptionChange = (id: string, value: string) => {
+    setDescriptionDrafts(current => ({ ...current, [id]: value }));
+  };
+
+  const handleDescriptionSave = async (tag: TagWithCount) => {
+    const draft = descriptionDrafts[tag.id] ?? tag.autotag_description ?? '';
+    if (draft === (tag.autotag_description ?? '')) return;
+    setErrorMsg(null);
+    try {
+      await setTagAutotagDescription(tag.id, draft);
+      setDescriptionDrafts(current => {
+        const next = { ...current };
+        delete next[tag.id];
+        return next;
+      });
+    } catch (e) {
+      setErrorMsg(String(e));
+    }
+  };
+
   return (
     <>
       <div className="space-y-1">
@@ -160,25 +183,62 @@ function TagCategoriesTab() {
           <p className="text-xs text-[var(--color-text-secondary)] italic">None yet.</p>
         ) : (
           <div className="space-y-1">
-            {targets.map(tag => (
+            {targets.map(tag => {
+              const isExpanded = expandedTagId === tag.id;
+              const description = tag.autotag_description ?? '';
+              const draft = descriptionDrafts[tag.id] ?? description;
+
+              return (
               <div
                 key={tag.id}
-                className="flex items-center justify-between gap-3 px-3 py-2 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-main)]"
+                className="rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-main)]"
               >
-                <div className="flex items-center gap-2 min-w-0">
-                  <span className="text-sm text-[var(--color-text-primary)] truncate">{tag.name}</span>
-                  <span className="text-[10px] text-[var(--color-text-tertiary)]">
-                    {(tag as TagWithCount).atom_count} atoms
-                  </span>
+                <div className="flex items-center justify-between gap-3 px-3 py-2">
+                  <button
+                    type="button"
+                    onClick={() => setExpandedTagId(isExpanded ? null : tag.id)}
+                    className="flex min-w-0 flex-1 items-center gap-2 text-left"
+                    title={isExpanded ? 'Hide AI description' : 'Edit AI description'}
+                  >
+                    <ChevronRight
+                      className={`h-4 w-4 flex-shrink-0 text-[var(--color-text-tertiary)] transition-transform ${isExpanded ? 'rotate-90' : ''}`}
+                      strokeWidth={2}
+                    />
+                    <span className="text-sm text-[var(--color-text-primary)] truncate">{tag.name}</span>
+                    <span className="text-[10px] text-[var(--color-text-tertiary)]">
+                      {(tag as TagWithCount).atom_count} atoms
+                    </span>
+                    {description.trim() && (
+                      <span className="text-[10px] text-[var(--color-accent)]">
+                        Description
+                      </span>
+                    )}
+                  </button>
+                  <button
+                    onClick={() => handleToggle(tag.id, false)}
+                    className="px-2 py-1 text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-hover)] rounded transition-colors"
+                  >
+                    Unflag
+                  </button>
                 </div>
-                <button
-                  onClick={() => handleToggle(tag.id, false)}
-                  className="px-2 py-1 text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-hover)] rounded transition-colors"
-                >
-                  Unflag
-                </button>
+                {isExpanded && (
+                  <div className="border-t border-[var(--color-border)] px-3 pb-3 pt-2">
+                    <label className="mb-1 block text-xs font-medium text-[var(--color-text-secondary)]">
+                      AI description
+                    </label>
+                    <textarea
+                      value={draft}
+                      onChange={e => handleDescriptionChange(tag.id, e.target.value)}
+                      onBlur={() => handleDescriptionSave(tag)}
+                      placeholder="Tell the auto-tagger when this category should be used."
+                      rows={3}
+                      className="w-full resize-y rounded border border-[var(--color-border)] bg-[var(--color-bg-panel)] px-3 py-2 text-sm text-[var(--color-text-primary)] outline-none placeholder:text-[var(--color-text-secondary)]/50 focus:border-[var(--color-accent)]"
+                    />
+                  </div>
+                )}
               </div>
-            ))}
+            );
+            })}
           </div>
         )}
       </div>
