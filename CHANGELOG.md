@@ -2,6 +2,10 @@
 
 All notable changes to Atomic are documented here.
 
+## v1.35.1 — 2026-05-01
+
+- Fix duplicate embedding runs caused by the pipeline scheduler, reducing unnecessary AI provider API calls and improving background processing efficiency
+
 ## v1.35.0 — 2026-05-01
 
 - Add custom system prompt overrides for chat, briefing, and tagging — configurable from a new Prompts tab in Settings (wiki prompts moved here too)
