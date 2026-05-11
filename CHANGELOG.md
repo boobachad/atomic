@@ -2,6 +2,11 @@
 
 All notable changes to Atomic are documented here.
 
+## v1.35.2 — 2026-05-11
+
+- Fix tag tree failing to scroll to the selected tag after the sidebar loads asynchronously or after expanding/collapsing tag groups
+- Fix tag tree scroll area showing incorrect height after expanding or collapsing tag groups
+
 ## v1.35.1 — 2026-05-01
 
 - Fix duplicate embedding runs caused by the pipeline scheduler, reducing unnecessary AI provider API calls and improving background processing efficiency
