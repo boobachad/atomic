@@ -78,11 +78,7 @@ export function TagTree({ onOpenTagSettings }: TagTreeProps = {}) {
     return map;
   }, [flatTags]);
 
-  // Always keep a ref to the latest tagIndexMap so the scroll effect can read
-  // current indices without subscribing to map changes. The ref is updated on
-  // every render (outside any effect), so it is always fresh when the effect fires.
-  const tagIndexMapRef = useRef(tagIndexMap);
-  tagIndexMapRef.current = tagIndexMap;
+  const scrolledSelectedTagIdRef = useRef<string | null>(null);
   const virtualizer = useVirtualizer({
     count: flatTags.length,
     getScrollElement: () => scrollContainerRef.current,
@@ -95,18 +91,26 @@ export function TagTree({ onOpenTagSettings }: TagTreeProps = {}) {
     virtualizer.measure();
   }, [flatTags, virtualizer]);
 
-  // Scroll to selected tag only when the selection changes. We intentionally
-  // read tagIndexMapRef.current (not tagIndexMap directly) so that accordion
-  // expand/collapse — which rebuilds tagIndexMap but does not change
-  // selectedTagId — does NOT trigger a scroll back to the active tag.
+  // Scroll to selected tag when the selection changes, or when an initially
+  // empty async-loaded tree later receives that selected tag. Once a selection
+  // has been scrolled into view, tree-only changes like expand/collapse should
+  // not pull the scroll position back to the active row.
   useEffect(() => {
-    if (selectedTagId) {
-      const index = tagIndexMapRef.current.get(selectedTagId);
-      if (index !== undefined) {
-        virtualizer.scrollToIndex(index, { align: 'center', behavior: 'smooth' });
-      }
+    if (!selectedTagId) {
+      scrolledSelectedTagIdRef.current = null;
+      return;
     }
-  }, [selectedTagId, virtualizer]);
+
+    if (scrolledSelectedTagIdRef.current === selectedTagId) {
+      return;
+    }
+
+    const index = tagIndexMap.get(selectedTagId);
+    if (index !== undefined) {
+      virtualizer.scrollToIndex(index, { align: 'center', behavior: 'smooth' });
+      scrolledSelectedTagIdRef.current = selectedTagId;
+    }
+  }, [selectedTagId, tagIndexMap, virtualizer]);
 
   const [contextMenu, setContextMenu] = useState<{
     position: { x: number; y: number } | null;
