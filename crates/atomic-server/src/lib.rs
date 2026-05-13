@@ -75,6 +75,8 @@ pub use utoipa_scalar::{Scalar, Servable};
         routes::briefings::list_briefings,
         routes::briefings::get_briefing,
         routes::briefings::run_briefing_now,
+        routes::briefings::get_briefing_schedule,
+        routes::briefings::set_briefing_schedule,
         // Settings
         routes::settings::get_settings,
         routes::settings::set_setting,

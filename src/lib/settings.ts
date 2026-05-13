@@ -30,6 +30,7 @@ export interface SettingValue {
 export const WORKSPACE_ONLY_KEYS: readonly string[] = [
   'theme',
   'font',
+  'timezone',
   'openrouter_api_key',
   'openai_compat_api_key',
   'ollama_host',

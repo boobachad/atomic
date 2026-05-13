@@ -10,8 +10,10 @@
 //! [`crate::scheduler`] for the task that invokes this on a timer.
 
 pub mod agentic;
+pub mod schedule;
 pub mod task;
 
+pub use schedule::{BriefingFrequency, BriefingSchedule, BriefingScheduleStatus, BriefingWeekday};
 pub use task::DailyBriefingTask;
 
 use crate::error::AtomicCoreError;
