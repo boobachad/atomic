@@ -3,13 +3,13 @@ title: First-Run Setup
 description: Claim a new self-hosted Atomic instance and create the first API token.
 ---
 
-A fresh self-hosted Atomic instance starts unclaimed when it has no active API tokens. The first user claims it by creating the initial token.
+A fresh self-hosted Atomic instance starts unclaimed when it has no token history. The first user claims it by creating the initial token. First-run setup claims require `ATOMIC_SETUP_TOKEN` unless the server was explicitly started with `--dangerously-skip-setup-token`.
 
 ## Setup UI
 
 1. Start the server and web UI.
 2. Open the web URL, such as `http://localhost:8080`.
-3. Follow the setup wizard.
+3. Enter `ATOMIC_SETUP_TOKEN` when prompted and follow the setup wizard.
 4. Save the displayed API token. It will not be shown again.
 5. Configure an AI provider.
 
@@ -27,7 +27,10 @@ Response:
 
 ```json
 {
-  "needs_setup": true
+  "needs_setup": true,
+  "already_claimed": false,
+  "requires_setup_token": false,
+  "setup_token_configured": false
 }
 ```
 
@@ -36,7 +39,7 @@ Claim the instance:
 ```bash
 curl -X POST http://localhost:8080/api/setup/claim \
   -H "Content-Type: application/json" \
-  -d '{"name": "admin"}'
+  -d '{"name": "admin", "setup_token": "'"$ATOMIC_SETUP_TOKEN"'"}'
 ```
 
 Response:
@@ -51,7 +54,7 @@ Response:
 }
 ```
 
-After claim, create additional tokens from Settings or `POST /api/auth/tokens`.
+After claim, create additional tokens from Settings or `POST /api/auth/tokens`. Setup does not reopen if tokens are revoked; create a replacement token before revoking the old one.
 
 ## CLI Alternative
 

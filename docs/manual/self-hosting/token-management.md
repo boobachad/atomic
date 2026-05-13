@@ -18,17 +18,25 @@ Use a separate token per device or integration so you can revoke one without dis
 
 ## First Token
 
-Fresh self-hosted instances can be claimed through the setup UI. The public setup endpoints only work while there are no active tokens:
+Fresh self-hosted instances can be claimed through the setup UI after you configure `ATOMIC_SETUP_TOKEN` and enter that value in the setup wizard:
+
+```bash
+export ATOMIC_SETUP_TOKEN="$(openssl rand -base64 24)"
+```
+
+The setup endpoints only work before the instance has ever been claimed:
 
 ```bash
 curl http://localhost:8080/api/setup/status
 
 curl -X POST http://localhost:8080/api/setup/claim \
   -H "Content-Type: application/json" \
-  -d '{"name": "admin"}'
+  -d '{"name": "admin", "setup_token": "'"$ATOMIC_SETUP_TOKEN"'"}'
 ```
 
-After an instance has active tokens, `claim` returns a conflict.
+After an instance has been claimed or has any token history, `claim` returns a conflict. Revoking every token does not reopen setup; create a replacement token before revoking an old one.
+
+For trusted development only, `atomic-server serve --dangerously-skip-setup-token` allows first-run setup without `ATOMIC_SETUP_TOKEN`. Do not use it on a server reachable by untrusted clients.
 
 ## CLI Commands
 

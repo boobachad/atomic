@@ -12,10 +12,11 @@ Clone the repository and start the included compose file:
 ```bash
 git clone https://github.com/kenforthewin/atomic.git
 cd atomic
+echo "ATOMIC_SETUP_TOKEN=$(openssl rand -base64 24)" > .env
 docker compose up -d
 ```
 
-Open `http://localhost:8080` and complete first-run setup.
+Open `http://localhost:8080` and complete first-run setup with the `ATOMIC_SETUP_TOKEN` value from `.env`.
 
 The default compose file starts:
 

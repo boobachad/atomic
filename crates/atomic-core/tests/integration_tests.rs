@@ -372,6 +372,7 @@ async fn test_token_lifecycle() {
     let (core, _dir) = create_core();
 
     let (info, raw) = core.create_api_token("integration-test").await.unwrap();
+    core.create_api_token("replacement").await.unwrap();
     assert!(raw.starts_with("at_"));
 
     // Verify

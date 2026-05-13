@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { BookOpen, Check, Copy } from 'lucide-react';
+import { BookOpen, Check, Copy, KeyRound } from 'lucide-react';
 import { Button } from '../../ui/Button';
 import { isDesktopApp, getTransport, switchTransport } from '../../../lib/transport';
 import { verifyProviderConfigured } from '../../../lib/api';
@@ -14,6 +14,13 @@ interface WelcomeStepProps {
 
 type SetupMode = 'checking' | 'claim' | 'manual';
 
+interface SetupStatus {
+  needs_setup: boolean;
+  already_claimed: boolean;
+  requires_setup_token: boolean;
+  setup_token_configured: boolean;
+}
+
 export function WelcomeStep({ state, dispatch, onNext, onComplete }: WelcomeStepProps) {
   const isDesktop = isDesktopApp();
   const [setupMode, setSetupMode] = useState<SetupMode>('checking');
@@ -21,6 +28,8 @@ export function WelcomeStep({ state, dispatch, onNext, onComplete }: WelcomeStep
   const [claimError, setClaimError] = useState<string | null>(null);
   const [claimedToken, setClaimedToken] = useState<string | null>(null);
   const [tokenCopied, setTokenCopied] = useState(false);
+  const [setupStatus, setSetupStatus] = useState<SetupStatus | null>(null);
+  const [setupToken, setSetupToken] = useState('');
 
   // On mount (web mode only), check if we're co-hosted with the server
   useEffect(() => {
@@ -30,7 +39,8 @@ export function WelcomeStep({ state, dispatch, onNext, onComplete }: WelcomeStep
     const baseUrl = window.location.origin;
     fetch(`${baseUrl}/api/setup/status`)
       .then(r => r.ok ? r.json() : Promise.reject(new Error(`${r.status}`)))
-      .then((data: { needs_setup: boolean }) => {
+      .then((data: SetupStatus) => {
+        setSetupStatus(data);
         if (data.needs_setup) {
           dispatch({ type: 'SET_SERVER_URL', value: baseUrl });
           setSetupMode('claim');
@@ -54,7 +64,10 @@ export function WelcomeStep({ state, dispatch, onNext, onComplete }: WelcomeStep
       const resp = await fetch(`${baseUrl}/api/setup/claim`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: 'default' }),
+        body: JSON.stringify({
+          name: 'default',
+          ...(setupToken.trim() ? { setup_token: setupToken.trim() } : {}),
+        }),
       });
       if (!resp.ok) {
         const err = await resp.json().catch(() => ({ error: `HTTP ${resp.status}` }));
@@ -249,6 +262,8 @@ export function WelcomeStep({ state, dispatch, onNext, onComplete }: WelcomeStep
 
   // Unclaimed instance — show claim UI
   if (setupMode === 'claim') {
+    const requiresSetupToken = setupStatus?.requires_setup_token ?? false;
+
     return (
       <div className="flex flex-col items-center justify-center h-full text-center space-y-6 px-8">
         <div className="w-16 h-16 rounded-2xl bg-[var(--color-accent)]/10 flex items-center justify-center">
@@ -264,7 +279,28 @@ export function WelcomeStep({ state, dispatch, onNext, onComplete }: WelcomeStep
           </p>
         </div>
 
-        <Button onClick={handleClaim} disabled={isClaiming}>
+        {requiresSetupToken && (
+          <div className="w-full max-w-md space-y-2 text-left">
+            <label className="flex items-center gap-2 text-sm font-medium text-[var(--color-text-primary)]">
+              <KeyRound className="w-4 h-4 text-[var(--color-accent)]" strokeWidth={2} />
+              Setup Token
+            </label>
+            <input
+              type="password"
+              value={setupToken}
+              onChange={(e) => setSetupToken(e.target.value)}
+              placeholder="ATOMIC_SETUP_TOKEN"
+              className="w-full px-3 py-2 bg-[var(--color-bg-card)] border border-[var(--color-border)] rounded-md text-[var(--color-text-primary)] placeholder-[var(--color-text-secondary)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)] focus:border-transparent transition-colors duration-150 text-sm"
+            />
+            {!setupStatus?.setup_token_configured && (
+              <p className="text-xs text-amber-400">
+                This server needs ATOMIC_SETUP_TOKEN before it can be claimed.
+              </p>
+            )}
+          </div>
+        )}
+
+        <Button onClick={handleClaim} disabled={isClaiming || (requiresSetupToken && !setupToken.trim())}>
           {isClaiming ? 'Setting up...' : 'Get Started'}
         </Button>
 

@@ -6,10 +6,14 @@
 mod config;
 
 use actix_cors::Cors;
-use actix_web::{middleware, web, App, HttpResponse, HttpServer, Responder};
+use actix_web::{http::header, middleware, web, App, HttpResponse, HttpServer, Responder};
 use atomic_server::{
-    auth, event_bridge, export_jobs::ExportJobManager, log_buffer::LogBuffer, mcp, mcp_auth,
-    routes, state::AppState, ws, Scalar, Servable,
+    auth, event_bridge,
+    export_jobs::ExportJobManager,
+    log_buffer::LogBuffer,
+    mcp, mcp_auth, routes,
+    state::{AppState, SetupClaimLimiter, SetupToken},
+    ws, Scalar, Servable,
 };
 use clap::Parser;
 use config::{Cli, Command, TokenAction};
@@ -18,6 +22,8 @@ use rmcp_actix_web::transport::StreamableHttpService;
 use std::sync::Arc;
 use std::time::Duration;
 use utoipa::OpenApi;
+
+const SETUP_CLAIMED_AT_KEY: &str = "setup.claimed_at";
 
 async fn health() -> impl Responder {
     HttpResponse::Ok().json(serde_json::json!({
@@ -69,6 +75,8 @@ async fn main() -> std::io::Result<()> {
             public_url,
             storage,
             database_url,
+            setup_token,
+            dangerously_skip_setup_token,
         }) => {
             // Auto-detect public URL on Fly.io if not explicitly set
             let public_url = public_url.or_else(|| {
@@ -83,6 +91,8 @@ async fn main() -> std::io::Result<()> {
                 port,
                 &bind,
                 public_url,
+                setup_token,
+                dangerously_skip_setup_token,
                 log_buffer,
             )
             .await
@@ -95,6 +105,8 @@ async fn main() -> std::io::Result<()> {
                 8080,
                 "127.0.0.1",
                 None,
+                None,
+                false,
                 log_buffer,
             )
             .await
@@ -195,6 +207,8 @@ async fn run_server(
     port: u16,
     bind: &str,
     public_url: Option<String>,
+    setup_token: Option<String>,
+    dangerously_skip_setup_token: bool,
     log_buffer: LogBuffer,
 ) -> std::io::Result<()> {
     let manager = Arc::new(manager);
@@ -215,9 +229,22 @@ async fn run_server(
     // Check token status
     match core.list_api_tokens().await {
         Ok(tokens) => {
+            if let Err(e) = backfill_setup_claimed_at(&core, &tokens).await {
+                tracing::warn!(error = %e, "failed to backfill setup claimed state");
+            }
+
             let active = tokens.iter().filter(|t| !t.is_revoked).count();
             if active == 0 {
-                tracing::info!("no API tokens configured — open the web UI to claim this instance or run: atomic-server token create --name default");
+                if dangerously_skip_setup_token {
+                    tracing::warn!("no API tokens configured — insecure setup-token bypass is enabled; any client can claim this instance");
+                } else if setup_token
+                    .as_deref()
+                    .is_some_and(|token| !token.trim().is_empty())
+                {
+                    tracing::info!("no API tokens configured — open the web UI and enter ATOMIC_SETUP_TOKEN to claim this instance, or run: atomic-server token create --name default");
+                } else {
+                    tracing::info!("no API tokens configured — set ATOMIC_SETUP_TOKEN to claim this instance from the web UI, run: atomic-server token create --name default, or use --dangerously-skip-setup-token only for trusted development");
+                }
             } else {
                 tracing::info!(count = active, "active API tokens configured");
             }
@@ -238,6 +265,10 @@ async fn run_server(
         public_url: public_url.clone(),
         log_buffer,
         export_jobs,
+        setup_token: setup_token.and_then(SetupToken::from_raw),
+        dangerously_skip_setup_token,
+        setup_claim_lock: tokio::sync::Mutex::new(()),
+        setup_claim_limiter: SetupClaimLimiter::new(),
     });
 
     // Create MCP service with multi-database support via ?db= query param
@@ -496,9 +527,10 @@ async fn run_server(
 
     let bind_owned = bind.to_string();
     let shutdown_manager = Arc::clone(&manager);
+    let cors_public_url = public_url.clone();
 
     HttpServer::new(move || {
-        let cors = Cors::permissive();
+        let cors = build_cors(cors_public_url.as_deref());
 
         App::new()
             .wrap(cors)
@@ -579,4 +611,139 @@ async fn run_server(
     shutdown_manager.optimize_all();
 
     Ok(())
+}
+
+async fn backfill_setup_claimed_at(
+    core: &atomic_core::AtomicCore,
+    tokens: &[atomic_core::ApiTokenInfo],
+) -> Result<(), atomic_core::AtomicCoreError> {
+    if tokens.is_empty() {
+        return Ok(());
+    }
+
+    let settings = core.get_settings().await?;
+    if settings.contains_key(SETUP_CLAIMED_AT_KEY) {
+        return Ok(());
+    }
+
+    let claimed_at = tokens
+        .iter()
+        .map(|token| token.created_at.as_str())
+        .min()
+        .expect("tokens is non-empty");
+    core.set_setting(SETUP_CLAIMED_AT_KEY, claimed_at).await
+}
+
+fn build_cors(public_url: Option<&str>) -> Cors {
+    let public_origin = public_url.and_then(origin_from_url);
+    Cors::default()
+        .allowed_origin_fn(move |origin, _req_head| {
+            let Ok(origin) = origin.to_str() else {
+                return false;
+            };
+            is_local_origin(origin) || public_origin.as_deref() == Some(origin)
+        })
+        .allowed_methods(vec!["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
+        .allow_any_header()
+        .expose_headers(vec![header::HeaderName::from_static("mcp-session-id")])
+        .max_age(3600)
+}
+
+fn origin_from_url(url: &str) -> Option<String> {
+    let parsed = reqwest::Url::parse(url).ok()?;
+    let scheme = parsed.scheme();
+    let host = parsed.host_str()?;
+    let port = parsed.port().map(|p| format!(":{p}")).unwrap_or_default();
+    Some(format!("{scheme}://{host}{port}"))
+}
+
+fn is_local_origin(origin: &str) -> bool {
+    if matches!(
+        origin,
+        "tauri://localhost" | "capacitor://localhost" | "ionic://localhost"
+    ) {
+        return true;
+    }
+
+    let Ok(url) = reqwest::Url::parse(origin) else {
+        return false;
+    };
+    if !matches!(url.scheme(), "http" | "https") {
+        return false;
+    }
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    host == "localhost"
+        || host == "tauri.localhost"
+        || host == "127.0.0.1"
+        || host == "::1"
+        || host.ends_with(".localhost")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use actix_web::test as actix_test;
+
+    #[actix_web::test]
+    async fn cors_allows_mcp_session_headers_from_local_origins() {
+        let app = actix_test::init_service(
+            App::new()
+                .wrap(build_cors(None))
+                .route("/health", web::get().to(health)),
+        )
+        .await;
+
+        let req = actix_test::TestRequest::default()
+            .method(actix_web::http::Method::OPTIONS)
+            .uri("/health")
+            .insert_header((header::ORIGIN, "http://localhost:5173"))
+            .insert_header((header::ACCESS_CONTROL_REQUEST_METHOD, "GET"))
+            .insert_header((
+                header::ACCESS_CONTROL_REQUEST_HEADERS,
+                "authorization,content-type,mcp-session-id,mcp-protocol-version",
+            ))
+            .to_request();
+
+        let response = actix_test::call_service(&app, req).await;
+
+        assert!(response.status().is_success());
+        let allowed_headers = response
+            .headers()
+            .get(header::ACCESS_CONTROL_ALLOW_HEADERS)
+            .and_then(|value| value.to_str().ok())
+            .expect("preflight response should include allowed headers");
+
+        assert!(allowed_headers.contains("authorization"));
+        assert!(allowed_headers.contains("content-type"));
+        assert!(allowed_headers.contains("mcp-session-id"));
+        assert!(allowed_headers.contains("mcp-protocol-version"));
+    }
+
+    #[actix_web::test]
+    async fn cors_exposes_mcp_session_id_to_browser_clients() {
+        let app = actix_test::init_service(
+            App::new()
+                .wrap(build_cors(None))
+                .route("/health", web::get().to(health)),
+        )
+        .await;
+
+        let req = actix_test::TestRequest::get()
+            .uri("/health")
+            .insert_header((header::ORIGIN, "http://localhost:5173"))
+            .to_request();
+
+        let response = actix_test::call_service(&app, req).await;
+
+        assert!(response.status().is_success());
+        let exposed_headers = response
+            .headers()
+            .get(header::ACCESS_CONTROL_EXPOSE_HEADERS)
+            .and_then(|value| value.to_str().ok())
+            .expect("CORS response should expose MCP session header");
+
+        assert!(exposed_headers.contains("mcp-session-id"));
+    }
 }

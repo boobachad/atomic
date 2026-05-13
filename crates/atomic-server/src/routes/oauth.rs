@@ -729,6 +729,10 @@ mod tests {
             export_jobs: crate::export_jobs::ExportJobManager::for_tests(
                 temp.path().join("exports"),
             ),
+            setup_token: None,
+            dangerously_skip_setup_token: false,
+            setup_claim_lock: tokio::sync::Mutex::new(()),
+            setup_claim_limiter: crate::state::SetupClaimLimiter::new(),
         });
         std::mem::forget(temp);
         state
@@ -746,6 +750,10 @@ mod tests {
             export_jobs: crate::export_jobs::ExportJobManager::for_tests(
                 temp.path().join("exports"),
             ),
+            setup_token: None,
+            dangerously_skip_setup_token: false,
+            setup_claim_lock: tokio::sync::Mutex::new(()),
+            setup_claim_limiter: crate::state::SetupClaimLimiter::new(),
         });
         std::mem::forget(temp);
         state

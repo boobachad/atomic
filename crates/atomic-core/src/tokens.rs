@@ -127,6 +127,37 @@ pub fn verify_token(
 
 /// Revoke a token by ID (soft delete).
 pub fn revoke_token(conn: &Connection, token_id: &str) -> Result<(), AtomicCoreError> {
+    let is_revoked = conn.query_row(
+        "SELECT is_revoked FROM api_tokens WHERE id = ?1",
+        [token_id],
+        |row| row.get::<_, i32>(0),
+    );
+
+    let is_revoked = match is_revoked {
+        Ok(value) => value != 0,
+        Err(rusqlite::Error::QueryReturnedNoRows) => {
+            return Err(AtomicCoreError::NotFound(format!(
+                "API token '{}'",
+                token_id
+            )));
+        }
+        Err(e) => return Err(AtomicCoreError::Database(e)),
+    };
+
+    if !is_revoked {
+        let active_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM api_tokens WHERE is_revoked = 0",
+            [],
+            |row| row.get(0),
+        )?;
+        if active_count <= 1 {
+            return Err(AtomicCoreError::Conflict(
+                "Cannot revoke the last active API token. Create a replacement token first."
+                    .to_string(),
+            ));
+        }
+    }
+
     let updated = conn.execute(
         "UPDATE api_tokens SET is_revoked = 1 WHERE id = ?1",
         [token_id],
@@ -255,6 +286,7 @@ mod tests {
         let (conn, _tmp) = test_conn();
 
         let (info, raw) = create_token(&conn, "to revoke").unwrap();
+        create_token(&conn, "replacement").unwrap();
 
         // Verify works before revoke
         assert!(verify_token(&conn, &raw).unwrap().is_some());
@@ -264,6 +296,20 @@ mod tests {
 
         // Verify fails after revoke
         assert!(verify_token(&conn, &raw).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_revoke_last_active_token_returns_conflict() {
+        let (conn, _tmp) = test_conn();
+
+        let (info, _raw) = create_token(&conn, "only token").unwrap();
+
+        let result = revoke_token(&conn, &info.id);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            AtomicCoreError::Conflict(_) => {}
+            other => panic!("Expected Conflict, got {:?}", other),
+        }
     }
 
     #[test]
