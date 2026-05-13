@@ -1,5 +1,10 @@
 import { vi } from "vitest";
 
+export const activeWindow = window;
+export const activeDocument = document;
+
+Object.assign(globalThis, { activeWindow, activeDocument });
+
 // ---- Augment HTMLElement with Obsidian's DOM helpers ----
 // Obsidian extends HTMLElement with createEl / createDiv / createSpan / empty / addClass / removeClass.
 // happy-dom doesn't provide these; stub them for tests that render DOM.
@@ -75,8 +80,9 @@ export class Vault {
 export class Workspace {
   getActiveFile = vi.fn(() => null as TFile | null);
   getLeavesOfType = vi.fn(() => []);
+  getLeaf = vi.fn(() => new WorkspaceLeaf());
   getRightLeaf = vi.fn();
-  revealLeaf = vi.fn();
+  setActiveLeaf = vi.fn();
   detachLeavesOfType = vi.fn();
   on = vi.fn();
 }

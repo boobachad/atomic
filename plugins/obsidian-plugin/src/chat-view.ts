@@ -413,7 +413,7 @@ export class ChatView extends ItemView {
     const renderChips = () => {
       chipsEl.empty();
       for (const tag of currentTags.values()) {
-        const chip = chipsEl.createEl("span", { cls: "atomic-chat-scope-pill" });
+        const chip = chipsEl.createSpan({ cls: "atomic-chat-scope-pill" });
         chip.setText(`#${tag.name}`);
         const x = chip.createEl("button", { cls: "atomic-chat-scope-remove", text: "×" });
         x.addEventListener("click", () => {
@@ -465,14 +465,15 @@ export class ChatView extends ItemView {
     input.addEventListener("input", updateSuggestions);
     input.focus();
 
+    const doc = activeDocument;
     const close = (evt: MouseEvent) => {
       if (!popover.contains(evt.target as Node) && evt.target !== anchor) {
         popover.remove();
         this.scopeEditorOpen = false;
-        document.removeEventListener("mousedown", close, true);
+        doc.removeEventListener("mousedown", close, true);
       }
     };
-    document.addEventListener("mousedown", close, true);
+    doc.addEventListener("mousedown", close, true);
   }
 
   private flatTags(): TagWithCount[] {

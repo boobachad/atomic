@@ -22,7 +22,7 @@ export class SyncEngine {
   private client: AtomicClient;
   private settings: AtomicSettings;
   private syncState: SyncState;
-  private pendingSync = new Map<string, ReturnType<typeof setTimeout>>();
+  private pendingSync = new Map<string, ReturnType<Window["setTimeout"]>>();
   private watching = false;
   private eventRefs: EventRef[] = [];
   private saveState: () => Promise<void>;
@@ -94,11 +94,11 @@ export class SyncEngine {
     console.debug(`Atomic: file changed, scheduling sync: ${file.path}`);
 
     const existing = this.pendingSync.get(file.path);
-    if (existing) clearTimeout(existing);
+    if (existing) activeWindow.clearTimeout(existing);
 
     this.pendingSync.set(
       file.path,
-      setTimeout(() => {
+      activeWindow.setTimeout(() => {
         console.debug(`Atomic: debounce fired, syncing: ${file.path}`);
         this.syncFile(file).catch((e) =>
           console.error(`Atomic: Failed to sync ${file.path}:`, e)
@@ -120,7 +120,7 @@ export class SyncEngine {
     // Cancel any pending sync for this file
     const pending = this.pendingSync.get(file.path);
     if (pending) {
-      clearTimeout(pending);
+      activeWindow.clearTimeout(pending);
       this.pendingSync.delete(file.path);
     }
 
@@ -477,7 +477,7 @@ export class SyncEngine {
 
     // Clear pending syncs
     for (const timeout of this.pendingSync.values()) {
-      clearTimeout(timeout);
+      activeWindow.clearTimeout(timeout);
     }
     this.pendingSync.clear();
   }
