@@ -4,7 +4,7 @@ import { AtomicClient, type SearchResult } from "./atomic-client";
 export class SearchModal extends SuggestModal<SearchResult> {
   private client: AtomicClient;
   private results: SearchResult[] = [];
-  private debounceTimer: ReturnType<typeof setTimeout> | null = null;
+  private debounceTimer: ReturnType<Window["setTimeout"]> | null = null;
 
   constructor(app: App, client: AtomicClient) {
     super(app);
@@ -17,9 +17,9 @@ export class SearchModal extends SuggestModal<SearchResult> {
     if (query.length < 2) return [];
 
     return new Promise((resolve) => {
-      if (this.debounceTimer) clearTimeout(this.debounceTimer);
+      if (this.debounceTimer) activeWindow.clearTimeout(this.debounceTimer);
 
-      this.debounceTimer = setTimeout(() => {
+      this.debounceTimer = activeWindow.setTimeout(() => {
         void (async () => {
           try {
             this.results = await this.client.search(query, "hybrid", 20);
