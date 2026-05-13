@@ -3,6 +3,8 @@ import fs from 'fs';
 import path from 'path';
 import readline from 'readline';
 
+const APP_ID = 'com.atomic.app';
+
 // Data directory - where registry.db and databases/ live
 function getDefaultDataDir() {
   // Check for --data-dir or ATOMIC_DATA_DIR first
@@ -21,11 +23,33 @@ function getDefaultDataDir() {
   const home = process.env.HOME || process.env.USERPROFILE;
 
   if (platform === 'darwin') {
-    return `${home}/Library/Application Support/com.atomic.app`;
+    return `${home}/Library/Application Support/${APP_ID}`;
   } else if (platform === 'linux') {
-    return `${home}/.local/share/com.atomic.app`;
+    return `${home}/.local/share/${APP_ID}`;
   } else if (platform === 'win32') {
-    return `${process.env.APPDATA}/com.atomic.app`;
+    return `${process.env.APPDATA}/${APP_ID}`;
+  }
+  throw new Error(`Unsupported platform: ${platform}`);
+}
+
+function getDefaultWebCacheDirs() {
+  const platform = process.platform;
+  const home = process.env.HOME || process.env.USERPROFILE;
+
+  if (platform === 'darwin') {
+    return [
+      `${home}/Library/WebKit/${APP_ID}`,
+      `${home}/Library/Caches/${APP_ID}`,
+      `${home}/Library/HTTPStorages/${APP_ID}`,
+    ];
+  } else if (platform === 'linux') {
+    return [
+      `${home}/.cache/${APP_ID}`,
+    ];
+  } else if (platform === 'win32') {
+    return [
+      `${process.env.LOCALAPPDATA}/${APP_ID}`,
+    ];
   }
   throw new Error(`Unsupported platform: ${platform}`);
 }
@@ -77,7 +101,23 @@ function findAllFiles(dataDir) {
     if (fs.existsSync(f)) files.push(f);
   }
 
+  // Local sidecar token materializes a raw API token outside registry.db. If it
+  // survives a DB drop, the desktop app can boot with a token the fresh registry
+  // no longer recognizes.
+  const localToken = path.join(dataDir, 'local_server_token');
+  if (fs.existsSync(localToken)) files.push(localToken);
+
   return files;
+}
+
+function findExistingDirs(dirs) {
+  return dirs.filter((dir) => {
+    try {
+      return fs.existsSync(dir) && fs.statSync(dir).isDirectory();
+    } catch {
+      return false;
+    }
+  });
 }
 
 async function main() {
@@ -86,6 +126,7 @@ async function main() {
   let dataDir = null;
   let force = false;
   let backup = false;
+  let resetWebCache = true;
 
   for (let i = 0; i < args.length; i++) {
     if ((args[i] === '--data-dir' || args[i] === '--db') && args[i + 1]) {
@@ -95,6 +136,8 @@ async function main() {
       force = true;
     } else if (args[i] === '--backup') {
       backup = true;
+    } else if (args[i] === '--keep-web-cache') {
+      resetWebCache = false;
     } else if (args[i] === '--help') {
       console.log(`
 Database Drop Script for Atomic
@@ -102,12 +145,15 @@ Database Drop Script for Atomic
 Usage: node scripts/drop-database.js [options]
 
 Deletes ALL database files: registry.db, all databases/*.db files, and WAL/SHM files.
+Also clears Tauri WebView cache/state by default, so IndexedDB/localStorage-backed UI
+state cannot point at deleted databases.
 The app will create a fresh database on next startup.
 
 Options:
   --data-dir <path>  Data directory (default: auto-detect)
   --force            Skip confirmation prompt
   --backup           Create timestamped backup directory first
+  --keep-web-cache   Do not clear Tauri WebView cache/state
   --help             Show this help message
       `);
       return;
@@ -122,27 +168,41 @@ Options:
   console.log(`Data directory: ${dataDir}\n`);
 
   const files = findAllFiles(dataDir);
+  const webCacheDirs = resetWebCache ? findExistingDirs(getDefaultWebCacheDirs()) : [];
 
-  if (files.length === 0) {
-    console.log('No database files found.');
+  if (files.length === 0 && webCacheDirs.length === 0) {
+    console.log('No database files or Tauri web cache directories found.');
     return;
   }
 
-  console.log('Files to delete:');
-  let totalSize = 0;
-  for (const f of files) {
-    try {
-      const stats = fs.statSync(f);
-      totalSize += stats.size;
-      console.log(`  ${path.relative(dataDir, f)} (${formatFileSize(stats.size)})`);
-    } catch {
-      console.log(`  ${path.relative(dataDir, f)} (inaccessible)`);
+  if (files.length > 0) {
+    console.log('Database files to delete:');
+    let totalSize = 0;
+    for (const f of files) {
+      try {
+        const stats = fs.statSync(f);
+        totalSize += stats.size;
+        console.log(`  ${path.relative(dataDir, f)} (${formatFileSize(stats.size)})`);
+      } catch {
+        console.log(`  ${path.relative(dataDir, f)} (inaccessible)`);
+      }
     }
+    console.log(`\nDatabase total: ${formatFileSize(totalSize)}`);
+  } else {
+    console.log('No database files found.');
   }
-  console.log(`\nTotal: ${formatFileSize(totalSize)}`);
+
+  if (webCacheDirs.length > 0) {
+    console.log('\nTauri web cache/state directories to delete:');
+    for (const dir of webCacheDirs) {
+      console.log(`  ${dir}`);
+    }
+  } else if (resetWebCache) {
+    console.log('\nNo Tauri web cache/state directories found.');
+  }
 
   if (!force) {
-    console.log('\nThis will PERMANENTLY DELETE all databases, settings, and tokens.');
+    console.log('\nThis will PERMANENTLY DELETE all databases, settings, tokens, and cached WebView state listed above.');
     const confirmed = await promptConfirmation("Type 'yes' to continue: ");
     if (!confirmed) {
       console.log('\nCancelled.');
@@ -175,7 +235,13 @@ Options:
   const dbDir = path.join(dataDir, 'databases');
   try { fs.rmdirSync(dbDir); } catch {}
 
-  console.log('All database files deleted.');
+  for (const dir of webCacheDirs) {
+    try {
+      fs.rmSync(dir, { recursive: true, force: true });
+    } catch {}
+  }
+
+  console.log('All database files and Tauri web cache/state deleted.');
   console.log('Start the app to create a fresh database.');
 }
 

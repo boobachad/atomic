@@ -17,7 +17,7 @@ Turn your vault into a semantically-connected, AI-augmented knowledge graph. Ato
 
 You need a running **Atomic server** that your vault can reach. You have two options:
 
-1. **Atomic desktop app** — install [Atomic](https://github.com/kenforthewin/atomic/releases) on the same machine. It runs a local server automatically; copy an API token from its settings.
+1. **Atomic desktop app** — install [Atomic](https://github.com/kenforthewin/atomic/releases) on the same machine. It runs a local server automatically; copy the Local Server URL and Local API Token from **Settings → Connection**.
 2. **Self-hosted server** — run `atomic-server` on your machine or a server you control. See the [main repo](https://github.com/kenforthewin/atomic) for setup.
 
 Atomic needs an LLM provider (OpenRouter or a local Ollama) configured on the server side for embedding, tagging, wiki generation, and chat.
@@ -40,7 +40,7 @@ Atomic needs an LLM provider (OpenRouter or a local Ollama) configured on the se
 
 When you enable the plugin, a setup wizard walks you through three steps:
 
-1. **Connect** — paste your server URL (e.g. `http://localhost:8080`) and API token, then press **Test Connection**.
+1. **Connect** — paste your server URL (for the desktop app, copy the Local Server URL from **Settings → Connection**) and API token, then press **Test Connection**.
 2. **Index** — upload your existing notes. Progress bars show upload, embedding, and auto-tagging. You can continue in the background at any time.
 3. **Done** — shortcuts for the main features are shown. Close the wizard and you're ready.
 
@@ -67,7 +67,7 @@ Open **Settings → Atomic** to configure:
 | Setting | Default | Notes |
 |---|---|---|
 | Server URL | `http://localhost:8080` | Where your Atomic server is reachable |
-| API Token | — | Create via the Atomic app or `atomic-server token create` |
+| API Token | — | In the Atomic desktop app, copy the Local API Token from Settings → Connection. For a self-hosted server, create one with `atomic-server token create`. |
 | Database | `default` | For multi-database setups; leave empty for the default |
 | Vault Name | your vault folder | Used in source URLs (`obsidian://VaultName/path.md`) |
 | Auto Sync | off | Sync on create/modify/delete/rename |
