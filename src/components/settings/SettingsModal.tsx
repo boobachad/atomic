@@ -901,6 +901,8 @@ export function SettingsModal({ isOpen, onClose, initialTab }: SettingsModalProp
   const setSetting = useSettingsStore(s => s.setSetting);
   const testOpenRouterConnection = useSettingsStore(s => s.testOpenRouterConnection);
   const activeDatabaseId = useDatabasesStore(s => s.activeId);
+  const activeDatabaseName = useDatabasesStore(s => s.databases.find(db => db.id === s.activeId)?.name);
+  const databaseCount = useDatabasesStore(s => s.databases.length);
 
   // Theme & Font
   const [theme, setTheme] = useState<Theme>('obsidian');
@@ -1835,7 +1837,9 @@ export function SettingsModal({ isOpen, onClose, initialTab }: SettingsModalProp
                         Briefing Schedule
                       </label>
                       <p className="text-xs text-[var(--color-text-secondary)]">
-                        Generate briefings on a per-database schedule.
+                        {databaseCount > 1
+                          ? `Schedule for ${activeDatabaseName || 'the active database'}.`
+                          : 'Generate briefings on a per-database schedule.'}
                       </p>
                     </div>
 
