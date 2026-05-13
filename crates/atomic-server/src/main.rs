@@ -644,12 +644,8 @@ fn build_cors(public_url: Option<&str>) -> Cors {
             is_local_origin(origin) || public_origin.as_deref() == Some(origin)
         })
         .allowed_methods(vec!["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
-        .allowed_headers(vec![
-            header::AUTHORIZATION,
-            header::CONTENT_TYPE,
-            header::ACCEPT,
-            header::HeaderName::from_static("x-atomic-database"),
-        ])
+        .allow_any_header()
+        .expose_headers(vec![header::HeaderName::from_static("mcp-session-id")])
         .max_age(3600)
 }
 
@@ -683,4 +679,71 @@ fn is_local_origin(origin: &str) -> bool {
         || host == "127.0.0.1"
         || host == "::1"
         || host.ends_with(".localhost")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use actix_web::test as actix_test;
+
+    #[actix_web::test]
+    async fn cors_allows_mcp_session_headers_from_local_origins() {
+        let app = actix_test::init_service(
+            App::new()
+                .wrap(build_cors(None))
+                .route("/health", web::get().to(health)),
+        )
+        .await;
+
+        let req = actix_test::TestRequest::default()
+            .method(actix_web::http::Method::OPTIONS)
+            .uri("/health")
+            .insert_header((header::ORIGIN, "http://localhost:5173"))
+            .insert_header((header::ACCESS_CONTROL_REQUEST_METHOD, "GET"))
+            .insert_header((
+                header::ACCESS_CONTROL_REQUEST_HEADERS,
+                "authorization,content-type,mcp-session-id,mcp-protocol-version",
+            ))
+            .to_request();
+
+        let response = actix_test::call_service(&app, req).await;
+
+        assert!(response.status().is_success());
+        let allowed_headers = response
+            .headers()
+            .get(header::ACCESS_CONTROL_ALLOW_HEADERS)
+            .and_then(|value| value.to_str().ok())
+            .expect("preflight response should include allowed headers");
+
+        assert!(allowed_headers.contains("authorization"));
+        assert!(allowed_headers.contains("content-type"));
+        assert!(allowed_headers.contains("mcp-session-id"));
+        assert!(allowed_headers.contains("mcp-protocol-version"));
+    }
+
+    #[actix_web::test]
+    async fn cors_exposes_mcp_session_id_to_browser_clients() {
+        let app = actix_test::init_service(
+            App::new()
+                .wrap(build_cors(None))
+                .route("/health", web::get().to(health)),
+        )
+        .await;
+
+        let req = actix_test::TestRequest::get()
+            .uri("/health")
+            .insert_header((header::ORIGIN, "http://localhost:5173"))
+            .to_request();
+
+        let response = actix_test::call_service(&app, req).await;
+
+        assert!(response.status().is_success());
+        let exposed_headers = response
+            .headers()
+            .get(header::ACCESS_CONTROL_EXPOSE_HEADERS)
+            .and_then(|value| value.to_str().ok())
+            .expect("CORS response should expose MCP session header");
+
+        assert!(exposed_headers.contains("mcp-session-id"));
+    }
 }
