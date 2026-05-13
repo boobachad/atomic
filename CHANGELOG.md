@@ -2,6 +2,12 @@
 
 All notable changes to Atomic are documented here.
 
+## v1.36.0 — 2026-05-13
+
+- Add setup token requirement (`ATOMIC_SETUP_TOKEN`) for self-hosted instance claiming, with rate limiting and one-time-claim enforcement to prevent unauthorized access
+- Add copy buttons for local server URL and API token in desktop Settings, making it easier to configure integrations like the Obsidian plugin
+- Replace permissive CORS policy with an allowlist that permits only local origins and the configured public URL
+
 ## v1.35.2 — 2026-05-11
 
 - Fix tag tree failing to scroll to the selected tag after the sidebar loads asynchronously or after expanding/collapsing tag groups
