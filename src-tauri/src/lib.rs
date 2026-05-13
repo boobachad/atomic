@@ -190,21 +190,23 @@ fn remove_pid_file(app_data_dir: &std::path::Path) {
 fn ensure_local_token(app_data_dir: &std::path::Path) -> String {
     let token_file = app_data_dir.join("local_server_token");
 
-    // Try to read existing token
+    // Open the registry before trusting the token file. `npm run db:drop` can
+    // remove registry.db while leaving local_server_token behind, and that raw
+    // token is useless until it is re-created in the fresh registry.
+    let manager = atomic_core::DatabaseManager::new(app_data_dir)
+        .expect("Failed to open database manager for token bootstrap");
+    let registry = manager.registry().expect("No registry database available");
+
+    // Try to read an existing token and verify that the current registry still
+    // knows about it.
     if let Ok(token) = std::fs::read_to_string(&token_file) {
         let token = token.trim().to_string();
-        if !token.is_empty() {
+        if !token.is_empty() && registry.verify_api_token(&token).is_ok_and(|v| v.is_some()) {
             return token;
         }
     }
 
-    // Create a new token via the DatabaseManager (opens registry + default db)
-    let manager = atomic_core::DatabaseManager::new(app_data_dir)
-        .expect("Failed to open database manager for token bootstrap");
-
-    let (_info, raw_token) = manager
-        .registry()
-        .expect("No registry database available")
+    let (_info, raw_token) = registry
         .create_api_token("desktop")
         .expect("Failed to create API token");
 

@@ -64,7 +64,7 @@ import {
   type IngestionResult,
   type FeedPollResult,
 } from '../../lib/api';
-import { getTransport, switchTransport, switchToLocal, isDesktopApp, isLocalServer, getMcpBridgePath, type HttpTransportConfig } from '../../lib/transport';
+import { getTransport, switchTransport, switchToLocal, isDesktopApp, isLocalServer, getLocalServerConfig, getMcpBridgePath, type HttpTransportConfig } from '../../lib/transport';
 import { pickDirectory, isMacOS, openExternalUrl } from '../../lib/platform';
 import { importMarkdownFolder, type ImportProgress } from '../../lib/import';
 import { importAppleNotes, AppleNotesImportError } from '../../lib/import-apple-notes';
@@ -921,6 +921,8 @@ export function SettingsModal({ isOpen, onClose, initialTab }: SettingsModalProp
   const [tokenCopied, setTokenCopied] = useState(false);
   const [showTokenSection, setShowTokenSection] = useState(false);
   const [confirmRevokeId, setConfirmRevokeId] = useState<string | null>(null);
+  const [localUrlCopied, setLocalUrlCopied] = useState(false);
+  const [localTokenCopied, setLocalTokenCopied] = useState(false);
 
   // Feeds state
   const [feeds, setFeeds] = useState<Feed[]>([]);
@@ -945,6 +947,7 @@ export function SettingsModal({ isOpen, onClose, initialTab }: SettingsModalProp
   // Derived: whether we're connected to a remote (non-local) server
   // Desktop + local sidecar → false; Desktop + remote override → true; Web → always true
   const isRemoteMode = isDesktopApp() ? !isLocalServer() : true;
+  const localServerConfig = isDesktopApp() ? getLocalServerConfig() : null;
 
   // Check Ollama connection
   const checkOllamaConnection = useCallback(async (host: string) => {
@@ -1189,6 +1192,28 @@ export function SettingsModal({ isOpen, onClose, initialTab }: SettingsModalProp
       setTimeout(() => setTokenCopied(false), 2000);
     } catch (e) {
       console.error('Failed to copy:', e);
+    }
+  };
+
+  const handleCopyLocalUrl = async () => {
+    if (!localServerConfig) return;
+    try {
+      await copyToClipboard(localServerConfig.baseUrl);
+      setLocalUrlCopied(true);
+      setTimeout(() => setLocalUrlCopied(false), 2000);
+    } catch (e) {
+      console.error('Failed to copy local server URL:', e);
+    }
+  };
+
+  const handleCopyLocalToken = async () => {
+    if (!localServerConfig?.authToken) return;
+    try {
+      await copyToClipboard(localServerConfig.authToken);
+      setLocalTokenCopied(true);
+      setTimeout(() => setLocalTokenCopied(false), 2000);
+    } catch (e) {
+      console.error('Failed to copy local API token:', e);
     }
   };
 
@@ -2406,40 +2431,78 @@ export function SettingsModal({ isOpen, onClose, initialTab }: SettingsModalProp
                           {showChangeServer ? 'Cancel' : 'Connect to Custom Server'}
                         </Button>
                       </div>
+                      {localServerConfig && (
+                        <div className="space-y-2 pt-2">
+                          <div className="space-y-1">
+                            <label className="block text-xs font-medium text-[var(--color-text-secondary)]">
+                              Local Server URL
+                            </label>
+                            <div className="flex gap-2">
+                              <code className="flex-1 px-3 py-2 bg-[var(--color-bg-main)] border border-[var(--color-border)] rounded-md text-xs text-[var(--color-text-primary)] truncate">
+                                {localServerConfig.baseUrl}
+                              </code>
+                              <Button variant="secondary" size="sm" onClick={handleCopyLocalUrl}>
+                                {localUrlCopied ? 'Copied' : 'Copy'}
+                              </Button>
+                            </div>
+                          </div>
+                          <div className="space-y-1">
+                            <label className="block text-xs font-medium text-[var(--color-text-secondary)]">
+                              Local API Token
+                            </label>
+                            <div className="flex gap-2">
+                              <code className="flex-1 px-3 py-2 bg-[var(--color-bg-main)] border border-[var(--color-border)] rounded-md text-xs text-[var(--color-text-primary)] truncate">
+                                {localServerConfig.authToken ? `${localServerConfig.authToken.substring(0, 12)}...` : 'N/A'}
+                              </code>
+                              <Button
+                                variant="secondary"
+                                size="sm"
+                                onClick={handleCopyLocalToken}
+                                disabled={!localServerConfig.authToken}
+                              >
+                                {localTokenCopied ? 'Copied' : 'Copy'}
+                              </Button>
+                            </div>
+                          </div>
+                          <p className="text-xs text-[var(--color-text-secondary)]">
+                            Use these values for local integrations such as the Obsidian plugin.
+                          </p>
+                        </div>
+                      )}
                       {showChangeServer && (
-                      <div className="space-y-3 pt-2">
-                      <p className="text-xs text-[var(--color-text-secondary)]">
-                        Connect to a remote atomic-server instance
-                      </p>
-                      <input
-                        type="text"
-                        value={serverUrl}
-                        onChange={(e) => { setServerUrl(e.target.value); setServerTestResult(null); }}
-                        placeholder="http://localhost:8080"
-                        className="w-full px-3 py-2 bg-[var(--color-bg-card)] border border-[var(--color-border)] rounded-md text-[var(--color-text-primary)] placeholder-[var(--color-text-secondary)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)] focus:border-transparent transition-colors duration-150 text-sm"
-                      />
-                      <input
-                        type="password"
-                        value={serverToken}
-                        onChange={(e) => { setServerToken(e.target.value); setServerTestResult(null); }}
-                        placeholder="Auth token"
-                        className="w-full px-3 py-2 bg-[var(--color-bg-card)] border border-[var(--color-border)] rounded-md text-[var(--color-text-primary)] placeholder-[var(--color-text-secondary)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)] focus:border-transparent transition-colors duration-150 text-sm"
-                      />
-                      <div className="flex gap-2">
-                        <Button variant="secondary" onClick={handleTestServer} disabled={!serverUrl.trim() || !serverToken.trim() || isTestingServer}>
-                          {isTestingServer ? 'Testing...' : 'Test'}
-                        </Button>
-                        <Button onClick={handleConnectServer} disabled={serverTestResult !== 'success'}>
-                          Connect
-                        </Button>
-                      </div>
-                      {serverTestResult === 'success' && (
-                        <div className="text-sm text-green-500">Server reachable</div>
-                      )}
-                      {serverTestResult === 'error' && (
-                        <div className="text-sm text-red-500">{serverTestError}</div>
-                      )}
-                      </div>
+                        <div className="space-y-3 pt-2">
+                          <p className="text-xs text-[var(--color-text-secondary)]">
+                            Connect to a remote atomic-server instance
+                          </p>
+                          <input
+                            type="text"
+                            value={serverUrl}
+                            onChange={(e) => { setServerUrl(e.target.value); setServerTestResult(null); }}
+                            placeholder="http://localhost:8080"
+                            className="w-full px-3 py-2 bg-[var(--color-bg-card)] border border-[var(--color-border)] rounded-md text-[var(--color-text-primary)] placeholder-[var(--color-text-secondary)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)] focus:border-transparent transition-colors duration-150 text-sm"
+                          />
+                          <input
+                            type="password"
+                            value={serverToken}
+                            onChange={(e) => { setServerToken(e.target.value); setServerTestResult(null); }}
+                            placeholder="Auth token"
+                            className="w-full px-3 py-2 bg-[var(--color-bg-card)] border border-[var(--color-border)] rounded-md text-[var(--color-text-primary)] placeholder-[var(--color-text-secondary)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)] focus:border-transparent transition-colors duration-150 text-sm"
+                          />
+                          <div className="flex gap-2">
+                            <Button variant="secondary" onClick={handleTestServer} disabled={!serverUrl.trim() || !serverToken.trim() || isTestingServer}>
+                              {isTestingServer ? 'Testing...' : 'Test'}
+                            </Button>
+                            <Button onClick={handleConnectServer} disabled={serverTestResult !== 'success'}>
+                              Connect
+                            </Button>
+                          </div>
+                          {serverTestResult === 'success' && (
+                            <div className="text-sm text-green-500">Server reachable</div>
+                          )}
+                          {serverTestResult === 'error' && (
+                            <div className="text-sm text-red-500">{serverTestError}</div>
+                          )}
+                        </div>
                       )}
                     </div>
                   )}
