@@ -2,6 +2,12 @@
 
 All notable changes to Atomic are documented here.
 
+## v1.37.0 — 2026-05-14
+
+- Add configurable briefing schedule with daily or weekly frequency, custom time, and timezone support
+- Add re-tag action in database settings to re-run auto-tagging across all atoms using the current tagging model while preserving manual tags and wiki-backed assignments
+- Fix edge case where pipeline jobs could get stuck and stop processing
+
 ## v1.36.0 — 2026-05-13
 
 - Add setup token requirement (`ATOMIC_SETUP_TOKEN`) for self-hosted instance claiming, with rate limiting and one-time-claim enforcement to prevent unauthorized access
