@@ -211,7 +211,7 @@ impl Database {
     ///   1. Add a new `if version < N` block at the end (before the virtual-table section)
     ///   2. End the block with `PRAGMA user_version = N;`
     ///   3. Bump LATEST_VERSION
-    const LATEST_VERSION: i32 = 16;
+    const LATEST_VERSION: i32 = 17;
 
     pub fn run_migrations(conn: &Connection) -> Result<(), AtomicCoreError> {
         Self::run_migrations_internal(conn, false)
@@ -814,6 +814,44 @@ impl Database {
             }
 
             conn.execute_batch("PRAGMA user_version = 16;")?;
+        }
+
+        // --- V16 → V17: atom_tags.source + legacy-count snapshot ---
+        // We need to distinguish auto-extracted tag assignments from manual ones
+        // so the "Re-tag all atoms" feature can prune auto-only assignments
+        // without touching the user's deliberate work. Rows that exist before
+        // this migration runs have unknown provenance — they default to 'auto'
+        // (the realistic majority case), and we snapshot how many such rows
+        // existed so the UI can warn about them honestly. The snapshot is
+        // intentionally NOT written when we're migrating the registry DB; only
+        // data DBs hold atom_tags.
+        if version < 17 {
+            let has_col: bool = conn
+                .query_row(
+                    "SELECT 1 FROM pragma_table_info('atom_tags') WHERE name='source'",
+                    [],
+                    |_| Ok(true),
+                )
+                .unwrap_or(false);
+
+            if !has_col {
+                conn.execute_batch(
+                    "ALTER TABLE atom_tags ADD COLUMN source TEXT NOT NULL DEFAULT 'auto';",
+                )?;
+
+                if !cleanup_legacy_seed_settings {
+                    let legacy_count: i64 = conn
+                        .query_row("SELECT COUNT(*) FROM atom_tags", [], |row| row.get(0))
+                        .unwrap_or(0);
+                    crate::settings::set_setting(
+                        conn,
+                        "atom_tags_legacy_auto_count",
+                        &legacy_count.to_string(),
+                    )?;
+                }
+            }
+
+            conn.execute_batch("PRAGMA user_version = 17;")?;
         }
 
         // --- Triggers (recreated every startup to stay current) ---

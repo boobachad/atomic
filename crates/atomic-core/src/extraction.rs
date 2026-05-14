@@ -468,9 +468,11 @@ pub fn link_tags_to_atom(
     tag_ids: &[String],
 ) -> Result<(), String> {
     for tag_id in tag_ids {
-        // Use INSERT OR IGNORE to avoid duplicates
+        // Use INSERT OR IGNORE to avoid duplicates. Existing assignments keep
+        // whatever source they had — if a user previously added this tag
+        // manually, we don't want to silently demote it to 'auto'.
         conn.execute(
-            "INSERT OR IGNORE INTO atom_tags (atom_id, tag_id) VALUES (?1, ?2)",
+            "INSERT OR IGNORE INTO atom_tags (atom_id, tag_id, source) VALUES (?1, ?2, 'auto')",
             rusqlite::params![atom_id, tag_id],
         )
         .map_err(|e| format!("Failed to link tag to atom: {}", e))?;

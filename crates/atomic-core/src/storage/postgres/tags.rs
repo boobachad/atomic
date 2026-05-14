@@ -166,9 +166,12 @@ impl PostgresStorage {
 
         let mut atoms_retagged: i32 = 0;
         for atom_id in &atoms_with_loser {
-            // INSERT ... ON CONFLICT DO NOTHING replaces INSERT OR IGNORE
+            // INSERT ... ON CONFLICT DO NOTHING replaces INSERT OR IGNORE.
+            // Tag merge: source defaults to 'auto'. The original loser-row's
+            // source isn't preserved here (rare admin operation); a manual
+            // assignment of the *winner* tag is preserved by ON CONFLICT.
             let result = sqlx::query(
-                "INSERT INTO atom_tags (atom_id, tag_id, db_id) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
+                "INSERT INTO atom_tags (atom_id, tag_id, db_id, source) VALUES ($1, $2, $3, 'auto') ON CONFLICT DO NOTHING",
             )
             .bind(atom_id)
             .bind(&winner_id)
@@ -960,8 +963,10 @@ impl TagStore for PostgresStorage {
 
     async fn link_tags_to_atom(&self, atom_id: &str, tag_ids: &[String]) -> StorageResult<()> {
         for tag_id in tag_ids {
+            // Auto-tagger path. Existing rows keep their source via ON CONFLICT
+            // DO NOTHING — we don't want to silently demote a manual assignment.
             sqlx::query(
-                "INSERT INTO atom_tags (atom_id, tag_id, db_id) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
+                "INSERT INTO atom_tags (atom_id, tag_id, db_id, source) VALUES ($1, $2, $3, 'auto') ON CONFLICT DO NOTHING",
             )
             .bind(atom_id)
             .bind(tag_id)

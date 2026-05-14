@@ -211,7 +211,7 @@ impl SqliteStorage {
 
                 for tag_id in &request.tag_ids {
                     conn.execute(
-                        "INSERT INTO atom_tags (atom_id, tag_id) VALUES (?1, ?2)",
+                        "INSERT INTO atom_tags (atom_id, tag_id, source) VALUES (?1, ?2, 'manual')",
                         (id, tag_id),
                     )?;
                 }
@@ -298,7 +298,7 @@ impl SqliteStorage {
 
                 for tag_id in &request.tag_ids {
                     if let Err(e) = conn.execute(
-                        "INSERT INTO atom_tags (atom_id, tag_id) VALUES (?1, ?2)",
+                        "INSERT INTO atom_tags (atom_id, tag_id, source) VALUES (?1, ?2, 'manual')",
                         (id, tag_id),
                     ) {
                         conn.execute_batch("ROLLBACK")?;
@@ -489,7 +489,7 @@ impl SqliteStorage {
                     conn.execute("DELETE FROM atom_tags WHERE atom_id = ?1", [id])?;
                     for tag_id in tag_ids {
                         conn.execute(
-                            "INSERT INTO atom_tags (atom_id, tag_id) VALUES (?1, ?2)",
+                            "INSERT INTO atom_tags (atom_id, tag_id, source) VALUES (?1, ?2, 'manual')",
                             (id, tag_id),
                         )?;
                     }

@@ -57,6 +57,7 @@ import {
   retryFailedEmbeddings,
   retryFailedTagging,
   reembedAllAtoms,
+  retagAllAtoms,
   exportDatabaseMarkdownArchive,
   type ExportJob,
   type DatabasePipelineStatus,
@@ -394,9 +395,11 @@ function DatabasesTab() {
   const [pipelineError, setPipelineError] = useState<string | null>(null);
   const [retrying, setRetrying] = useState<string | null>(null);
   const [reembeddingDb, setReembeddingDb] = useState<string | null>(null);
+  const [retaggingDb, setRetaggingDb] = useState<string | null>(null);
   const [exportingDb, setExportingDb] = useState<string | null>(null);
   const [exportJobsByDb, setExportJobsByDb] = useState<Record<string, ExportJob>>({});
   const [confirmReembedDb, setConfirmReembedDb] = useState<DatabaseInfo | null>(null);
+  const [confirmRetagDb, setConfirmRetagDb] = useState<DatabaseInfo | null>(null);
   const [expandedPipeline, setExpandedPipeline] = useState<string | null>(null);
   const liveRefreshTimer = useRef<ReturnType<typeof setTimeout>>();
 
@@ -536,6 +539,23 @@ function DatabasesTab() {
       setPipelineError(String(e));
     } finally {
       setReembeddingDb(null);
+    }
+  };
+
+  const handleConfirmRetagAll = async () => {
+    if (!confirmRetagDb || retaggingDb) return;
+    const db = confirmRetagDb;
+    setRetaggingDb(db.id);
+    setPipelineError(null);
+    try {
+      const count = await retagAllAtoms(db.id);
+      toast.success(`Queued ${count} ${count === 1 ? 'atom' : 'atoms'} for re-tagging`);
+      setConfirmRetagDb(null);
+      await loadPipelineStatuses();
+    } catch (e) {
+      setPipelineError(String(e));
+    } finally {
+      setRetaggingDb(null);
     }
   };
 
@@ -700,6 +720,27 @@ function DatabasesTab() {
                       </Button>
                     </div>
                   )}
+                  {status.complete > 0 && (
+                    <div className="flex items-center justify-between gap-3 rounded border border-[var(--color-border)] bg-[var(--color-bg-panel)] px-3 py-2">
+                      <div className="min-w-0">
+                        <div className="text-xs font-medium text-[var(--color-text-primary)]">Re-run auto-tagging</div>
+                        <div className="text-[11px] text-[var(--color-text-secondary)]">
+                          Removes auto-generated tags (except those whose tag has a wiki article) and re-extracts tags using your current tagging model. Manual tags are preserved.
+                        </div>
+                      </div>
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        onClick={() => setConfirmRetagDb(db)}
+                        disabled={retaggingDb === db.id}
+                        title="Re-run auto-tagging for all atoms in this database"
+                        className="flex-shrink-0 gap-1"
+                      >
+                        {retaggingDb === db.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" strokeWidth={2} /> : <RefreshCw className="w-3.5 h-3.5" strokeWidth={2} />}
+                        Re-tag
+                      </Button>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -794,6 +835,54 @@ function DatabasesTab() {
               disabled={!!reembeddingDb}
             >
               {reembeddingDb === confirmReembedDb?.id ? 'Queuing...' : 'Re-embed'}
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
+      <Modal
+        isOpen={!!confirmRetagDb}
+        onClose={() => {
+          if (!retaggingDb) setConfirmRetagDb(null);
+        }}
+        title="Re-run auto-tagging?"
+        showFooter={false}
+      >
+        <div className="space-y-3">
+          <p className="text-xs text-[var(--color-text-secondary)]">
+            This will remove auto-generated tag assignments from <span className="font-medium text-[var(--color-text-primary)]">"{confirmRetagDb?.name}"</span> and re-run auto-tagging across every atom using your current tagging model.
+          </p>
+          <ul className="text-xs text-[var(--color-text-secondary)] space-y-1 pl-4 list-disc">
+            <li>Manually-added tags are preserved.</li>
+            <li>Tags with a wiki article are preserved (across all their atoms).</li>
+            <li>All other auto-generated tag assignments are removed before re-tagging.</li>
+          </ul>
+          {(() => {
+            const legacy = confirmRetagDb
+              ? pipelineByDb.get(confirmRetagDb.id)?.legacy_auto_tag_count ?? 0
+              : 0;
+            if (legacy <= 0) return null;
+            return (
+              <p className="text-xs text-amber-300/90 bg-amber-500/10 border border-amber-500/30 rounded px-2 py-1.5">
+                Note: {legacy.toLocaleString()} tag assignment{legacy === 1 ? '' : 's'} from before this update will be treated as auto-generated and may be removed if the tag has no wiki article.
+              </p>
+            );
+          })()}
+          <div className="flex gap-2 justify-end">
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => setConfirmRetagDb(null)}
+              disabled={!!retaggingDb}
+            >
+              Cancel
+            </Button>
+            <Button
+              size="sm"
+              onClick={handleConfirmRetagAll}
+              disabled={!!retaggingDb}
+            >
+              {retaggingDb === confirmRetagDb?.id ? 'Queuing...' : 'Re-tag'}
             </Button>
           </div>
         </div>

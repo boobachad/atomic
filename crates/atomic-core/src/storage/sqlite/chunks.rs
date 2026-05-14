@@ -1065,6 +1065,46 @@ impl SqliteStorage {
         Ok(results)
     }
 
+    /// Flip every atom's tagging stage back to 'processing' and return the IDs
+    /// so the caller can enqueue tag-only pipeline jobs. Mirrors
+    /// `claim_all_for_reembedding_sync` for the tagging stage.
+    pub(crate) fn claim_all_for_retagging_sync(&self) -> StorageResult<Vec<String>> {
+        let conn = self
+            .db
+            .conn
+            .lock()
+            .map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+        let mut stmt = conn.prepare(
+            "UPDATE atoms SET tagging_status = 'processing', tagging_error = NULL
+             RETURNING id",
+        )?;
+        let results = stmt
+            .query_map([], |row| row.get(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(results)
+    }
+
+    /// Delete `atom_tags` rows that were created by the auto-tagger and whose
+    /// tag has no wiki article. Manual assignments and wiki-backed tag
+    /// assignments are preserved. Returns the number of rows deleted. The
+    /// per-tag `atom_count` is kept in sync by the AFTER DELETE trigger.
+    pub(crate) fn delete_auto_tags_without_wiki_sync(&self) -> StorageResult<i32> {
+        let conn = self
+            .db
+            .conn
+            .lock()
+            .map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+        let count = conn.execute(
+            "DELETE FROM atom_tags
+             WHERE source = 'auto'
+               AND tag_id NOT IN (
+                   SELECT tag_id FROM wiki_articles WHERE tag_id IS NOT NULL
+               )",
+            [],
+        )?;
+        Ok(count as i32)
+    }
+
     pub(crate) fn get_pipeline_status_sync(&self) -> StorageResult<PipelineStatus> {
         let conn = self.db.read_conn()?;
         let pending: i32 = conn.query_row(
@@ -1155,6 +1195,18 @@ impl SqliteStorage {
             })?
             .collect::<Result<Vec<_>, _>>()?;
 
+        // Snapshot written by the V17 migration (see db.rs). Absent on fresh
+        // installs and on registry DBs; treat as 0 in both cases.
+        let legacy_auto_tag_count: i64 = conn
+            .query_row(
+                "SELECT value FROM settings WHERE key = 'atom_tags_legacy_auto_count'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .ok()
+            .and_then(|s| s.parse::<i64>().ok())
+            .unwrap_or(0);
+
         Ok(PipelineStatus {
             pending,
             processing,
@@ -1169,6 +1221,7 @@ impl SqliteStorage {
             tagging_skipped,
             tagging_failed_count,
             tagging_failed,
+            legacy_auto_tag_count,
         })
     }
 }
@@ -1330,6 +1383,14 @@ impl ChunkStore for SqliteStorage {
 
     async fn claim_all_for_reembedding(&self) -> StorageResult<Vec<String>> {
         self.claim_all_for_reembedding_sync()
+    }
+
+    async fn claim_all_for_retagging(&self) -> StorageResult<Vec<String>> {
+        self.claim_all_for_retagging_sync()
+    }
+
+    async fn delete_auto_tags_without_wiki(&self) -> StorageResult<i32> {
+        self.delete_auto_tags_without_wiki_sync()
     }
 
     async fn claim_pending_edges(&self, limit: i32) -> StorageResult<Vec<String>> {

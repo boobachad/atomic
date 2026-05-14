@@ -335,7 +335,7 @@ impl AtomStore for PostgresStorage {
             .await?;
 
         for tag_id in &request.tag_ids {
-            sqlx::query("INSERT INTO atom_tags (atom_id, tag_id, db_id) VALUES ($1, $2, $3)")
+            sqlx::query("INSERT INTO atom_tags (atom_id, tag_id, db_id, source) VALUES ($1, $2, $3, 'manual')")
                 .bind(id)
                 .bind(tag_id)
                 .bind(&self.db_id)
@@ -406,7 +406,7 @@ impl AtomStore for PostgresStorage {
             .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
 
             for tag_id in &request.tag_ids {
-                sqlx::query("INSERT INTO atom_tags (atom_id, tag_id, db_id) VALUES ($1, $2, $3)")
+                sqlx::query("INSERT INTO atom_tags (atom_id, tag_id, db_id, source) VALUES ($1, $2, $3, 'manual')")
                     .bind(id)
                     .bind(tag_id)
                     .bind(&self.db_id)
@@ -511,7 +511,7 @@ impl AtomStore for PostgresStorage {
                 .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
 
             for tag_id in tag_ids {
-                sqlx::query("INSERT INTO atom_tags (atom_id, tag_id, db_id) VALUES ($1, $2, $3)")
+                sqlx::query("INSERT INTO atom_tags (atom_id, tag_id, db_id, source) VALUES ($1, $2, $3, 'manual')")
                     .bind(id)
                     .bind(tag_id)
                     .bind(&self.db_id)
@@ -647,7 +647,7 @@ impl AtomStore for PostgresStorage {
                 .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
 
             for tag_id in tag_ids {
-                sqlx::query("INSERT INTO atom_tags (atom_id, tag_id, db_id) VALUES ($1, $2, $3)")
+                sqlx::query("INSERT INTO atom_tags (atom_id, tag_id, db_id, source) VALUES ($1, $2, $3, 'manual')")
                     .bind(id)
                     .bind(tag_id)
                     .bind(&self.db_id)

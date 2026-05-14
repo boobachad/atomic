@@ -826,6 +826,11 @@ pub struct PipelineStatus {
     pub tagging_skipped: i32,
     pub tagging_failed_count: i32,
     pub tagging_failed: Vec<FailedAtom>,
+    /// Number of `atom_tags` rows that existed before the source-tracking
+    /// migration ran in this DB. They default to `source = 'auto'` and so are
+    /// candidates for deletion on a "Re-tag all atoms" run; surfaced here so
+    /// the UI can warn honestly when prompting the user.
+    pub legacy_auto_tag_count: i64,
 }
 
 /// An atom that failed embedding or tagging

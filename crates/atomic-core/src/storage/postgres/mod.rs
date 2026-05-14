@@ -108,6 +108,7 @@ impl PostgresStorage {
             (10, include_str!("migrations/010_pipeline_jobs.sql")),
             (11, include_str!("migrations/011_edges_status.sql")),
             (12, include_str!("migrations/012_autotag_description.sql")),
+            (13, include_str!("migrations/013_atom_tags_source.sql")),
         ];
 
         // Advisory lock key — arbitrary fixed i64 to serialize migrations

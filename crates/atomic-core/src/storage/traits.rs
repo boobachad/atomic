@@ -443,6 +443,16 @@ pub trait ChunkStore: Send + Sync {
     /// Sets status to 'processing' and returns atom IDs.
     async fn claim_all_for_reembedding(&self) -> StorageResult<Vec<String>>;
 
+    /// Claim ALL atoms for re-tagging regardless of current status.
+    /// Sets `tagging_status` to 'processing' and returns atom IDs.
+    async fn claim_all_for_retagging(&self) -> StorageResult<Vec<String>>;
+
+    /// Delete `atom_tags` rows where `source = 'auto'` and the tag has no
+    /// wiki article. Returns the number of rows deleted. Used by the
+    /// "Re-tag all atoms" flow to clear stale auto-tags before re-extraction
+    /// while preserving manual assignments and wiki-backed tags.
+    async fn delete_auto_tags_without_wiki(&self) -> StorageResult<i32>;
+
     /// Atomically claim atoms that need edge computation: sets edges_status to 'processing'
     /// and returns their IDs.
     async fn claim_pending_edges(&self, limit: i32) -> StorageResult<Vec<String>>;

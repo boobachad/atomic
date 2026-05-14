@@ -2033,6 +2033,41 @@ impl AtomicCore {
         Ok(count)
     }
 
+    /// Re-tag all atoms in the database. Removes auto-source tag assignments
+    /// whose tag has no wiki article, then queues every atom for tag-only
+    /// pipeline processing. Manual assignments and wiki-backed tag
+    /// assignments are preserved.
+    ///
+    /// Returns the number of atoms queued for re-tagging.
+    pub async fn retag_all_atoms<F>(&self, on_event: F) -> Result<i32, AtomicCoreError>
+    where
+        F: Fn(EmbeddingEvent) + Send + Sync + Clone + 'static,
+    {
+        // Prune first so the re-extraction starts from a clean baseline.
+        // Manual rows and wiki-backed tag rows are preserved by the WHERE clause.
+        self.storage.delete_auto_tags_without_wiki_sync().await?;
+
+        let atom_ids = self.storage.claim_all_for_retagging_sync().await?;
+        let count = atom_ids.len() as i32;
+
+        if count > 0 {
+            let jobs: Vec<AtomPipelineJobRequest> = atom_ids
+                .into_iter()
+                .map(|atom_id| AtomPipelineJobRequest {
+                    atom_id,
+                    embed_requested: false,
+                    tag_requested: true,
+                    not_before: None,
+                    reason: "retag_all_atoms".to_string(),
+                })
+                .collect();
+            self.storage.enqueue_pipeline_jobs_sync(&jobs).await?;
+            self.process_queued_pipeline_jobs(on_event).await?;
+        }
+
+        Ok(count)
+    }
+
     /// Retry tagging for a specific atom
     pub async fn retry_tagging<F>(&self, atom_id: &str, on_event: F) -> Result<(), AtomicCoreError>
     where

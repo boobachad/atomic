@@ -228,6 +228,11 @@ export const COMMAND_MAP: Record<string, CommandSpec> = {
     path: (a) => `/api/embeddings/reembed-all${a.dbId ? `?db=${encodeURIComponent(a.dbId as string)}` : ''}`,
     transformResponse: (d: any) => d.count as number,
   },
+  retag_all_atoms: {
+    method: 'POST',
+    path: (a) => `/api/tagging/retag-all${a.dbId ? `?db=${encodeURIComponent(a.dbId as string)}` : ''}`,
+    transformResponse: (d: any) => d.count as number,
+  },
   reset_stuck_processing: {
     method: 'POST',
     path: '/api/embeddings/reset-stuck',
