@@ -132,6 +132,14 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
 
     // Briefings
     cfg.route(
+        "/briefings/schedule",
+        web::get().to(briefings::get_briefing_schedule),
+    );
+    cfg.route(
+        "/briefings/schedule",
+        web::put().to(briefings::set_briefing_schedule),
+    );
+    cfg.route(
         "/briefings/latest",
         web::get().to(briefings::get_latest_briefing),
     );

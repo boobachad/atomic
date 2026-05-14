@@ -59,7 +59,10 @@ pub mod wiki;
 
 // Re-exports for convenience
 pub use agent::{CanvasClusterSummary, CanvasContext, ChatEvent, PageContext};
-pub use briefing::{Briefing, BriefingCitation, BriefingWithCitations};
+pub use briefing::{
+    Briefing, BriefingCitation, BriefingFrequency, BriefingSchedule, BriefingScheduleStatus,
+    BriefingWeekday, BriefingWithCitations,
+};
 pub use db::Database;
 pub use embedding::{EmbeddingEvent, EmbeddingStrategy, TaggingStrategy};
 pub use error::AtomicCoreError;
@@ -1794,6 +1797,22 @@ impl AtomicCore {
             tracing::warn!(error = %e, "[briefing] Failed to persist daily_briefing last_run");
         }
         Ok(result)
+    }
+
+    /// Get the active database's briefing schedule and computed next run.
+    pub async fn get_briefing_schedule(
+        &self,
+    ) -> Result<briefing::BriefingScheduleStatus, AtomicCoreError> {
+        briefing::schedule::get_schedule_status(self).await
+    }
+
+    /// Persist the active database's briefing schedule. This is intentionally
+    /// per-DB task state, not a generic resolved setting.
+    pub async fn set_briefing_schedule(
+        &self,
+        schedule: briefing::BriefingSchedule,
+    ) -> Result<briefing::BriefingScheduleStatus, AtomicCoreError> {
+        briefing::schedule::set_schedule(self, schedule).await
     }
 
     /// Get the most recent briefing joined with citations.

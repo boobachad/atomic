@@ -88,6 +88,105 @@ const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
   { id: 'databases', label: 'Databases' },
 ];
 
+type BriefingFrequency = 'off' | 'daily' | 'weekly';
+type BriefingWeekday = 'monday' | 'tuesday' | 'wednesday' | 'thursday' | 'friday' | 'saturday' | 'sunday';
+
+interface BriefingSchedule {
+  frequency: BriefingFrequency;
+  time: string;
+  weekday?: BriefingWeekday | null;
+}
+
+interface BriefingScheduleStatus {
+  schedule: BriefingSchedule;
+  timezone: string;
+  last_run_at?: string | null;
+  next_run_at?: string | null;
+  configured: boolean;
+}
+
+const BRIEFING_FREQUENCY_OPTIONS = [
+  { value: 'off', label: 'Off' },
+  { value: 'daily', label: 'Daily' },
+  { value: 'weekly', label: 'Weekly' },
+];
+
+const BRIEFING_WEEKDAY_OPTIONS = [
+  { value: 'monday', label: 'Monday' },
+  { value: 'tuesday', label: 'Tuesday' },
+  { value: 'wednesday', label: 'Wednesday' },
+  { value: 'thursday', label: 'Thursday' },
+  { value: 'friday', label: 'Friday' },
+  { value: 'saturday', label: 'Saturday' },
+  { value: 'sunday', label: 'Sunday' },
+];
+
+const BRIEFING_TIME_OPTIONS = Array.from({ length: 96 }, (_, index) => {
+  const totalMinutes = index * 15;
+  const hour = Math.floor(totalMinutes / 60);
+  const minute = totalMinutes % 60;
+  const value = `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
+  const period = hour < 12 ? 'AM' : 'PM';
+  const displayHour = hour % 12 || 12;
+  return {
+    value,
+    label: `${displayHour}:${String(minute).padStart(2, '0')} ${period}`,
+  };
+});
+
+const FALLBACK_TIMEZONES = [
+  'UTC',
+  'America/New_York',
+  'America/Chicago',
+  'America/Denver',
+  'America/Los_Angeles',
+  'Europe/London',
+  'Europe/Paris',
+  'Asia/Tokyo',
+  'Australia/Sydney',
+];
+
+function getBrowserTimeZone(): string {
+  return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+}
+
+function getSupportedTimeZones(): string[] {
+  const supportedValuesOf = (Intl as any).supportedValuesOf;
+  if (typeof supportedValuesOf === 'function') {
+    try {
+      return supportedValuesOf('timeZone');
+    } catch {
+      return FALLBACK_TIMEZONES;
+    }
+  }
+  return FALLBACK_TIMEZONES;
+}
+
+function formatBriefingRunAt(value?: string | null, timeZone?: string | null): string | null {
+  if (!value) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  const options: Intl.DateTimeFormatOptions = {
+    timeZone: timeZone || undefined,
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  };
+  try {
+    return date.toLocaleString(undefined, options);
+  } catch (e) {
+    if (e instanceof RangeError && timeZone) {
+      return date.toLocaleString(undefined, {
+        ...options,
+        timeZone: undefined,
+      });
+    }
+    throw e;
+  }
+}
+
 function TagCategoriesTab() {
   const tags = useTagsStore(s => s.tags);
   const fetchTags = useTagsStore(s => s.fetchTags);
@@ -813,10 +912,23 @@ export function SettingsModal({ isOpen, onClose, initialTab }: SettingsModalProp
   const fetchSettings = useSettingsStore(s => s.fetchSettings);
   const setSetting = useSettingsStore(s => s.setSetting);
   const testOpenRouterConnection = useSettingsStore(s => s.testOpenRouterConnection);
+  const activeDatabaseId = useDatabasesStore(s => s.activeId);
+  const activeDatabaseName = useDatabasesStore(s => s.databases.find(db => db.id === s.activeId)?.name);
+  const databaseCount = useDatabasesStore(s => s.databases.length);
 
   // Theme & Font
   const [theme, setTheme] = useState<Theme>('obsidian');
   const [font, setFont] = useState<Font>('ibm-plex-sans');
+  const [briefingSchedule, setBriefingSchedule] = useState<BriefingSchedule>({
+    frequency: 'daily',
+    time: '09:00',
+    weekday: null,
+  });
+  const [timezone, setTimezone] = useState(getBrowserTimeZone());
+  const [briefingScheduleStatus, setBriefingScheduleStatus] = useState<BriefingScheduleStatus | null>(null);
+  const [isLoadingBriefingSchedule, setIsLoadingBriefingSchedule] = useState(false);
+  const [briefingScheduleError, setBriefingScheduleError] = useState<string | null>(null);
+  const supportedTimeZones = useMemo(() => getSupportedTimeZones(), []);
 
   // Provider selection
   const [provider, setProvider] = useState<'openrouter' | 'ollama' | 'openai_compat'>('openrouter');
@@ -1036,6 +1148,50 @@ export function SettingsModal({ isOpen, onClose, initialTab }: SettingsModalProp
     }
   }, []);
 
+  const loadBriefingSchedule = useCallback(async () => {
+    if (!getTransport().isConnected()) return;
+    setIsLoadingBriefingSchedule(true);
+    setBriefingScheduleError(null);
+    try {
+      const status = await getTransport().invoke<BriefingScheduleStatus>('get_briefing_schedule');
+      const schedule = { ...status.schedule };
+      if (schedule.frequency === 'weekly' && !schedule.weekday) {
+        schedule.weekday = 'monday';
+      }
+      setBriefingSchedule(schedule);
+      setBriefingScheduleStatus(status);
+    } catch (e) {
+      setBriefingScheduleError(String(e));
+    } finally {
+      setIsLoadingBriefingSchedule(false);
+    }
+  }, []);
+
+  const saveBriefingSchedule = useCallback(async (next: BriefingSchedule) => {
+    const normalized: BriefingSchedule = {
+      ...next,
+      time: next.time || '09:00',
+      weekday: next.frequency === 'weekly' ? (next.weekday || 'monday') : null,
+    };
+    setBriefingSchedule(normalized);
+    setBriefingScheduleError(null);
+    try {
+      if (!settings.timezone) {
+        await setSetting('timezone', timezone || getBrowserTimeZone());
+      }
+      const status = await getTransport().invoke<BriefingScheduleStatus>('set_briefing_schedule', {
+        frequency: normalized.frequency,
+        time: normalized.time,
+        weekday: normalized.weekday,
+      });
+      setBriefingSchedule(status.schedule);
+      setBriefingScheduleStatus(status);
+    } catch (e) {
+      setBriefingScheduleError(String(e));
+      toast.error('Failed to save briefing schedule', { description: String(e) });
+    }
+  }, [setSetting, settings.timezone, timezone]);
+
   // Create new API token
   const handleCreateToken = async () => {
     if (!newTokenName.trim() || isCreatingToken) return;
@@ -1232,6 +1388,7 @@ export function SettingsModal({ isOpen, onClose, initialTab }: SettingsModalProp
       const transport = getTransport();
       if (transport.isConnected()) {
         fetchSettings();
+        loadBriefingSchedule();
         // Fetch OpenRouter models
         setIsLoadingModels(true);
         getAvailableLlmModels()
@@ -1253,7 +1410,13 @@ export function SettingsModal({ isOpen, onClose, initialTab }: SettingsModalProp
       setShowTokenSection(false);
       setConfirmRevokeId(null);
     }
-  }, [isOpen, fetchSettings, loadApiTokens]);
+  }, [isOpen, fetchSettings, loadApiTokens, loadBriefingSchedule]);
+
+  useEffect(() => {
+    if (isOpen && activeDatabaseId) {
+      loadBriefingSchedule();
+    }
+  }, [isOpen, activeDatabaseId, loadBriefingSchedule]);
 
   // Load feeds when integrations tab is active.
   useEffect(() => {
@@ -1272,6 +1435,7 @@ export function SettingsModal({ isOpen, onClose, initialTab }: SettingsModalProp
     const p = settings.provider as 'openrouter' | 'ollama' | 'openai_compat' | undefined;
     setTheme((settings.theme as Theme) || 'obsidian');
     setFont((settings.font as Font) || 'ibm-plex-sans');
+    setTimezone(settings.timezone || getBrowserTimeZone());
     setProvider(p || 'openrouter');
     setApiKey(settings.openrouter_api_key || '');
     setOpenrouterContextLength(settings.openrouter_context_length || '');
@@ -1656,6 +1820,114 @@ export function SettingsModal({ isOpen, onClose, initialTab }: SettingsModalProp
                       onChange={(v) => { setFont(v as Font); autoSave('font', v); }}
                       options={FONTS}
                     />
+                  </div>
+
+                  {/* Time Zone */}
+                  <div className="space-y-2">
+                    <label className="block text-sm font-medium text-[var(--color-text-primary)]">
+                      Time Zone
+                    </label>
+                    <input
+                      type="text"
+                      list="settings-timezones"
+                      value={timezone}
+                      onChange={(e) => setTimezone(e.target.value)}
+                      onBlur={() => autoSave('timezone', timezone || getBrowserTimeZone())}
+                      className="w-full px-3 py-2 rounded-md bg-[var(--color-bg-card)] border border-[var(--color-border)] text-sm text-[var(--color-text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)] focus:border-transparent"
+                    />
+                    <datalist id="settings-timezones">
+                      {supportedTimeZones.map((tz) => (
+                        <option key={tz} value={tz} />
+                      ))}
+                    </datalist>
+                  </div>
+
+                  {/* Briefing Schedule */}
+                  <div className="space-y-3 pt-4 border-t border-[var(--color-border)]">
+                    <div className="space-y-1">
+                      <label className="block text-sm font-medium text-[var(--color-text-primary)]">
+                        Briefing Schedule
+                      </label>
+                      <p className="text-xs text-[var(--color-text-secondary)]">
+                        {databaseCount > 1
+                          ? `Schedule for ${activeDatabaseName || 'the active database'}.`
+                          : 'Generate briefings on a per-database schedule.'}
+                      </p>
+                    </div>
+
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <div className="space-y-1">
+                        <label className="block text-xs font-medium text-[var(--color-text-secondary)]">
+                          Frequency
+                        </label>
+                        <CustomSelect
+                          value={briefingSchedule.frequency}
+                          onChange={(value) => {
+                            const frequency = value as BriefingFrequency;
+                            saveBriefingSchedule({
+                              ...briefingSchedule,
+                              frequency,
+                              weekday: frequency === 'weekly' ? (briefingSchedule.weekday || 'monday') : null,
+                            });
+                          }}
+                          options={BRIEFING_FREQUENCY_OPTIONS}
+                        />
+                      </div>
+
+                      {briefingSchedule.frequency === 'weekly' && (
+                        <div className="space-y-1">
+                          <label className="block text-xs font-medium text-[var(--color-text-secondary)]">
+                            Day
+                          </label>
+                          <CustomSelect
+                            value={briefingSchedule.weekday || 'monday'}
+                            onChange={(value) => {
+                              saveBriefingSchedule({
+                                ...briefingSchedule,
+                                weekday: value as BriefingWeekday,
+                              });
+                            }}
+                            options={BRIEFING_WEEKDAY_OPTIONS}
+                          />
+                        </div>
+                      )}
+
+                      {briefingSchedule.frequency !== 'off' && (
+                        <div className="space-y-1">
+                          <label className="block text-xs font-medium text-[var(--color-text-secondary)]">
+                            Time
+                          </label>
+                          <CustomSelect
+                            value={briefingSchedule.time}
+                            onChange={(value) => {
+                              saveBriefingSchedule({ ...briefingSchedule, time: value });
+                            }}
+                            options={BRIEFING_TIME_OPTIONS}
+                          />
+                        </div>
+                      )}
+                    </div>
+
+                    {(() => {
+                      const scheduleTimeZone = briefingScheduleStatus?.timezone || timezone;
+                      const nextRun = formatBriefingRunAt(
+                        briefingScheduleStatus?.next_run_at,
+                        scheduleTimeZone,
+                      );
+                      return (
+                        <div className="min-h-5 text-xs text-[var(--color-text-secondary)]">
+                          {isLoadingBriefingSchedule ? (
+                            <span>Loading schedule...</span>
+                          ) : briefingScheduleError ? (
+                            <span className="text-red-400">{briefingScheduleError}</span>
+                          ) : nextRun ? (
+                            <span>Next briefing: {nextRun} ({scheduleTimeZone})</span>
+                          ) : (
+                            <span>Saved separately for each database.</span>
+                          )}
+                        </div>
+                      );
+                    })()}
                   </div>
 
                   {/* Troubleshooting */}

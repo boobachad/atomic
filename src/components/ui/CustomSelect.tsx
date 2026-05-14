@@ -49,7 +49,7 @@ export function CustomSelect({ value, onChange, options }: CustomSelectProps) {
       </button>
 
       {isOpen && (
-        <div className="absolute z-10 w-full mt-1 bg-[var(--color-bg-card)] border border-[var(--color-border)] rounded-md shadow-lg overflow-hidden">
+        <div className="absolute z-10 w-full mt-1 bg-[var(--color-bg-card)] border border-[var(--color-border)] rounded-md shadow-lg overflow-hidden max-h-64 overflow-y-auto">
           {options.map((option) => (
             <button
               key={option.value}

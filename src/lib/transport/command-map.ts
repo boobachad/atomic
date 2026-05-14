@@ -264,6 +264,20 @@ export const COMMAND_MAP: Record<string, CommandSpec> = {
     method: 'POST',
     path: '/api/briefings/run',
   },
+  get_briefing_schedule: {
+    method: 'GET',
+    path: '/api/briefings/schedule',
+  },
+  set_briefing_schedule: {
+    method: 'PUT',
+    path: '/api/briefings/schedule',
+    argsMode: 'body',
+    transformArgs: (a) => ({
+      frequency: a.frequency,
+      time: a.time,
+      weekday: a.weekday ?? null,
+    }),
+  },
 
   // ==================== Wiki ====================
   get_all_wiki_articles: {

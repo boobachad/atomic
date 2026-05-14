@@ -9,6 +9,36 @@ use utoipa::{IntoParams, ToSchema};
 
 #[utoipa::path(
     get,
+    path = "/api/briefings/schedule",
+    responses(
+        (status = 200, description = "Active database briefing schedule", body = atomic_core::BriefingScheduleStatus),
+        (status = 400, description = "Invalid schedule state", body = ApiErrorResponse)
+    ),
+    tag = "briefings"
+)]
+pub async fn get_briefing_schedule(db: Db) -> HttpResponse {
+    ok_or_error(db.0.get_briefing_schedule().await)
+}
+
+#[utoipa::path(
+    put,
+    path = "/api/briefings/schedule",
+    request_body = atomic_core::BriefingSchedule,
+    responses(
+        (status = 200, description = "Briefing schedule updated", body = atomic_core::BriefingScheduleStatus),
+        (status = 400, description = "Invalid schedule", body = ApiErrorResponse)
+    ),
+    tag = "briefings"
+)]
+pub async fn set_briefing_schedule(
+    db: Db,
+    body: web::Json<atomic_core::BriefingSchedule>,
+) -> HttpResponse {
+    ok_or_error(db.0.set_briefing_schedule(body.into_inner()).await)
+}
+
+#[utoipa::path(
+    get,
     path = "/api/briefings/latest",
     responses(
         (status = 200, description = "Most recent briefing with citations", body = atomic_core::BriefingWithCitations),

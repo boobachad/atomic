@@ -18,6 +18,7 @@ pub const WORKSPACE_ONLY_KEYS: &[&str] = &[
     // UI preferences — one per user
     "theme",
     "font",
+    "timezone",
     // Credentials — one set per user/account
     "openrouter_api_key",
     "openai_compat_api_key",
@@ -49,6 +50,7 @@ pub fn is_embedding_space_key(key: &str) -> bool {
 /// Default settings with their values
 pub const DEFAULT_SETTINGS: &[(&str, &str)] = &[
     ("provider", "openrouter"),
+    ("timezone", ""),
     ("ollama_host", DEFAULT_OLLAMA_HOST),
     ("ollama_embedding_model", "nomic-embed-text"),
     ("ollama_llm_model", "llama3.2"),
