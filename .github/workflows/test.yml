@@ -21,6 +21,11 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+
       # .cargo/config.toml pins the mold linker for x86_64-linux, so it must
       # be available on the runner or every link step fails with "cannot find 'ld'".
       - name: Install mold linker
@@ -44,6 +49,8 @@ jobs:
       # need webkit/gtk — those are only required by src-tauri, which we skip
       # here via explicit `-p` flags. This keeps the Linux test job lightweight.
       - name: Run unit + integration tests
+        env:
+          ATOMIC_RUN_MCP_INSPECTOR: "1"
         run: |
           cargo test \
             -p atomic-core \

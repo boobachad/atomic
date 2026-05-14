@@ -27,6 +27,7 @@
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:mcp-inspector": "node scripts/check-mcp-inspector.js",
     "tauri": "tauri",
     "openapi:generate": "cargo run -p atomic-server --bin export-openapi -- public/openapi.json",
     "build:mcp-bridge": "node scripts/build-mcp-bridge.js",
