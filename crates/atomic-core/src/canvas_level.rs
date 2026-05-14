@@ -33,8 +33,6 @@ const COUNT_GROUP_TARGET: usize = 15;
 
 /// Precomputed tag tree data — loaded once per request, reused across functions.
 struct TagTree {
-    /// (id, name, parent_id) for every tag
-    all_tags: Vec<(String, String, Option<String>)>,
     /// tag_id → number of atoms directly tagged (not counting descendants)
     direct_counts: HashMap<String, i32>,
     /// tag_id → total atom count including all descendant tags (computed in one pass)
@@ -82,7 +80,6 @@ impl TagTree {
         }
 
         Ok(TagTree {
-            all_tags,
             direct_counts,
             transitive_counts,
             children_map,

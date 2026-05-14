@@ -144,9 +144,9 @@ impl Registry {
                     token_id TEXT
                 );
 
-                PRAGMA user_version = 1;
                 "#,
             )?;
+            conn.execute_batch(&format!("PRAGMA user_version = {};", Self::LATEST_VERSION))?;
 
             // Seed default settings
             crate::settings::migrate_settings_to(conn)?;

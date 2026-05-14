@@ -858,7 +858,7 @@ impl Database {
                 }
             }
 
-            conn.execute_batch("PRAGMA user_version = 17;")?;
+            conn.execute_batch(&format!("PRAGMA user_version = {};", Self::LATEST_VERSION))?;
         }
 
         // --- Triggers (recreated every startup to stay current) ---
