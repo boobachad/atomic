@@ -162,17 +162,29 @@ function getSupportedTimeZones(): string[] {
   return FALLBACK_TIMEZONES;
 }
 
-function formatBriefingRunAt(value?: string | null): string | null {
+function formatBriefingRunAt(value?: string | null, timeZone?: string | null): string | null {
   if (!value) return null;
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return null;
-  return date.toLocaleString(undefined, {
+  const options: Intl.DateTimeFormatOptions = {
+    timeZone: timeZone || undefined,
     weekday: 'short',
     month: 'short',
     day: 'numeric',
     hour: 'numeric',
     minute: '2-digit',
-  });
+  };
+  try {
+    return date.toLocaleString(undefined, options);
+  } catch (e) {
+    if (e instanceof RangeError && timeZone) {
+      return date.toLocaleString(undefined, {
+        ...options,
+        timeZone: undefined,
+      });
+    }
+    throw e;
+  }
 }
 
 function TagCategoriesTab() {
@@ -1897,7 +1909,11 @@ export function SettingsModal({ isOpen, onClose, initialTab }: SettingsModalProp
                     </div>
 
                     {(() => {
-                      const nextRun = formatBriefingRunAt(briefingScheduleStatus?.next_run_at);
+                      const scheduleTimeZone = briefingScheduleStatus?.timezone || timezone;
+                      const nextRun = formatBriefingRunAt(
+                        briefingScheduleStatus?.next_run_at,
+                        scheduleTimeZone,
+                      );
                       return (
                         <div className="min-h-5 text-xs text-[var(--color-text-secondary)]">
                           {isLoadingBriefingSchedule ? (
@@ -1905,7 +1921,7 @@ export function SettingsModal({ isOpen, onClose, initialTab }: SettingsModalProp
                           ) : briefingScheduleError ? (
                             <span className="text-red-400">{briefingScheduleError}</span>
                           ) : nextRun ? (
-                            <span>Next briefing: {nextRun} ({briefingScheduleStatus?.timezone || timezone})</span>
+                            <span>Next briefing: {nextRun} ({scheduleTimeZone})</span>
                           ) : (
                             <span>Saved separately for each database.</span>
                           )}
