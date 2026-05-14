@@ -1,6 +1,7 @@
 //! Background jobs — grace period cleanup and scheduled tasks
 
 use crate::clients::fly::FlyClient;
+use crate::models::status;
 use sqlx::PgPool;
 use std::sync::Arc;
 use std::time::Duration;
@@ -26,7 +27,7 @@ async fn run_cleanup(pool: &PgPool, fly: &FlyClient) -> Result<(), crate::error:
     for instance in instances {
         eprintln!("Tearing down expired instance: {}", instance.subdomain);
 
-        crate::db::update_instance_status(pool, instance.id, "destroying").await?;
+        crate::db::update_instance_status(pool, instance.id, status::DESTROYING).await?;
 
         // Delete the entire Fly app (destroys machines, volumes, certs, IPs)
         if let Err(e) = fly.delete_app(&instance.fly_app_name).await {
@@ -34,7 +35,7 @@ async fn run_cleanup(pool: &PgPool, fly: &FlyClient) -> Result<(), crate::error:
             continue;
         }
 
-        crate::db::update_instance_status(pool, instance.id, "destroyed").await?;
+        crate::db::update_instance_status(pool, instance.id, status::DESTROYED).await?;
         eprintln!("Destroyed instance: {}", instance.subdomain);
     }
 

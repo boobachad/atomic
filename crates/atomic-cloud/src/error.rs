@@ -59,11 +59,3 @@ impl From<CloudError> for HttpResponse {
         e.to_response()
     }
 }
-
-/// Shorthand to convert Result<T, CloudError> to HttpResponse
-pub fn ok_or_error<T: Serialize>(result: Result<T, CloudError>) -> HttpResponse {
-    match result {
-        Ok(data) => HttpResponse::Ok().json(data),
-        Err(e) => e.to_response(),
-    }
-}

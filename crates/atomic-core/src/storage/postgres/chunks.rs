@@ -605,7 +605,16 @@ impl ChunkStore for PostgresStorage {
         })?;
 
         let mut tag_map: HashMap<String, Vec<Tag>> = HashMap::new();
-        for (atom_id_val, tag_id, name, parent_id, created_at, is_autotag_target, autotag_description) in tag_rows {
+        for (
+            atom_id_val,
+            tag_id,
+            name,
+            parent_id,
+            created_at,
+            is_autotag_target,
+            autotag_description,
+        ) in tag_rows
+        {
             tag_map.entry(atom_id_val).or_default().push(Tag {
                 id: tag_id,
                 name,

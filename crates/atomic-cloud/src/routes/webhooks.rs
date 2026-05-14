@@ -1,6 +1,7 @@
 //! Stripe webhook handler — processes billing events and triggers provisioning
 
 use crate::error::CloudError;
+use crate::models::{status, subscription_status};
 use crate::state::CloudState;
 use actix_web::{web, HttpRequest, HttpResponse};
 use std::sync::Arc;
@@ -94,7 +95,7 @@ async fn handle_checkout_completed(
         &state.db,
         customer.id,
         stripe_subscription_id,
-        "active",
+        subscription_status::ACTIVE,
         chrono::Utc::now() + chrono::Duration::days(30), // approximate; will be updated by subscription.updated
         None,
     )
@@ -157,7 +158,7 @@ async fn handle_checkout_completed(
             if let Err(cleanup_err) = fly.delete_app(&fly_app_name).await {
                 eprintln!("Failed to clean up Fly app {fly_app_name}: {cleanup_err}");
             }
-            let _ = crate::db::update_instance_status(&db, instance_id, "failed").await;
+            let _ = crate::db::update_instance_status(&db, instance_id, status::FAILED).await;
         }
     });
 
@@ -193,7 +194,7 @@ async fn provision_instance(
 
     // Update instance with Fly IDs
     crate::db::update_instance_fly_ids(db, instance_id, &machine.id, &volume.id).await?;
-    crate::db::update_instance_status(db, instance_id, "running").await?;
+    crate::db::update_instance_status(db, instance_id, status::RUNNING).await?;
 
     eprintln!(
         "Provisioned {subdomain}: app={app_name}, machine={}, volume={}",
@@ -237,7 +238,7 @@ async fn handle_subscription_deleted(
     crate::db::update_subscription_status(
         &state.db,
         stripe_subscription_id,
-        "canceled",
+        subscription_status::CANCELED,
         Some(chrono::Utc::now()),
     )
     .await?;
@@ -255,8 +256,13 @@ async fn handle_payment_failed(
         None => return Ok(()), // Not all invoices have subscriptions
     };
 
-    crate::db::update_subscription_status(&state.db, stripe_subscription_id, "past_due", None)
-        .await?;
+    crate::db::update_subscription_status(
+        &state.db,
+        stripe_subscription_id,
+        subscription_status::PAST_DUE,
+        None,
+    )
+    .await?;
 
     Ok(())
 }

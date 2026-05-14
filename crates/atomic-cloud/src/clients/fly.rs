@@ -336,55 +336,6 @@ impl FlyClient {
         Ok(())
     }
 
-    /// Destroy a machine permanently
-    pub async fn destroy_machine(
-        &self,
-        app_name: &str,
-        machine_id: &str,
-    ) -> Result<(), CloudError> {
-        let url = format!(
-            "{}/apps/{}/machines/{}?force=true",
-            FLY_API_BASE, app_name, machine_id
-        );
-
-        let resp = self
-            .inner
-            .http
-            .delete(&url)
-            .header("Authorization", self.auth_header())
-            .send()
-            .await
-            .map_err(|e| CloudError::Fly(e.to_string()))?;
-
-        if !resp.status().is_success() {
-            let body = resp.text().await.unwrap_or_default();
-            return Err(CloudError::Fly(format!("Destroy machine failed: {body}")));
-        }
-
-        Ok(())
-    }
-
-    /// Destroy a volume permanently
-    pub async fn destroy_volume(&self, app_name: &str, volume_id: &str) -> Result<(), CloudError> {
-        let url = format!("{}/apps/{}/volumes/{}", FLY_API_BASE, app_name, volume_id);
-
-        let resp = self
-            .inner
-            .http
-            .delete(&url)
-            .header("Authorization", self.auth_header())
-            .send()
-            .await
-            .map_err(|e| CloudError::Fly(e.to_string()))?;
-
-        if !resp.status().is_success() {
-            let body = resp.text().await.unwrap_or_default();
-            return Err(CloudError::Fly(format!("Destroy volume failed: {body}")));
-        }
-
-        Ok(())
-    }
-
     /// Update a machine's image (for auto-updates).
     /// Fetches the existing config first and merges in the new image to avoid
     /// wiping env vars, mounts, services, and health checks.

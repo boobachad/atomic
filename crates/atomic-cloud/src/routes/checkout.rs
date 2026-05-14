@@ -1,6 +1,7 @@
 //! Checkout routes — subdomain validation and Stripe Checkout session creation
 
 use crate::error::CloudError;
+use crate::models::status;
 use crate::state::CloudState;
 use actix_web::{web, HttpResponse};
 use serde::Deserialize;
@@ -156,7 +157,7 @@ pub async fn exchange_session(
         Ok(None) => {
             // Webhook may not have processed yet — tell the frontend to retry
             return HttpResponse::Accepted().json(serde_json::json!({
-                "status": "pending",
+                "status": status::PENDING,
                 "message": "Instance is being set up, please retry"
             }));
         }
@@ -170,7 +171,7 @@ pub async fn exchange_session(
             "status": instance.status,
         })),
         Ok(None) => HttpResponse::Accepted().json(serde_json::json!({
-            "status": "pending",
+            "status": status::PENDING,
             "message": "Instance is being set up, please retry"
         })),
         Err(e) => e.to_response(),
