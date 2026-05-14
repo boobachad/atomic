@@ -320,7 +320,9 @@ struct AgentState {
     done_called: bool,
 }
 
-async fn resolve_model(core: &AtomicCore) -> Result<(ProviderConfig, String, Option<String>), String> {
+async fn resolve_model(
+    core: &AtomicCore,
+) -> Result<(ProviderConfig, String, Option<String>), String> {
     let settings = core
         .get_settings()
         .await

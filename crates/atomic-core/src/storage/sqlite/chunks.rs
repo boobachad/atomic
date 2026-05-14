@@ -1065,9 +1065,8 @@ impl SqliteStorage {
         Ok(results)
     }
 
-    /// Flip every atom's tagging stage back to 'processing' and return the IDs
-    /// so the caller can enqueue tag-only pipeline jobs. Mirrors
-    /// `claim_all_for_reembedding_sync` for the tagging stage.
+    /// Flip embedding-complete atoms' tagging stage back to 'processing' and
+    /// return the IDs so the caller can enqueue tag-only pipeline jobs.
     pub(crate) fn claim_all_for_retagging_sync(&self) -> StorageResult<Vec<String>> {
         let conn = self
             .db
@@ -1076,6 +1075,7 @@ impl SqliteStorage {
             .map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
         let mut stmt = conn.prepare(
             "UPDATE atoms SET tagging_status = 'processing', tagging_error = NULL
+             WHERE embedding_status = 'complete'
              RETURNING id",
         )?;
         let results = stmt
@@ -1459,6 +1459,58 @@ mod tests {
             .claim_pipeline_jobs_sync(10, "2099-01-01T00:30:00+00:00", "2099-01-01T00:00:00+00:00")
             .await
             .expect("claim job")
+    }
+
+    #[tokio::test]
+    async fn retag_claim_only_marks_embedding_complete_atoms() {
+        let dir = TempDir::new().expect("create tempdir");
+        let core = AtomicCore::open_or_create(dir.path().join("pipeline.db"))
+            .expect("open sqlite test db");
+        let conn = rusqlite::Connection::open(core.db_path()).expect("open sqlite db");
+        let now = "2026-01-01T00:00:00+00:00";
+
+        for (id, embedding_status) in [
+            ("complete_atom", "complete"),
+            ("pending_atom", "pending"),
+            ("failed_atom", "failed"),
+            ("skipped_atom", "skipped"),
+        ] {
+            conn.execute(
+                "INSERT INTO atoms (id, content, created_at, updated_at, embedding_status, tagging_status)
+                 VALUES (?1, ?2, ?3, ?3, ?4, 'complete')",
+                rusqlite::params![id, "test content", now, embedding_status],
+            )
+            .expect("insert atom");
+        }
+
+        let claimed = core
+            .storage()
+            .claim_all_for_retagging_sync()
+            .await
+            .expect("claim atoms for retagging");
+
+        assert_eq!(claimed, vec!["complete_atom".to_string()]);
+
+        let mut stmt = conn
+            .prepare("SELECT id, tagging_status FROM atoms ORDER BY id")
+            .expect("prepare status query");
+        let statuses = stmt
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .expect("query statuses")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect statuses");
+
+        assert_eq!(
+            statuses,
+            vec![
+                ("complete_atom".to_string(), "processing".to_string()),
+                ("failed_atom".to_string(), "complete".to_string()),
+                ("pending_atom".to_string(), "complete".to_string()),
+                ("skipped_atom".to_string(), "complete".to_string()),
+            ]
+        );
     }
 
     #[tokio::test]

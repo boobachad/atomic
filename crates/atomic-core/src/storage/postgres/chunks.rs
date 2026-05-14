@@ -1078,7 +1078,7 @@ impl ChunkStore for PostgresStorage {
     async fn claim_all_for_retagging(&self) -> StorageResult<Vec<String>> {
         let rows: Vec<(String,)> = sqlx::query_as(
             "UPDATE atoms SET tagging_status = 'processing', tagging_error = NULL
-             WHERE db_id = $1
+             WHERE db_id = $1 AND embedding_status = 'complete'
              RETURNING id",
         )
         .bind(&self.db_id)

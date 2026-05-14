@@ -443,7 +443,7 @@ pub trait ChunkStore: Send + Sync {
     /// Sets status to 'processing' and returns atom IDs.
     async fn claim_all_for_reembedding(&self) -> StorageResult<Vec<String>>;
 
-    /// Claim ALL atoms for re-tagging regardless of current status.
+    /// Claim embedding-complete atoms for re-tagging.
     /// Sets `tagging_status` to 'processing' and returns atom IDs.
     async fn claim_all_for_retagging(&self) -> StorageResult<Vec<String>>;
 

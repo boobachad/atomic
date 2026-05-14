@@ -932,8 +932,15 @@ async fn pg_batch_fetch_conversation_tags(
     })?;
 
     let mut map: HashMap<String, Vec<Tag>> = HashMap::new();
-    for (conversation_id, id, name, parent_id, created_at, is_autotag_target, autotag_description) in
-        rows
+    for (
+        conversation_id,
+        id,
+        name,
+        parent_id,
+        created_at,
+        is_autotag_target,
+        autotag_description,
+    ) in rows
     {
         map.entry(conversation_id).or_default().push(Tag {
             id,

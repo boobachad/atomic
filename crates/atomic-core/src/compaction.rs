@@ -273,7 +273,7 @@ fn execute_tag_merge(conn: &Connection, merge: &TagMerge) -> Result<(bool, i32),
     for atom_id in &atoms_with_loser {
         let inserted = conn
             .execute(
-                "INSERT OR IGNORE INTO atom_tags (atom_id, tag_id) VALUES (?1, ?2)",
+                "INSERT OR IGNORE INTO atom_tags (atom_id, tag_id, source) VALUES (?1, ?2, 'auto')",
                 rusqlite::params![atom_id, &winner_id],
             )
             .map_err(|e| format!("Failed to add winner tag: {}", e))?;
