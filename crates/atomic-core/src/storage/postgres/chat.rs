@@ -27,14 +27,16 @@ async fn fetch_conversation_tags(
 
     Ok(rows
         .into_iter()
-        .map(|(id, name, parent_id, created_at, is_autotag_target, autotag_description)| Tag {
-            id,
-            name,
-            parent_id,
-            created_at,
-            is_autotag_target,
-            autotag_description,
-        })
+        .map(
+            |(id, name, parent_id, created_at, is_autotag_target, autotag_description)| Tag {
+                id,
+                name,
+                parent_id,
+                created_at,
+                is_autotag_target,
+                autotag_description,
+            },
+        )
         .collect())
 }
 

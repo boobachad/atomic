@@ -2052,6 +2052,41 @@ impl AtomicCore {
         Ok(count)
     }
 
+    /// Re-tag all embedding-complete atoms in the database. Removes
+    /// auto-source tag assignments whose tag has no wiki article, then queues
+    /// claimable atoms for tag-only pipeline processing. Manual assignments
+    /// and wiki-backed tag assignments are preserved.
+    ///
+    /// Returns the number of atoms queued for re-tagging.
+    pub async fn retag_all_atoms<F>(&self, on_event: F) -> Result<i32, AtomicCoreError>
+    where
+        F: Fn(EmbeddingEvent) + Send + Sync + Clone + 'static,
+    {
+        // Prune first so the re-extraction starts from a clean baseline.
+        // Manual rows and wiki-backed tag rows are preserved by the WHERE clause.
+        self.storage.delete_auto_tags_without_wiki_sync().await?;
+
+        let atom_ids = self.storage.claim_all_for_retagging_sync().await?;
+        let count = atom_ids.len() as i32;
+
+        if count > 0 {
+            let jobs: Vec<AtomPipelineJobRequest> = atom_ids
+                .into_iter()
+                .map(|atom_id| AtomPipelineJobRequest {
+                    atom_id,
+                    embed_requested: false,
+                    tag_requested: true,
+                    not_before: None,
+                    reason: "retag_all_atoms".to_string(),
+                })
+                .collect();
+            self.storage.enqueue_pipeline_jobs_sync(&jobs).await?;
+            self.process_queued_pipeline_jobs(on_event).await?;
+        }
+
+        Ok(count)
+    }
+
     /// Retry tagging for a specific atom
     pub async fn retry_tagging<F>(&self, atom_id: &str, on_event: F) -> Result<(), AtomicCoreError>
     where
@@ -3126,7 +3161,7 @@ impl AtomicCore {
                 {
                     folder_tag_ids.push(tag_id.clone());
                     if let Err(e) = conn.execute(
-                        "INSERT OR IGNORE INTO atom_tags (atom_id, tag_id) VALUES (?1, ?2)",
+                        "INSERT OR IGNORE INTO atom_tags (atom_id, tag_id, source) VALUES (?1, ?2, 'manual')",
                         rusqlite::params![&atom_id, &tag_id],
                     ) {
                         tracing::error!(tag_name = %htag.name, error = %e, "Error linking folder tag to atom");
@@ -3142,7 +3177,7 @@ impl AtomicCore {
                     get_or_create_tag(&conn, &mut tag_cache, tag_name, None, &mut stats)
                 {
                     if let Err(e) = conn.execute(
-                        "INSERT OR IGNORE INTO atom_tags (atom_id, tag_id) VALUES (?1, ?2)",
+                        "INSERT OR IGNORE INTO atom_tags (atom_id, tag_id, source) VALUES (?1, ?2, 'manual')",
                         rusqlite::params![&atom_id, &tag_id],
                     ) {
                         tracing::error!(tag_name = %tag_name, error = %e, "Error linking tag to atom");
@@ -4394,6 +4429,56 @@ mod tests {
         .await
         .unwrap()
         .unwrap()
+    }
+
+    #[tokio::test]
+    async fn obsidian_import_marks_user_tags_manual() {
+        let dir = TempDir::new().expect("create tempdir");
+        let vault = dir.path().join("Vault");
+        let project_dir = vault.join("Projects");
+        std::fs::create_dir_all(&project_dir).expect("create vault folder");
+        std::fs::write(
+            project_dir.join("note.md"),
+            "---\ntags: [frontmatter-tag]\n---\n# Imported note\n\nEnough content to import.",
+        )
+        .expect("write note");
+
+        let core =
+            AtomicCore::open_or_create(dir.path().join("atomic.db")).expect("open sqlite test db");
+        let vault_path = vault.to_string_lossy().to_string();
+        let result = core
+            .import_obsidian_vault(&vault_path, None, |_| {}, |_| {})
+            .await
+            .expect("import vault");
+
+        assert_eq!(result.imported, 1);
+        assert_eq!(result.tags_linked, 2);
+
+        let sqlite = core.storage.as_sqlite().expect("sqlite storage");
+        let conn = sqlite.db.conn.lock().expect("lock db");
+        let mut stmt = conn
+            .prepare(
+                "SELECT t.name, at.source
+                 FROM atom_tags at
+                 INNER JOIN tags t ON t.id = at.tag_id
+                 ORDER BY LOWER(t.name)",
+            )
+            .expect("prepare source query");
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .expect("query tag sources")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect tag sources");
+
+        assert_eq!(
+            rows,
+            vec![
+                ("frontmatter-tag".to_string(), "manual".to_string()),
+                ("Projects".to_string(), "manual".to_string()),
+            ]
+        );
     }
 
     // ==================== Settings Resolver Tests ====================

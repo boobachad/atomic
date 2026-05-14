@@ -1065,6 +1065,46 @@ impl SqliteStorage {
         Ok(results)
     }
 
+    /// Flip embedding-complete atoms' tagging stage back to 'processing' and
+    /// return the IDs so the caller can enqueue tag-only pipeline jobs.
+    pub(crate) fn claim_all_for_retagging_sync(&self) -> StorageResult<Vec<String>> {
+        let conn = self
+            .db
+            .conn
+            .lock()
+            .map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+        let mut stmt = conn.prepare(
+            "UPDATE atoms SET tagging_status = 'processing', tagging_error = NULL
+             WHERE embedding_status = 'complete'
+             RETURNING id",
+        )?;
+        let results = stmt
+            .query_map([], |row| row.get(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(results)
+    }
+
+    /// Delete `atom_tags` rows that were created by the auto-tagger and whose
+    /// tag has no wiki article. Manual assignments and wiki-backed tag
+    /// assignments are preserved. Returns the number of rows deleted. The
+    /// per-tag `atom_count` is kept in sync by the AFTER DELETE trigger.
+    pub(crate) fn delete_auto_tags_without_wiki_sync(&self) -> StorageResult<i32> {
+        let conn = self
+            .db
+            .conn
+            .lock()
+            .map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+        let count = conn.execute(
+            "DELETE FROM atom_tags
+             WHERE source = 'auto'
+               AND tag_id NOT IN (
+                   SELECT tag_id FROM wiki_articles WHERE tag_id IS NOT NULL
+               )",
+            [],
+        )?;
+        Ok(count as i32)
+    }
+
     pub(crate) fn get_pipeline_status_sync(&self) -> StorageResult<PipelineStatus> {
         let conn = self.db.read_conn()?;
         let pending: i32 = conn.query_row(
@@ -1155,6 +1195,18 @@ impl SqliteStorage {
             })?
             .collect::<Result<Vec<_>, _>>()?;
 
+        // Snapshot written by the V17 migration (see db.rs). Absent on fresh
+        // installs and on registry DBs; treat as 0 in both cases.
+        let legacy_auto_tag_count: i64 = conn
+            .query_row(
+                "SELECT value FROM settings WHERE key = 'atom_tags_legacy_auto_count'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .ok()
+            .and_then(|s| s.parse::<i64>().ok())
+            .unwrap_or(0);
+
         Ok(PipelineStatus {
             pending,
             processing,
@@ -1169,6 +1221,7 @@ impl SqliteStorage {
             tagging_skipped,
             tagging_failed_count,
             tagging_failed,
+            legacy_auto_tag_count,
         })
     }
 }
@@ -1332,6 +1385,14 @@ impl ChunkStore for SqliteStorage {
         self.claim_all_for_reembedding_sync()
     }
 
+    async fn claim_all_for_retagging(&self) -> StorageResult<Vec<String>> {
+        self.claim_all_for_retagging_sync()
+    }
+
+    async fn delete_auto_tags_without_wiki(&self) -> StorageResult<i32> {
+        self.delete_auto_tags_without_wiki_sync()
+    }
+
     async fn claim_pending_edges(&self, limit: i32) -> StorageResult<Vec<String>> {
         self.claim_pending_edges_sync(limit)
     }
@@ -1398,6 +1459,58 @@ mod tests {
             .claim_pipeline_jobs_sync(10, "2099-01-01T00:30:00+00:00", "2099-01-01T00:00:00+00:00")
             .await
             .expect("claim job")
+    }
+
+    #[tokio::test]
+    async fn retag_claim_only_marks_embedding_complete_atoms() {
+        let dir = TempDir::new().expect("create tempdir");
+        let core = AtomicCore::open_or_create(dir.path().join("pipeline.db"))
+            .expect("open sqlite test db");
+        let conn = rusqlite::Connection::open(core.db_path()).expect("open sqlite db");
+        let now = "2026-01-01T00:00:00+00:00";
+
+        for (id, embedding_status) in [
+            ("complete_atom", "complete"),
+            ("pending_atom", "pending"),
+            ("failed_atom", "failed"),
+            ("skipped_atom", "skipped"),
+        ] {
+            conn.execute(
+                "INSERT INTO atoms (id, content, created_at, updated_at, embedding_status, tagging_status)
+                 VALUES (?1, ?2, ?3, ?3, ?4, 'complete')",
+                rusqlite::params![id, "test content", now, embedding_status],
+            )
+            .expect("insert atom");
+        }
+
+        let claimed = core
+            .storage()
+            .claim_all_for_retagging_sync()
+            .await
+            .expect("claim atoms for retagging");
+
+        assert_eq!(claimed, vec!["complete_atom".to_string()]);
+
+        let mut stmt = conn
+            .prepare("SELECT id, tagging_status FROM atoms ORDER BY id")
+            .expect("prepare status query");
+        let statuses = stmt
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .expect("query statuses")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect statuses");
+
+        assert_eq!(
+            statuses,
+            vec![
+                ("complete_atom".to_string(), "processing".to_string()),
+                ("failed_atom".to_string(), "complete".to_string()),
+                ("pending_atom".to_string(), "complete".to_string()),
+                ("skipped_atom".to_string(), "complete".to_string()),
+            ]
+        );
     }
 
     #[tokio::test]

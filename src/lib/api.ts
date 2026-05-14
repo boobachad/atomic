@@ -57,6 +57,11 @@ export interface PipelineStatus {
   tagging_skipped: number;
   tagging_failed_count: number;
   tagging_failed: FailedPipelineAtom[];
+  /** Per-DB count of `atom_tags` rows that existed before the source-tracking
+   * migration ran. They default to source='auto' and so are candidates for
+   * deletion on a "Re-tag all atoms" run. The UI uses this to warn honestly
+   * about pre-upgrade rows. Always 0 on Postgres backends and on fresh installs. */
+  legacy_auto_tag_count: number;
 }
 
 export interface DatabasePipelineStatus {
@@ -86,6 +91,14 @@ export async function retryFailedTagging(dbId: string): Promise<number> {
 // Re-embed all atoms
 export async function reembedAllAtoms(dbId?: string): Promise<number> {
   return getTransport().invoke('reembed_all_atoms', dbId ? { dbId } : undefined);
+}
+
+// Re-run auto-tagging across all atoms in a database. Removes auto-source
+// tag assignments whose tag has no wiki article, then queues every atom
+// for tag-only pipeline processing. Manual assignments and wiki-backed
+// tag assignments are preserved.
+export async function retagAllAtoms(dbId?: string): Promise<number> {
+  return getTransport().invoke('retag_all_atoms', dbId ? { dbId } : undefined);
 }
 
 export type ExportJobStatus = 'queued' | 'running' | 'complete' | 'failed' | 'cancelled';

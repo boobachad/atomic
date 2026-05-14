@@ -208,6 +208,10 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
         web::post().to(embedding::reembed_all_atoms),
     );
     cfg.route(
+        "/tagging/retag-all",
+        web::post().to(embedding::retag_all_atoms),
+    );
+    cfg.route(
         "/embeddings/reset-stuck",
         web::post().to(embedding::reset_stuck_processing),
     );

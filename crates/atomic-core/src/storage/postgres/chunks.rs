@@ -1075,6 +1075,35 @@ impl ChunkStore for PostgresStorage {
         Ok(rows.into_iter().map(|(id,)| id).collect())
     }
 
+    async fn claim_all_for_retagging(&self) -> StorageResult<Vec<String>> {
+        let rows: Vec<(String,)> = sqlx::query_as(
+            "UPDATE atoms SET tagging_status = 'processing', tagging_error = NULL
+             WHERE db_id = $1 AND embedding_status = 'complete'
+             RETURNING id",
+        )
+        .bind(&self.db_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+        Ok(rows.into_iter().map(|(id,)| id).collect())
+    }
+
+    async fn delete_auto_tags_without_wiki(&self) -> StorageResult<i32> {
+        let result = sqlx::query(
+            "DELETE FROM atom_tags
+             WHERE db_id = $1
+               AND source = 'auto'
+               AND tag_id NOT IN (
+                   SELECT tag_id FROM wiki_articles WHERE tag_id IS NOT NULL AND db_id = $1
+               )",
+        )
+        .bind(&self.db_id)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+        Ok(result.rows_affected() as i32)
+    }
+
     async fn claim_pending_edges(&self, limit: i32) -> StorageResult<Vec<String>> {
         let rows: Vec<(String,)> = sqlx::query_as(
             "UPDATE atoms SET edges_status = 'processing'
@@ -1497,6 +1526,10 @@ impl PostgresStorage {
             tagging_skipped,
             tagging_failed_count,
             tagging_failed,
+            // Postgres backend does not snapshot a per-DB legacy count: the
+            // shared settings table has no per-DB scope. UI gracefully
+            // omits the legacy warning when this is 0.
+            legacy_auto_tag_count: 0,
         })
     }
 }

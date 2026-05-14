@@ -94,6 +94,7 @@ pub use utoipa_scalar::{Scalar, Servable};
         routes::embedding::retry_failed_tagging,
         routes::embedding::retry_tagging,
         routes::embedding::reembed_all_atoms,
+        routes::embedding::retag_all_atoms,
         routes::embedding::reset_stuck_processing,
         routes::embedding::get_pipeline_status,
         routes::embedding::get_all_pipeline_statuses,
