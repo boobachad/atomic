@@ -843,11 +843,18 @@ impl Database {
                     let legacy_count: i64 = conn
                         .query_row("SELECT COUNT(*) FROM atom_tags", [], |row| row.get(0))
                         .unwrap_or(0);
-                    crate::settings::set_setting(
-                        conn,
-                        "atom_tags_legacy_auto_count",
-                        &legacy_count.to_string(),
-                    )?;
+                    // Only persist the snapshot when there are actually rows
+                    // being defaulted to 'auto'. Skipping the write on fresh
+                    // DBs preserves the "per-DB settings table starts empty"
+                    // invariant; the pipeline-status query treats a missing
+                    // key as 0, which is the correct UI state in both cases.
+                    if legacy_count > 0 {
+                        crate::settings::set_setting(
+                            conn,
+                            "atom_tags_legacy_auto_count",
+                            &legacy_count.to_string(),
+                        )?;
+                    }
                 }
             }
 
