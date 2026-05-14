@@ -2,6 +2,10 @@
 
 All notable changes to Atomic are documented here.
 
+## v1.37.1 — 2026-05-14
+
+- Improve MCP server reliability by replacing third-party HTTP transport with a custom implementation that handles strict client requirements for status codes and content types
+
 ## v1.37.0 — 2026-05-14
 
 - Add configurable briefing schedule with daily or weekly frequency, custom time, and timezone support
