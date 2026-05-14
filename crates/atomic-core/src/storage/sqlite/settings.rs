@@ -129,76 +129,42 @@ impl SqliteStorage {
 
 // ==================== DatabaseStore ====================
 
-impl SqliteStorage {
-    pub(crate) fn list_databases_sync(&self) -> StorageResult<Vec<crate::registry::DatabaseInfo>> {
-        Err(AtomicCoreError::Configuration(
-            "Database management not available on SQLite storage backend".to_string(),
-        ))
-    }
-
-    pub(crate) fn create_database_sync(
-        &self,
-        _name: &str,
-    ) -> StorageResult<crate::registry::DatabaseInfo> {
-        Err(AtomicCoreError::Configuration(
-            "Database management not available on SQLite storage backend".to_string(),
-        ))
-    }
-
-    pub(crate) fn rename_database_sync(&self, _id: &str, _name: &str) -> StorageResult<()> {
-        Err(AtomicCoreError::Configuration(
-            "Database management not available on SQLite storage backend".to_string(),
-        ))
-    }
-
-    pub(crate) fn delete_database_sync(&self, _id: &str) -> StorageResult<()> {
-        Err(AtomicCoreError::Configuration(
-            "Database management not available on SQLite storage backend".to_string(),
-        ))
-    }
-
-    pub(crate) fn get_default_database_id_sync(&self) -> StorageResult<String> {
-        Err(AtomicCoreError::Configuration(
-            "Database management not available on SQLite storage backend".to_string(),
-        ))
-    }
-
-    pub(crate) fn set_default_database_sync(&self, _id: &str) -> StorageResult<()> {
-        Err(AtomicCoreError::Configuration(
-            "Database management not available on SQLite storage backend".to_string(),
-        ))
-    }
-
-    pub(crate) fn purge_database_data_sync(&self, _db_id: &str) -> StorageResult<()> {
-        // SQLite uses separate .db files — no shared tables to purge.
-        Ok(())
-    }
-}
-
 #[async_trait]
 impl DatabaseStore for SqliteStorage {
     async fn list_databases(&self) -> StorageResult<Vec<crate::registry::DatabaseInfo>> {
-        self.list_databases_sync()
+        Err(AtomicCoreError::Configuration(
+            "Database management not available on SQLite storage backend".to_string(),
+        ))
     }
 
-    async fn create_database(&self, name: &str) -> StorageResult<crate::registry::DatabaseInfo> {
-        self.create_database_sync(name)
+    async fn create_database(&self, _name: &str) -> StorageResult<crate::registry::DatabaseInfo> {
+        Err(AtomicCoreError::Configuration(
+            "Database management not available on SQLite storage backend".to_string(),
+        ))
     }
 
-    async fn rename_database(&self, id: &str, name: &str) -> StorageResult<()> {
-        self.rename_database_sync(id, name)
+    async fn rename_database(&self, _id: &str, _name: &str) -> StorageResult<()> {
+        Err(AtomicCoreError::Configuration(
+            "Database management not available on SQLite storage backend".to_string(),
+        ))
     }
 
-    async fn delete_database(&self, id: &str) -> StorageResult<()> {
-        self.delete_database_sync(id)
+    async fn delete_database(&self, _id: &str) -> StorageResult<()> {
+        Err(AtomicCoreError::Configuration(
+            "Database management not available on SQLite storage backend".to_string(),
+        ))
     }
 
     async fn get_default_database_id(&self) -> StorageResult<String> {
-        self.get_default_database_id_sync()
+        Err(AtomicCoreError::Configuration(
+            "Database management not available on SQLite storage backend".to_string(),
+        ))
     }
 
-    async fn set_default_database(&self, id: &str) -> StorageResult<()> {
-        self.set_default_database_sync(id)
+    async fn set_default_database(&self, _id: &str) -> StorageResult<()> {
+        Err(AtomicCoreError::Configuration(
+            "Database management not available on SQLite storage backend".to_string(),
+        ))
     }
 
     async fn purge_database_data(&self, _db_id: &str) -> StorageResult<()> {

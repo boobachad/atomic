@@ -325,6 +325,8 @@ dispatch! {
         => sqlite: insert_atoms_bulk_impl, pg_trait: AtomStore, pg_method: insert_atoms_bulk;
     fn update_atom_impl(&self, id: &str, request: &UpdateAtomRequest, updated_at: &str) -> Result<AtomWithTags, AtomicCoreError>
         => sqlite: update_atom_impl, pg_trait: AtomStore, pg_method: update_atom;
+    fn update_atom_if_unchanged_impl(&self, id: &str, request: &UpdateAtomRequest, updated_at: &str, expected_updated_at: &str) -> Result<AtomWithTags, AtomicCoreError>
+        => sqlite: update_atom_if_unchanged_impl, pg_trait: AtomStore, pg_method: update_atom_if_unchanged;
     fn update_atom_content_only_impl(&self, id: &str, request: &UpdateAtomRequest, updated_at: &str) -> Result<AtomWithTags, AtomicCoreError>
         => sqlite: update_atom_content_only_impl, pg_trait: AtomStore, pg_method: update_atom_content_only;
     fn delete_atom_impl(&self, id: &str) -> Result<(), AtomicCoreError>
@@ -592,22 +594,6 @@ dispatch! {
     fn get_clusters_sync(&self) -> Result<Vec<AtomCluster>, AtomicCoreError>
         => sqlite: get_clusters_sync, pg_trait: ClusterStore, pg_method: get_clusters;
 
-    // ---- DatabaseStore ----
-    fn list_databases_sync(&self) -> Result<Vec<crate::registry::DatabaseInfo>, AtomicCoreError>
-        => sqlite: list_databases_sync, pg_trait: DatabaseStore, pg_method: list_databases;
-    fn create_database_sync(&self, name: &str) -> Result<crate::registry::DatabaseInfo, AtomicCoreError>
-        => sqlite: create_database_sync, pg_trait: DatabaseStore, pg_method: create_database;
-    fn rename_database_sync(&self, id: &str, name: &str) -> Result<(), AtomicCoreError>
-        => sqlite: rename_database_sync, pg_trait: DatabaseStore, pg_method: rename_database;
-    fn delete_database_sync(&self, id: &str) -> Result<(), AtomicCoreError>
-        => sqlite: delete_database_sync, pg_trait: DatabaseStore, pg_method: delete_database;
-    fn get_default_database_id_sync(&self) -> Result<String, AtomicCoreError>
-        => sqlite: get_default_database_id_sync, pg_trait: DatabaseStore, pg_method: get_default_database_id;
-    fn set_default_database_sync(&self, id: &str) -> Result<(), AtomicCoreError>
-        => sqlite: set_default_database_sync, pg_trait: DatabaseStore, pg_method: set_default_database;
-    fn purge_database_data_sync(&self, db_id: &str) -> Result<(), AtomicCoreError>
-        => sqlite: purge_database_data_sync, pg_trait: DatabaseStore, pg_method: purge_database_data;
-
     // ---- SettingsStore ----
     fn get_all_settings_sync(&self) -> Result<HashMap<String, String>, AtomicCoreError>
         => sqlite: get_all_settings_sync, pg_trait: SettingsStore, pg_method: get_all_settings;
@@ -633,4 +619,94 @@ dispatch! {
         => sqlite: migrate_legacy_token_sync, pg_trait: TokenStore, pg_method: migrate_legacy_token;
     fn ensure_default_token_sync(&self) -> Result<Option<(crate::tokens::ApiTokenInfo, String)>, AtomicCoreError>
         => sqlite: ensure_default_token_sync, pg_trait: TokenStore, pg_method: ensure_default_token;
+}
+
+#[cfg(feature = "postgres")]
+impl StorageBackend {
+    pub(crate) async fn list_databases_sync(
+        &self,
+    ) -> Result<Vec<crate::registry::DatabaseInfo>, AtomicCoreError> {
+        match self {
+            StorageBackend::Sqlite(s) => <SqliteStorage as DatabaseStore>::list_databases(s).await,
+            StorageBackend::Postgres(s) => {
+                <PostgresStorage as DatabaseStore>::list_databases(s).await
+            }
+        }
+    }
+
+    pub(crate) async fn create_database_sync(
+        &self,
+        name: &str,
+    ) -> Result<crate::registry::DatabaseInfo, AtomicCoreError> {
+        match self {
+            StorageBackend::Sqlite(s) => {
+                <SqliteStorage as DatabaseStore>::create_database(s, name).await
+            }
+            StorageBackend::Postgres(s) => {
+                <PostgresStorage as DatabaseStore>::create_database(s, name).await
+            }
+        }
+    }
+
+    pub(crate) async fn rename_database_sync(
+        &self,
+        id: &str,
+        name: &str,
+    ) -> Result<(), AtomicCoreError> {
+        match self {
+            StorageBackend::Sqlite(s) => {
+                <SqliteStorage as DatabaseStore>::rename_database(s, id, name).await
+            }
+            StorageBackend::Postgres(s) => {
+                <PostgresStorage as DatabaseStore>::rename_database(s, id, name).await
+            }
+        }
+    }
+
+    pub(crate) async fn delete_database_sync(&self, id: &str) -> Result<(), AtomicCoreError> {
+        match self {
+            StorageBackend::Sqlite(s) => {
+                <SqliteStorage as DatabaseStore>::delete_database(s, id).await
+            }
+            StorageBackend::Postgres(s) => {
+                <PostgresStorage as DatabaseStore>::delete_database(s, id).await
+            }
+        }
+    }
+
+    pub(crate) async fn get_default_database_id_sync(&self) -> Result<String, AtomicCoreError> {
+        match self {
+            StorageBackend::Sqlite(s) => {
+                <SqliteStorage as DatabaseStore>::get_default_database_id(s).await
+            }
+            StorageBackend::Postgres(s) => {
+                <PostgresStorage as DatabaseStore>::get_default_database_id(s).await
+            }
+        }
+    }
+
+    pub(crate) async fn set_default_database_sync(&self, id: &str) -> Result<(), AtomicCoreError> {
+        match self {
+            StorageBackend::Sqlite(s) => {
+                <SqliteStorage as DatabaseStore>::set_default_database(s, id).await
+            }
+            StorageBackend::Postgres(s) => {
+                <PostgresStorage as DatabaseStore>::set_default_database(s, id).await
+            }
+        }
+    }
+
+    pub(crate) async fn purge_database_data_sync(
+        &self,
+        db_id: &str,
+    ) -> Result<(), AtomicCoreError> {
+        match self {
+            StorageBackend::Sqlite(s) => {
+                <SqliteStorage as DatabaseStore>::purge_database_data(s, db_id).await
+            }
+            StorageBackend::Postgres(s) => {
+                <PostgresStorage as DatabaseStore>::purge_database_data(s, db_id).await
+            }
+        }
+    }
 }

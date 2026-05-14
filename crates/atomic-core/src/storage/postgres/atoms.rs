@@ -573,6 +573,129 @@ impl AtomStore for PostgresStorage {
         Ok(AtomWithTags { atom, tags })
     }
 
+    async fn update_atom_if_unchanged(
+        &self,
+        id: &str,
+        request: &UpdateAtomRequest,
+        updated_at: &str,
+        expected_updated_at: &str,
+    ) -> StorageResult<AtomWithTags> {
+        let (title, snippet) = extract_title_and_snippet(&request.content, 300);
+        let source = request.source_url.as_deref().map(parse_source);
+
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+
+        let result = sqlx::query(
+            "UPDATE atoms
+             SET content = $1,
+                 source_url = $2,
+                 source = $3,
+                 published_at = $4,
+                 updated_at = $5,
+                 embedding_status = 'pending',
+                 tagging_status = 'pending',
+                 embedding_error = NULL,
+                 tagging_error = NULL,
+                 title = $6,
+                 snippet = $7
+             WHERE id = $8 AND db_id = $9 AND updated_at = $10",
+        )
+        .bind(&request.content)
+        .bind(&request.source_url)
+        .bind(&source)
+        .bind(&request.published_at)
+        .bind(updated_at)
+        .bind(&title)
+        .bind(&snippet)
+        .bind(id)
+        .bind(&self.db_id)
+        .bind(expected_updated_at)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+
+        if result.rows_affected() == 0 {
+            let current: Option<String> =
+                sqlx::query_scalar("SELECT updated_at FROM atoms WHERE id = $1 AND db_id = $2")
+                    .bind(id)
+                    .bind(&self.db_id)
+                    .fetch_optional(&mut *tx)
+                    .await
+                    .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+
+            return match current {
+                Some(_) => Err(AtomicCoreError::Conflict(format!(
+                    "Atom {} changed before edits could be saved; reload the atom and retry",
+                    id
+                ))),
+                None => Err(AtomicCoreError::NotFound(format!("Atom {}", id))),
+            };
+        }
+
+        self.replace_atom_links_for_content(&mut tx, id, &request.content, updated_at)
+            .await?;
+
+        if let Some(ref tag_ids) = request.tag_ids {
+            sqlx::query("DELETE FROM atom_tags WHERE atom_id = $1 AND db_id = $2")
+                .bind(id)
+                .bind(&self.db_id)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+
+            for tag_id in tag_ids {
+                sqlx::query("INSERT INTO atom_tags (atom_id, tag_id, db_id, source) VALUES ($1, $2, $3, 'manual')")
+                    .bind(id)
+                    .bind(tag_id)
+                    .bind(&self.db_id)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+            }
+        }
+
+        tx.commit()
+            .await
+            .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+
+        let row: (
+            String,
+            String,
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            String,
+            String,
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+        ) = sqlx::query_as(
+            "SELECT id, content, title, snippet, source_url, source, published_at,
+                    created_at, updated_at,
+                    COALESCE(embedding_status, 'pending'),
+                    COALESCE(tagging_status, 'pending'),
+                    embedding_error, tagging_error
+             FROM atoms WHERE id = $1 AND db_id = $2",
+        )
+        .bind(id)
+        .bind(&self.db_id)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+
+        let atom = Self::atom_from_tuple(row);
+        let tags = self.tags_for_atom(id).await?;
+
+        Ok(AtomWithTags { atom, tags })
+    }
+
     async fn update_atom_content_only(
         &self,
         id: &str,
