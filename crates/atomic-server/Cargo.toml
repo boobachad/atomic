@@ -29,8 +29,10 @@ actix-ws = "0.3"
 actix-files = "0.6"
 
 # Async
-tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros", "signal"] }
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros", "signal", "process"] }
 futures = "0.3"
+async-stream = "0.3"
+tokio-stream = "0.1"
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
@@ -52,7 +54,6 @@ reqwest = { version = "0.12", features = ["json"] }
 
 # MCP server
 rmcp = { version = "0.15", features = ["server", "macros", "transport-streamable-http-server"] }
-rmcp-actix-web = "0.11"
 schemars = "1.0"
 
 # OpenAPI

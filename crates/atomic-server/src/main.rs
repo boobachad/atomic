@@ -17,8 +17,6 @@ use atomic_server::{
 };
 use clap::Parser;
 use config::{Cli, Command, TokenAction};
-use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
-use rmcp_actix_web::transport::StreamableHttpService;
 use std::sync::Arc;
 use std::time::Duration;
 use utoipa::OpenApi;
@@ -271,31 +269,13 @@ async fn run_server(
         setup_claim_limiter: SetupClaimLimiter::new(),
     });
 
-    // Create MCP service with multi-database support via ?db= query param
-    let mcp_manager = Arc::clone(&manager);
-    let mcp_tx = event_tx.clone();
-    let mcp_service = StreamableHttpService::builder()
-        .service_factory(Arc::new(move || {
-            Ok(mcp::AtomicMcpServer::new(
-                Arc::clone(&mcp_manager),
-                mcp_tx.clone(),
-            ))
-        }))
-        .on_request_fn(|http_req, ext| {
-            let db_id = http_req.query_string().split('&').find_map(|pair| {
-                let mut parts = pair.splitn(2, '=');
-                if parts.next()? == "db" {
-                    parts.next().map(String::from)
-                } else {
-                    None
-                }
-            });
-            ext.insert(mcp::DbSelection(db_id));
-        })
-        .session_manager(Arc::new(LocalSessionManager::default()))
-        .stateful_mode(true)
-        .sse_keep_alive(Duration::from_secs(30))
-        .build();
+    // Create MCP transport outside HttpServer::new() so all Actix workers share
+    // one session manager.
+    let mcp_transport = mcp::AtomicMcpTransport::new(
+        Arc::clone(&manager),
+        event_tx.clone(),
+        Duration::from_secs(30),
+    );
 
     tracing::info!("Atomic Server starting...");
     tracing::info!(data_dir = data_dir, "data directory");
@@ -590,7 +570,7 @@ async fn run_server(
                     .wrap(mcp_auth::McpAuth {
                         state: app_state.clone(),
                     })
-                    .service(mcp_service.clone().scope()),
+                    .service(mcp_transport.clone().scope()),
             )
             // Authenticated API routes
             .service(
