@@ -274,7 +274,7 @@ impl SqliteStorage {
             )
             .ok();
 
-        let new_chunks = if let Some(ref centroid) = centroid_blob {
+        let mut new_chunks = if let Some(ref centroid) = centroid_blob {
             wiki::centroid::select_chunks_by_centroid(
                 &conn,
                 centroid,
@@ -288,8 +288,24 @@ impl SqliteStorage {
                 .map_err(|e| AtomicCoreError::Wiki(e))?
         };
 
+        if new_chunks.is_empty() && centroid_blob.is_some() {
+            tracing::debug!(
+                tag_id,
+                "[wiki/storage] No centroid-ranked update chunks found, falling back to unranked update chunk selection"
+            );
+            new_chunks = wiki::centroid::select_new_chunks_unranked(
+                &conn,
+                &new_atom_id_set,
+                max_source_tokens,
+            )
+            .map_err(|e| AtomicCoreError::Wiki(e))?;
+        }
+
         if new_chunks.is_empty() {
-            return Ok(None);
+            return Err(AtomicCoreError::Wiki(
+                "New atoms are not ready for wiki update yet; chunking or embedding is still pending"
+                    .to_string(),
+            ));
         }
 
         // Count uses the same descendant CTE as get_article_status so the
@@ -452,7 +468,9 @@ impl SqliteStorage {
                 [tag_id],
                 |row| row.get(0),
             )
-            .map_err(|e| AtomicCoreError::Wiki(format!("Failed to count atoms for baseline advance: {}", e)))?;
+            .map_err(|e| {
+                AtomicCoreError::Wiki(format!("Failed to count atoms for baseline advance: {}", e))
+            })?;
         let now = chrono::Utc::now().to_rfc3339();
         conn.execute(
             "UPDATE wiki_articles SET atom_count = ?1, updated_at = ?2 WHERE tag_id = ?3",

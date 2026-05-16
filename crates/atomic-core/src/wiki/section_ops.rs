@@ -132,7 +132,7 @@ pub fn apply_section_ops(existing: &str, ops: &[WikiSectionOp]) -> Result<String
     let (preamble, mut sections) = parse_sections(existing);
 
     let mut errors: Vec<String> = Vec::new();
-    let mut fallible_count: usize = 0;
+    let mut applied_count: usize = 0;
     for op in ops {
         match op {
             WikiSectionOp::NoChange => {
@@ -141,9 +141,11 @@ pub fn apply_section_ops(existing: &str, ops: &[WikiSectionOp]) -> Result<String
                 continue;
             }
             WikiSectionOp::AppendToSection { heading, content } => {
-                fallible_count += 1;
                 match find_section_idx(&sections, heading) {
-                    Some(idx) => append_to_body(&mut sections[idx].body, content),
+                    Some(idx) => {
+                        append_to_body(&mut sections[idx].body, content);
+                        applied_count += 1;
+                    }
                     None => {
                         let e = format!(
                             "AppendToSection: heading '{}' not found. Existing headings: [{}]",
@@ -156,9 +158,11 @@ pub fn apply_section_ops(existing: &str, ops: &[WikiSectionOp]) -> Result<String
                 }
             }
             WikiSectionOp::ReplaceSection { heading, content } => {
-                fallible_count += 1;
                 match find_section_idx(&sections, heading) {
-                    Some(idx) => sections[idx].body = ensure_trailing_blank(content),
+                    Some(idx) => {
+                        sections[idx].body = ensure_trailing_blank(content);
+                        applied_count += 1;
+                    }
                     None => {
                         let e = format!(
                             "ReplaceSection: heading '{}' not found. Existing headings: [{}]",
@@ -177,17 +181,21 @@ pub fn apply_section_ops(existing: &str, ops: &[WikiSectionOp]) -> Result<String
             } => {
                 match after_heading {
                     Some(h) => {
-                        fallible_count += 1;
                         match find_section_idx(&sections, h) {
                             Some(idx) => {
                                 // Inherit the level of the anchor section so that
                                 // inserting after an H3 produces another H3, not H2.
                                 let level = sections[idx].level;
-                                sections.insert(idx + 1, Section {
-                                    level,
-                                    heading: heading.clone(),
-                                    body: ensure_trailing_blank(content),
-                                });
+                                let insert_idx = after_subtree_idx(&sections, idx);
+                                sections.insert(
+                                    insert_idx,
+                                    Section {
+                                        level,
+                                        heading: heading.clone(),
+                                        body: ensure_trailing_blank(content),
+                                    },
+                                );
+                                applied_count += 1;
                             }
                             None => {
                                 let e = format!(
@@ -206,20 +214,31 @@ pub fn apply_section_ops(existing: &str, ops: &[WikiSectionOp]) -> Result<String
                             heading: heading.clone(),
                             body: ensure_trailing_blank(content),
                         });
+                        applied_count += 1;
                     }
                 }
             }
         }
     }
 
-    // If every fallible op failed, propagate the first error unchanged (same
+    // If no meaningful op applied, propagate the first error unchanged (same
     // behaviour as before — a proposal with nothing valid should not land).
-    // If only some failed, accept the partial merge; warnings already logged.
-    if !errors.is_empty() && errors.len() == fallible_count {
+    // If only some ops failed, accept the partial merge; warnings already logged.
+    if !errors.is_empty() && applied_count == 0 {
         return Err(errors.remove(0));
     }
 
     Ok(serialize_sections(&preamble, &sections))
+}
+
+fn after_subtree_idx(sections: &[Section], anchor_idx: usize) -> usize {
+    let anchor_level = sections[anchor_idx].level;
+    sections
+        .iter()
+        .enumerate()
+        .skip(anchor_idx + 1)
+        .find_map(|(idx, section)| (section.level <= anchor_level).then_some(idx))
+        .unwrap_or(sections.len())
 }
 
 /// Parse the article into (preamble, sections). The preamble is any content
@@ -479,7 +498,10 @@ Status body.
         // section rather than being swallowed into the ## Details body.
         let (_, sections) = parse_sections(SAMPLE);
         let headings: Vec<&str> = sections.iter().map(|s| s.heading.as_str()).collect();
-        assert_eq!(headings, vec!["Overview", "Details", "Subsection", "Status"]);
+        assert_eq!(
+            headings,
+            vec!["Overview", "Details", "Subsection", "Status"]
+        );
         let sub = sections.iter().find(|s| s.heading == "Subsection").unwrap();
         assert_eq!(sub.level, 3);
         assert!(sub.body.contains("Subsection text."));
@@ -511,13 +533,15 @@ Status body.
         assert!(out.contains("## Status\n\nReplaced status [5]."));
         assert!(!out.contains("Status body."));
 
-        // Verify order: Overview, Details, Notes, Status
+        // Verify order: Overview, Details subtree, Notes, Status.
         let overview_pos = out.find("## Overview").unwrap();
         let details_pos = out.find("## Details").unwrap();
+        let subsection_pos = out.find("### Subsection").unwrap();
         let notes_pos = out.find("## Notes").unwrap();
         let status_pos = out.find("## Status").unwrap();
         assert!(overview_pos < details_pos);
-        assert!(details_pos < notes_pos);
+        assert!(details_pos < subsection_pos);
+        assert!(subsection_pos < notes_pos);
         assert!(notes_pos < status_pos);
     }
 
@@ -707,6 +731,25 @@ Status body.
         assert!(out.contains("## Background\n\nBackground content [4]."));
     }
 
+    #[test]
+    fn insert_after_h2_keeps_child_sections_with_parent() {
+        let ops = vec![WikiSectionOp::InsertSection {
+            after_heading: Some("Details".to_string()),
+            heading: "Follow Up".to_string(),
+            content: "Follow-up content [4].".to_string(),
+        }];
+        let out = apply_section_ops(SAMPLE, &ops).unwrap();
+
+        let details_pos = out.find("## Details").unwrap();
+        let subsection_pos = out.find("### Subsection").unwrap();
+        let follow_up_pos = out.find("## Follow Up").unwrap();
+        let status_pos = out.find("## Status").unwrap();
+
+        assert!(details_pos < subsection_pos);
+        assert!(subsection_pos < follow_up_pos);
+        assert!(follow_up_pos < status_pos);
+    }
+
     // ── Soft-fail tests ──────────────────────────────────────────────────────
 
     #[test]
@@ -729,6 +772,24 @@ Status body.
     }
 
     #[test]
+    fn soft_fail_keeps_append_to_end_insert() {
+        let ops = vec![
+            WikiSectionOp::InsertSection {
+                after_heading: None,
+                heading: "Appendix".to_string(),
+                content: "Appendix content [3].".to_string(),
+            },
+            WikiSectionOp::AppendToSection {
+                heading: "Nonexistent Section".to_string(),
+                content: "should be dropped".to_string(),
+            },
+        ];
+        let out = apply_section_ops(SAMPLE, &ops).unwrap();
+        assert!(out.contains("## Appendix\n\nAppendix content [3]."));
+        assert!(!out.contains("should be dropped"));
+    }
+
+    #[test]
     fn soft_fail_all_bad_ops_returns_error() {
         // When every fallible op has an unmatched heading the call still fails
         // — we do not silently return an unchanged article.
@@ -744,6 +805,5 @@ Status body.
         ];
         let err = apply_section_ops(SAMPLE, &ops).unwrap_err();
         assert!(err.contains("Ghost Section"));
-
     }
 }

@@ -1576,7 +1576,10 @@ impl AtomicCore {
                 if let Err(e) = self.storage.advance_wiki_baseline_sync(tag_id).await {
                     tracing::warn!(tag_id, error = %e, "[wiki] Failed to advance article baseline on no-change");
                 } else {
-                    tracing::info!(tag_id, "[wiki] No update warranted; article baseline advanced");
+                    tracing::info!(
+                        tag_id,
+                        "[wiki] No update warranted; article baseline advanced"
+                    );
                 }
                 return Ok(None);
             }

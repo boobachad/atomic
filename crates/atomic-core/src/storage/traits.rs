@@ -684,7 +684,9 @@ pub trait WikiStore: Send + Sync {
     /// Select chunks for wiki article update (new atoms since last update).
     ///
     /// Returns None if no new atoms have been added since `last_update`.
-    /// Otherwise returns (new_chunks, atom_count).
+    /// Otherwise returns (new_chunks, atom_count). If new atoms exist but no
+    /// selectable chunks are available yet, returns an error so callers do not
+    /// advance the article baseline before the async chunking pipeline catches up.
     async fn get_wiki_update_chunks(
         &self,
         tag_id: &str,

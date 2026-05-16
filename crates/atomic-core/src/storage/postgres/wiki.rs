@@ -567,7 +567,7 @@ impl WikiStore for PostgresStorage {
         .await
         .map_err(|e| AtomicCoreError::Wiki(e.to_string()))?;
 
-        let new_chunks = if let Some(ref centroid_vec) = centroid {
+        let mut new_chunks = if let Some(ref centroid_vec) = centroid {
             let rows: Vec<(String, i32, String, f64)> = sqlx::query_as(
                 "SELECT ac.atom_id, ac.chunk_index, ac.content,
                         1 - (e.embedding <=> $1::vector) as similarity
@@ -629,8 +629,40 @@ impl WikiStore for PostgresStorage {
             chunks
         };
 
+        if new_chunks.is_empty() && centroid.is_some() {
+            let rows: Vec<(String, i32, String)> = sqlx::query_as(
+                "SELECT atom_id, chunk_index, content FROM atom_chunks
+                 WHERE atom_id = ANY($1) AND db_id = $2 ORDER BY atom_id, chunk_index",
+            )
+            .bind(&new_atom_ids)
+            .bind(&self.db_id)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| AtomicCoreError::Wiki(e.to_string()))?;
+
+            let mut chunks = Vec::new();
+            let mut total_tokens = 0;
+            for (atom_id, chunk_index, content) in rows {
+                let tokens = count_tokens(&content);
+                if total_tokens + tokens > max_source_tokens && !chunks.is_empty() {
+                    break;
+                }
+                total_tokens += tokens;
+                chunks.push(ChunkWithContext {
+                    atom_id,
+                    chunk_index,
+                    content,
+                    similarity_score: 1.0,
+                });
+            }
+            new_chunks = chunks;
+        }
+
         if new_chunks.is_empty() {
-            return Ok(None);
+            return Err(AtomicCoreError::Wiki(
+                "New atoms are not ready for wiki update yet; chunking or embedding is still pending"
+                    .to_string(),
+            ));
         }
 
         // Count uses the same descendant CTE as get_article_status.
