@@ -12,6 +12,45 @@ const SIZE_CENTER = 18;
 const SIZE_DEPTH_1 = 11;
 const SIZE_DEPTH_2 = 7;
 
+/**
+ * Kill a Sigma instance and proactively release its WebGL contexts.
+ *
+ * `sigma.kill()` detaches its canvases but the browser may hold the underlying
+ * WebGL contexts until GC. Browsers cap concurrent contexts per tab (~16 on
+ * Chrome, ~8 on Safari), and rapid re-centers of the local graph can exhaust
+ * the pool — the next `new Sigma` then gets a canvas whose `getContext`
+ * returns null and crashes on its first GL call (e.g. `gl.blendFunc`).
+ * `WEBGL_lose_context.loseContext()` frees the slot immediately.
+ */
+function releaseCanvasWebGlContext(canvas: HTMLCanvasElement) {
+  const gl =
+    (canvas.getContext('webgl2') as WebGL2RenderingContext | null) ??
+    (canvas.getContext('webgl') as WebGLRenderingContext | null);
+  gl?.getExtension('WEBGL_lose_context')?.loseContext();
+}
+
+function releaseCanvases(canvases: HTMLCanvasElement[]) {
+  for (const canvas of canvases) {
+    releaseCanvasWebGlContext(canvas);
+  }
+}
+
+function releaseSigma(sigma: Sigma, container: HTMLElement) {
+  const canvases = Array.from(container.querySelectorAll('canvas'));
+  sigma.kill();
+  releaseCanvases(canvases);
+}
+
+function releasePartialSigmaCanvases(container: HTMLElement, existingCanvases: Set<HTMLCanvasElement>) {
+  const partialCanvases = Array.from(container.querySelectorAll('canvas')).filter(
+    canvas => !existingCanvases.has(canvas)
+  );
+  releaseCanvases(partialCanvases);
+  for (const canvas of partialCanvases) {
+    canvas.remove();
+  }
+}
+
 /** Brighten/dim an [r,g,b] triple by a 0..1 factor. */
 function modulateRgb(rgb: [number, number, number], factor: number): string {
   return `rgb(${Math.round(rgb[0] * factor)},${Math.round(rgb[1] * factor)},${Math.round(rgb[2] * factor)})`;
@@ -233,7 +272,7 @@ export function LocalGraphView() {
     if (!container || !graph || graph.atoms.length === 0) return;
 
     if (sigmaRef.current) {
-      sigmaRef.current.kill();
+      releaseSigma(sigmaRef.current, container);
       sigmaRef.current = null;
     }
 
@@ -329,56 +368,69 @@ export function LocalGraphView() {
     }
     neighborsRef.current = neighbors;
 
-    const sigma = new Sigma(g, container, {
-      // Labels are rendered by our overlay canvas (always-on with collision avoidance).
-      renderLabels: false,
-      defaultEdgeColor: '#333',
-      defaultNodeColor: '#555',
-      defaultEdgeType: 'curved',
-      zIndex: true,
-      edgeProgramClasses: {
-        curved: EdgeCurveProgram,
-      },
-      minCameraRatio: 0.2,
-      maxCameraRatio: 4,
-      stagePadding: 80,
-      defaultDrawNodeHover: () => {}, // Hover ring/pill drawn on overlay
-      nodeReducer: (node, attrs) => {
-        const hovered = hoveredNodeRef.current;
-        if (!hovered) return attrs;
-        if (node === hovered) return { ...attrs, zIndex: 2 };
-        const isNeighbor = neighborsRef.current.get(hovered)?.has(node);
-        if (isNeighbor) return { ...attrs, zIndex: 1 };
-        // Non-neighbors fade toward gray. Sizes stay put — in a small ego-network shrinking
-        // most of the nodes at once reads as "the whole graph just got smaller", which is
-        // disorienting. Color fade is enough to direct attention.
-        const dim = hoverAnimRef.current;
-        const rgb = parseRgbColor(attrs.color as string);
-        const color = rgb
-          ? `rgb(${Math.round(rgb[0] + (60 - rgb[0]) * dim)},${Math.round(rgb[1] + (60 - rgb[1]) * dim)},${Math.round(rgb[2] + (60 - rgb[2]) * dim)})`
-          : attrs.color;
-        return { ...attrs, color };
-      },
-      edgeReducer: (edge, attrs) => {
-        const hovered = hoveredNodeRef.current;
-        if (!hovered) return attrs;
-        const src = g.source(edge);
-        const dst = g.target(edge);
-        const incident = src === hovered || dst === hovered;
-        const dim = hoverAnimRef.current;
-        if (incident) {
-          // Brighten incident edges via color (no size pump — same reason as nodeReducer).
-          return { ...attrs, zIndex: 1 };
-        }
-        // Fade non-incident edges toward the background (color only).
-        const rgb = parseRgbColor(attrs.color as string);
-        const bg = parseRgbColor(themeRef.current.background) ?? [30, 30, 30];
-        const color = rgb
-          ? `rgb(${Math.round(rgb[0] + (bg[0] - rgb[0]) * dim * 0.85)},${Math.round(rgb[1] + (bg[1] - rgb[1]) * dim * 0.85)},${Math.round(rgb[2] + (bg[2] - rgb[2]) * dim * 0.85)})`
-          : attrs.color;
-        return { ...attrs, color };
-      },
-    });
+    let sigma: Sigma;
+    const existingCanvases = new Set(container.querySelectorAll('canvas'));
+    try {
+      sigma = new Sigma(g, container, {
+        // Labels are rendered by our overlay canvas (always-on with collision avoidance).
+        renderLabels: false,
+        defaultEdgeColor: '#333',
+        defaultNodeColor: '#555',
+        defaultEdgeType: 'curved',
+        zIndex: true,
+        edgeProgramClasses: {
+          curved: EdgeCurveProgram,
+        },
+        minCameraRatio: 0.2,
+        maxCameraRatio: 4,
+        stagePadding: 80,
+        defaultDrawNodeHover: () => {}, // Hover ring/pill drawn on overlay
+        nodeReducer: (node, attrs) => {
+          const hovered = hoveredNodeRef.current;
+          if (!hovered) return attrs;
+          if (node === hovered) return { ...attrs, zIndex: 2 };
+          const isNeighbor = neighborsRef.current.get(hovered)?.has(node);
+          if (isNeighbor) return { ...attrs, zIndex: 1 };
+          // Non-neighbors fade toward gray. Sizes stay put — in a small ego-network shrinking
+          // most of the nodes at once reads as "the whole graph just got smaller", which is
+          // disorienting. Color fade is enough to direct attention.
+          const dim = hoverAnimRef.current;
+          const rgb = parseRgbColor(attrs.color as string);
+          const color = rgb
+            ? `rgb(${Math.round(rgb[0] + (60 - rgb[0]) * dim)},${Math.round(rgb[1] + (60 - rgb[1]) * dim)},${Math.round(rgb[2] + (60 - rgb[2]) * dim)})`
+            : attrs.color;
+          return { ...attrs, color };
+        },
+        edgeReducer: (edge, attrs) => {
+          const hovered = hoveredNodeRef.current;
+          if (!hovered) return attrs;
+          const src = g.source(edge);
+          const dst = g.target(edge);
+          const incident = src === hovered || dst === hovered;
+          const dim = hoverAnimRef.current;
+          if (incident) {
+            // Brighten incident edges via color (no size pump — same reason as nodeReducer).
+            return { ...attrs, zIndex: 1 };
+          }
+          // Fade non-incident edges toward the background (color only).
+          const rgb = parseRgbColor(attrs.color as string);
+          const bg = parseRgbColor(themeRef.current.background) ?? [30, 30, 30];
+          const color = rgb
+            ? `rgb(${Math.round(rgb[0] + (bg[0] - rgb[0]) * dim * 0.85)},${Math.round(rgb[1] + (bg[1] - rgb[1]) * dim * 0.85)},${Math.round(rgb[2] + (bg[2] - rgb[2]) * dim * 0.85)})`
+            : attrs.color;
+          return { ...attrs, color };
+        },
+      });
+    } catch (err) {
+      // WebGL context unavailable — typically the browser has hit its per-tab
+      // context limit. Surface a graceful error instead of letting the crash
+      // bubble up to the route-level Error Boundary and blank the page.
+      console.error('LocalGraphView: failed to initialize graph renderer', err);
+      releasePartialSigmaCanvases(container, existingCanvases);
+      setError('Could not initialize the graph renderer. Try closing other tabs that use graph or 3D views, or reload the page.');
+      graphRef.current = null;
+      return;
+    }
 
     sigmaRef.current = sigma;
 
@@ -591,7 +643,7 @@ export function LocalGraphView() {
 
     return () => {
       if (hoverRaf !== null) cancelAnimationFrame(hoverRaf);
-      sigma.kill();
+      releaseSigma(sigma, container);
       labelCanvas.remove();
       sigmaRef.current = null;
       graphRef.current = null;
