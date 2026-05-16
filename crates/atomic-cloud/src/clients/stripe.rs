@@ -48,7 +48,9 @@ impl StripeClient {
 
         if !resp.status().is_success() {
             let body = resp.text().await.unwrap_or_default();
-            return Err(CloudError::Stripe(format!("Checkout session failed: {body}")));
+            return Err(CloudError::Stripe(format!(
+                "Checkout session failed: {body}"
+            )));
         }
 
         let json: serde_json::Value = resp
@@ -79,7 +81,9 @@ impl StripeClient {
 
         if !resp.status().is_success() {
             let body = resp.text().await.unwrap_or_default();
-            return Err(CloudError::Stripe(format!("Retrieve session failed: {body}")));
+            return Err(CloudError::Stripe(format!(
+                "Retrieve session failed: {body}"
+            )));
         }
 
         resp.json()
@@ -93,10 +97,7 @@ impl StripeClient {
         stripe_customer_id: &str,
         return_url: &str,
     ) -> Result<String, CloudError> {
-        let params = [
-            ("customer", stripe_customer_id),
-            ("return_url", return_url),
-        ];
+        let params = [("customer", stripe_customer_id), ("return_url", return_url)];
 
         let resp = self
             .http
@@ -124,10 +125,7 @@ impl StripeClient {
     }
 
     /// Cancel a Stripe subscription immediately (triggers a prorated refund)
-    pub async fn cancel_subscription(
-        &self,
-        subscription_id: &str,
-    ) -> Result<(), CloudError> {
+    pub async fn cancel_subscription(&self, subscription_id: &str) -> Result<(), CloudError> {
         let url = format!(
             "https://api.stripe.com/v1/subscriptions/{}",
             subscription_id
@@ -143,7 +141,9 @@ impl StripeClient {
 
         if !resp.status().is_success() {
             let body = resp.text().await.unwrap_or_default();
-            return Err(CloudError::Stripe(format!("Cancel subscription failed: {body}")));
+            return Err(CloudError::Stripe(format!(
+                "Cancel subscription failed: {body}"
+            )));
         }
 
         Ok(())
@@ -175,9 +175,7 @@ impl StripeClient {
             timestamp.ok_or_else(|| CloudError::BadRequest("Missing webhook timestamp".into()))?;
 
         if signatures.is_empty() {
-            return Err(CloudError::BadRequest(
-                "Missing webhook signature".into(),
-            ));
+            return Err(CloudError::BadRequest("Missing webhook signature".into()));
         }
 
         // Reject events older than 5 minutes (Stripe recommendation)
@@ -190,9 +188,7 @@ impl StripeClient {
             .unwrap()
             .as_secs() as i64;
         if (now - ts).abs() > TOLERANCE_SECS {
-            return Err(CloudError::BadRequest(
-                "Webhook timestamp too old".into(),
-            ));
+            return Err(CloudError::BadRequest("Webhook timestamp too old".into()));
         }
 
         // Compute expected signature
@@ -204,9 +200,7 @@ impl StripeClient {
 
         // Check if any provided signature matches
         if !signatures.iter().any(|sig| sig == &expected) {
-            return Err(CloudError::BadRequest(
-                "Invalid webhook signature".into(),
-            ));
+            return Err(CloudError::BadRequest("Invalid webhook signature".into()));
         }
 
         // Parse the JSON payload

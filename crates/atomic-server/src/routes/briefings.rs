@@ -9,6 +9,36 @@ use utoipa::{IntoParams, ToSchema};
 
 #[utoipa::path(
     get,
+    path = "/api/briefings/schedule",
+    responses(
+        (status = 200, description = "Active database briefing schedule", body = atomic_core::BriefingScheduleStatus),
+        (status = 400, description = "Invalid schedule state", body = ApiErrorResponse)
+    ),
+    tag = "briefings"
+)]
+pub async fn get_briefing_schedule(db: Db) -> HttpResponse {
+    ok_or_error(db.0.get_briefing_schedule().await)
+}
+
+#[utoipa::path(
+    put,
+    path = "/api/briefings/schedule",
+    request_body = atomic_core::BriefingSchedule,
+    responses(
+        (status = 200, description = "Briefing schedule updated", body = atomic_core::BriefingScheduleStatus),
+        (status = 400, description = "Invalid schedule", body = ApiErrorResponse)
+    ),
+    tag = "briefings"
+)]
+pub async fn set_briefing_schedule(
+    db: Db,
+    body: web::Json<atomic_core::BriefingSchedule>,
+) -> HttpResponse {
+    ok_or_error(db.0.set_briefing_schedule(body.into_inner()).await)
+}
+
+#[utoipa::path(
+    get,
     path = "/api/briefings/latest",
     responses(
         (status = 200, description = "Most recent briefing with citations", body = atomic_core::BriefingWithCitations),
@@ -19,8 +49,7 @@ use utoipa::{IntoParams, ToSchema};
 pub async fn get_latest_briefing(db: Db) -> HttpResponse {
     match db.0.get_latest_briefing().await {
         Ok(Some(b)) => HttpResponse::Ok().json(b),
-        Ok(None) => HttpResponse::NotFound()
-            .json(serde_json::json!({"error": "No briefings yet"})),
+        Ok(None) => HttpResponse::NotFound().json(serde_json::json!({"error": "No briefings yet"})),
         Err(e) => error_response(e),
     }
 }
@@ -59,8 +88,9 @@ pub async fn get_briefing(db: Db, path: web::Path<String>) -> HttpResponse {
     let id = path.into_inner();
     match db.0.get_briefing(&id).await {
         Ok(Some(b)) => HttpResponse::Ok().json(b),
-        Ok(None) => HttpResponse::NotFound()
-            .json(serde_json::json!({"error": "Briefing not found"})),
+        Ok(None) => {
+            HttpResponse::NotFound().json(serde_json::json!({"error": "Briefing not found"}))
+        }
         Err(e) => error_response(e),
     }
 }
@@ -75,10 +105,7 @@ pub async fn get_briefing(db: Db, path: web::Path<String>) -> HttpResponse {
     ),
     tag = "briefings"
 )]
-pub async fn run_briefing_now(
-    state: web::Data<AppState>,
-    req: HttpRequest,
-) -> HttpResponse {
+pub async fn run_briefing_now(state: web::Data<AppState>, req: HttpRequest) -> HttpResponse {
     // Resolve the target core before we start (same logic as Db extractor).
     let core = match state.resolve_core(&req).await {
         Ok(c) => c,

@@ -64,26 +64,26 @@ impl SqliteStorage {
         let mut tag_map: std::collections::HashMap<String, Vec<Tag>> =
             std::collections::HashMap::new();
         let tag_sql = format!(
-            "SELECT at.atom_id, t.id, t.name, t.parent_id, t.created_at, t.is_autotag_target
+            "SELECT at.atom_id, t.id, t.name, t.parent_id, t.created_at, t.is_autotag_target, t.autotag_description
              FROM atom_tags at
              INNER JOIN tags t ON t.id = at.tag_id
              WHERE at.atom_id IN ({})",
             placeholders
         );
         let mut tag_stmt = conn.prepare(&tag_sql)?;
-        let rows = tag_stmt
-            .query_map(rusqlite::params_from_iter(atom_ids.iter()), |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    Tag {
-                        id: row.get(1)?,
-                        name: row.get(2)?,
-                        parent_id: row.get(3)?,
-                        created_at: row.get(4)?,
-                        is_autotag_target: row.get::<_, i64>(5).unwrap_or(0) != 0,
-                    },
-                ))
-            })?;
+        let rows = tag_stmt.query_map(rusqlite::params_from_iter(atom_ids.iter()), |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                Tag {
+                    id: row.get(1)?,
+                    name: row.get(2)?,
+                    parent_id: row.get(3)?,
+                    created_at: row.get(4)?,
+                    is_autotag_target: row.get::<_, i64>(5).unwrap_or(0) != 0,
+                    autotag_description: row.get(6)?,
+                },
+            ))
+        })?;
         for row in rows {
             let (atom_id, tag) = row?;
             tag_map.entry(atom_id).or_default().push(tag);
@@ -213,13 +213,14 @@ impl SqliteStorage {
             })?
             .collect::<Result<Vec<_>, _>>()?;
 
-        Ok(Some(BriefingWithCitations { briefing, citations }))
+        Ok(Some(BriefingWithCitations {
+            briefing,
+            citations,
+        }))
     }
 
     /// Fetch the most recent briefing (by `created_at`), joined with citations.
-    pub(crate) fn get_latest_briefing_sync(
-        &self,
-    ) -> StorageResult<Option<BriefingWithCitations>> {
+    pub(crate) fn get_latest_briefing_sync(&self) -> StorageResult<Option<BriefingWithCitations>> {
         let conn = self.db.read_conn()?;
 
         let id: Option<String> = conn
@@ -267,10 +268,7 @@ impl SqliteStorage {
             .conn
             .lock()
             .map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
-        conn.execute(
-            "DELETE FROM briefings WHERE id = ?1",
-            rusqlite::params![id],
-        )?;
+        conn.execute("DELETE FROM briefings WHERE id = ?1", rusqlite::params![id])?;
         Ok(())
     }
 }

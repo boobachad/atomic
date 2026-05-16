@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { toast } from 'sonner';
 import {
@@ -14,6 +14,7 @@ import {
   RefreshCw,
   Trash2,
   Upload,
+  Download,
   ChevronRight,
   AlertCircle,
 } from 'lucide-react';
@@ -21,6 +22,7 @@ import { Button } from '../ui/Button';
 import { CustomSelect } from '../ui/CustomSelect';
 import { SearchableSelect } from '../ui/SearchableSelect';
 import { ConnectionStatus } from '../ui/ConnectionStatus';
+import { Modal } from '../ui/Modal';
 import { useSettingsStore } from '../../stores/settings';
 import { useAtomsStore } from '../../stores/atoms';
 import { useTagsStore, type TagWithCount } from '../../stores/tags';
@@ -51,12 +53,19 @@ import {
   type ApiTokenInfo,
   type CreateTokenResponse,
   type Feed,
+  getAllPipelineStatuses,
+  retryFailedEmbeddings,
+  retryFailedTagging,
   reembedAllAtoms,
+  retagAllAtoms,
+  exportDatabaseMarkdownArchive,
+  type ExportJob,
+  type DatabasePipelineStatus,
   exportLogs,
   type IngestionResult,
   type FeedPollResult,
 } from '../../lib/api';
-import { getTransport, switchTransport, switchToLocal, isDesktopApp, isLocalServer, getMcpBridgePath, type HttpTransportConfig } from '../../lib/transport';
+import { getTransport, switchTransport, switchToLocal, isDesktopApp, isLocalServer, getLocalServerConfig, getMcpBridgePath, type HttpTransportConfig } from '../../lib/transport';
 import { pickDirectory, isMacOS, openExternalUrl } from '../../lib/platform';
 import { importMarkdownFolder, type ImportProgress } from '../../lib/import';
 import { importAppleNotes, AppleNotesImportError } from '../../lib/import-apple-notes';
@@ -66,27 +75,130 @@ const MACOS_FULL_DISK_ACCESS_URL =
   'x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_AllFiles';
 import { formatRelativeDate } from '../../lib/date';
 import { useDatabasesStore, type DatabaseInfo, type DatabaseStats } from '../../stores/databases';
+import { OverrideControls } from './OverrideControls';
 
-export type SettingsTab = 'general' | 'ai' | 'tag-categories' | 'connection' | 'feeds' | 'integrations' | 'databases';
+export type SettingsTab = 'general' | 'ai' | 'tag-categories' | 'connection' | 'integrations' | 'databases' | 'prompts';
 
 const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
   { id: 'general', label: 'General' },
   { id: 'ai', label: 'AI Models' },
+  { id: 'prompts', label: 'Prompts' },
   { id: 'tag-categories', label: 'Tags' },
   { id: 'connection', label: 'Connection' },
-  { id: 'feeds', label: 'Feeds' },
   { id: 'integrations', label: 'Integrations' },
   { id: 'databases', label: 'Databases' },
 ];
+
+type BriefingFrequency = 'off' | 'daily' | 'weekly';
+type BriefingWeekday = 'monday' | 'tuesday' | 'wednesday' | 'thursday' | 'friday' | 'saturday' | 'sunday';
+
+interface BriefingSchedule {
+  frequency: BriefingFrequency;
+  time: string;
+  weekday?: BriefingWeekday | null;
+}
+
+interface BriefingScheduleStatus {
+  schedule: BriefingSchedule;
+  timezone: string;
+  last_run_at?: string | null;
+  next_run_at?: string | null;
+  configured: boolean;
+}
+
+const BRIEFING_FREQUENCY_OPTIONS = [
+  { value: 'off', label: 'Off' },
+  { value: 'daily', label: 'Daily' },
+  { value: 'weekly', label: 'Weekly' },
+];
+
+const BRIEFING_WEEKDAY_OPTIONS = [
+  { value: 'monday', label: 'Monday' },
+  { value: 'tuesday', label: 'Tuesday' },
+  { value: 'wednesday', label: 'Wednesday' },
+  { value: 'thursday', label: 'Thursday' },
+  { value: 'friday', label: 'Friday' },
+  { value: 'saturday', label: 'Saturday' },
+  { value: 'sunday', label: 'Sunday' },
+];
+
+const BRIEFING_TIME_OPTIONS = Array.from({ length: 96 }, (_, index) => {
+  const totalMinutes = index * 15;
+  const hour = Math.floor(totalMinutes / 60);
+  const minute = totalMinutes % 60;
+  const value = `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
+  const period = hour < 12 ? 'AM' : 'PM';
+  const displayHour = hour % 12 || 12;
+  return {
+    value,
+    label: `${displayHour}:${String(minute).padStart(2, '0')} ${period}`,
+  };
+});
+
+const FALLBACK_TIMEZONES = [
+  'UTC',
+  'America/New_York',
+  'America/Chicago',
+  'America/Denver',
+  'America/Los_Angeles',
+  'Europe/London',
+  'Europe/Paris',
+  'Asia/Tokyo',
+  'Australia/Sydney',
+];
+
+function getBrowserTimeZone(): string {
+  return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+}
+
+function getSupportedTimeZones(): string[] {
+  const supportedValuesOf = (Intl as any).supportedValuesOf;
+  if (typeof supportedValuesOf === 'function') {
+    try {
+      return supportedValuesOf('timeZone');
+    } catch {
+      return FALLBACK_TIMEZONES;
+    }
+  }
+  return FALLBACK_TIMEZONES;
+}
+
+function formatBriefingRunAt(value?: string | null, timeZone?: string | null): string | null {
+  if (!value) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  const options: Intl.DateTimeFormatOptions = {
+    timeZone: timeZone || undefined,
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  };
+  try {
+    return date.toLocaleString(undefined, options);
+  } catch (e) {
+    if (e instanceof RangeError && timeZone) {
+      return date.toLocaleString(undefined, {
+        ...options,
+        timeZone: undefined,
+      });
+    }
+    throw e;
+  }
+}
 
 function TagCategoriesTab() {
   const tags = useTagsStore(s => s.tags);
   const fetchTags = useTagsStore(s => s.fetchTags);
   const setTagAutotagTarget = useTagsStore(s => s.setTagAutotagTarget);
+  const setTagAutotagDescription = useTagsStore(s => s.setTagAutotagDescription);
   const createTag = useTagsStore(s => s.createTag);
   const [newName, setNewName] = useState('');
   const [creating, setCreating] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [expandedTagId, setExpandedTagId] = useState<string | null>(null);
+  const [descriptionDrafts, setDescriptionDrafts] = useState<Record<string, string>>({});
 
   useEffect(() => {
     fetchTags();
@@ -130,6 +242,26 @@ function TagCategoriesTab() {
     }
   };
 
+  const handleDescriptionChange = (id: string, value: string) => {
+    setDescriptionDrafts(current => ({ ...current, [id]: value }));
+  };
+
+  const handleDescriptionSave = async (tag: TagWithCount) => {
+    const draft = descriptionDrafts[tag.id] ?? tag.autotag_description ?? '';
+    if (draft === (tag.autotag_description ?? '')) return;
+    setErrorMsg(null);
+    try {
+      await setTagAutotagDescription(tag.id, draft);
+      setDescriptionDrafts(current => {
+        const next = { ...current };
+        delete next[tag.id];
+        return next;
+      });
+    } catch (e) {
+      setErrorMsg(String(e));
+    }
+  };
+
   return (
     <>
       <div className="space-y-1">
@@ -151,25 +283,62 @@ function TagCategoriesTab() {
           <p className="text-xs text-[var(--color-text-secondary)] italic">None yet.</p>
         ) : (
           <div className="space-y-1">
-            {targets.map(tag => (
+            {targets.map(tag => {
+              const isExpanded = expandedTagId === tag.id;
+              const description = tag.autotag_description ?? '';
+              const draft = descriptionDrafts[tag.id] ?? description;
+
+              return (
               <div
                 key={tag.id}
-                className="flex items-center justify-between gap-3 px-3 py-2 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-main)]"
+                className="rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-main)]"
               >
-                <div className="flex items-center gap-2 min-w-0">
-                  <span className="text-sm text-[var(--color-text-primary)] truncate">{tag.name}</span>
-                  <span className="text-[10px] text-[var(--color-text-tertiary)]">
-                    {(tag as TagWithCount).atom_count} atoms
-                  </span>
+                <div className="flex items-center justify-between gap-3 px-3 py-2">
+                  <button
+                    type="button"
+                    onClick={() => setExpandedTagId(isExpanded ? null : tag.id)}
+                    className="flex min-w-0 flex-1 items-center gap-2 text-left"
+                    title={isExpanded ? 'Hide AI description' : 'Edit AI description'}
+                  >
+                    <ChevronRight
+                      className={`h-4 w-4 flex-shrink-0 text-[var(--color-text-tertiary)] transition-transform ${isExpanded ? 'rotate-90' : ''}`}
+                      strokeWidth={2}
+                    />
+                    <span className="text-sm text-[var(--color-text-primary)] truncate">{tag.name}</span>
+                    <span className="text-[10px] text-[var(--color-text-tertiary)]">
+                      {(tag as TagWithCount).atom_count} atoms
+                    </span>
+                    {description.trim() && (
+                      <span className="text-[10px] text-[var(--color-accent)]">
+                        Description
+                      </span>
+                    )}
+                  </button>
+                  <button
+                    onClick={() => handleToggle(tag.id, false)}
+                    className="px-2 py-1 text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-hover)] rounded transition-colors"
+                  >
+                    Unflag
+                  </button>
                 </div>
-                <button
-                  onClick={() => handleToggle(tag.id, false)}
-                  className="px-2 py-1 text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-hover)] rounded transition-colors"
-                >
-                  Unflag
-                </button>
+                {isExpanded && (
+                  <div className="border-t border-[var(--color-border)] px-3 pb-3 pt-2">
+                    <label className="mb-1 block text-xs font-medium text-[var(--color-text-secondary)]">
+                      AI description
+                    </label>
+                    <textarea
+                      value={draft}
+                      onChange={e => handleDescriptionChange(tag.id, e.target.value)}
+                      onBlur={() => handleDescriptionSave(tag)}
+                      placeholder="Tell the auto-tagger when this category should be used."
+                      rows={3}
+                      className="w-full resize-y rounded border border-[var(--color-border)] bg-[var(--color-bg-panel)] px-3 py-2 text-sm text-[var(--color-text-primary)] outline-none placeholder:text-[var(--color-text-secondary)]/50 focus:border-[var(--color-accent)]"
+                    />
+                  </div>
+                )}
               </div>
-            ))}
+            );
+            })}
           </div>
         )}
       </div>
@@ -228,6 +397,90 @@ function TagCategoriesTab() {
   );
 }
 
+function pipelineSummary(status?: DatabasePipelineStatus['status']) {
+  if (!status) {
+    return {
+      tone: 'muted' as const,
+      label: 'Loading',
+      detail: 'Checking AI pipeline state...',
+    };
+  }
+
+  const failed = status.failed_count + status.tagging_failed_count;
+  const pending = status.pending + status.tagging_pending;
+  const processing = status.processing + status.tagging_processing;
+
+  if (failed > 0) {
+    const parts = [
+      status.failed_count > 0 ? `${status.failed_count} embedding` : null,
+      status.tagging_failed_count > 0 ? `${status.tagging_failed_count} tagging` : null,
+    ].filter(Boolean);
+    return {
+      tone: 'error' as const,
+      label: 'Needs attention',
+      detail: `${parts.join(', ')} failed`,
+    };
+  }
+
+  if (processing > 0 || pending > 0) {
+    const parts = [
+      pending > 0 ? `${pending} pending` : null,
+      processing > 0 ? `${processing} processing` : null,
+    ].filter(Boolean);
+    return {
+      tone: 'working' as const,
+      label: 'Working',
+      detail: parts.join(', '),
+    };
+  }
+
+  return {
+    tone: 'healthy' as const,
+    label: 'Healthy',
+    detail: `${status.complete} embedded · ${status.tagging_complete} tagged${status.tagging_skipped > 0 ? ` · ${status.tagging_skipped} skipped` : ''}`,
+  };
+}
+
+function PipelineDetailCounts({ status }: { status: DatabasePipelineStatus['status'] }) {
+  const cellClass = 'px-2 py-1.5 text-right tabular-nums';
+  const labelClass = 'px-2 py-1.5 text-left font-medium text-[var(--color-text-secondary)]';
+
+  return (
+    <div className="overflow-x-auto rounded border border-[var(--color-border)] bg-[var(--color-bg-panel)]">
+      <table className="w-full min-w-[560px] text-xs">
+        <thead className="text-[var(--color-text-tertiary)]">
+          <tr className="border-b border-[var(--color-border)]">
+            <th className={labelClass}>Stage</th>
+            <th className={cellClass}>Pending</th>
+            <th className={cellClass}>Processing</th>
+            <th className={cellClass}>Complete</th>
+            <th className={cellClass}>Skipped</th>
+            <th className={cellClass}>Failed</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr className="border-b border-[var(--color-border)]">
+            <td className={labelClass}>Embeddings</td>
+            <td className={cellClass}>{status.pending}</td>
+            <td className={cellClass}>{status.processing}</td>
+            <td className={cellClass}>{status.complete}</td>
+            <td className={cellClass}>-</td>
+            <td className={`${cellClass} ${status.failed_count > 0 ? 'text-red-300 font-medium' : ''}`}>{status.failed_count}</td>
+          </tr>
+          <tr>
+            <td className={labelClass}>Tagging</td>
+            <td className={cellClass}>{status.tagging_pending}</td>
+            <td className={cellClass}>{status.tagging_processing}</td>
+            <td className={cellClass}>{status.tagging_complete}</td>
+            <td className={cellClass}>{status.tagging_skipped}</td>
+            <td className={`${cellClass} ${status.tagging_failed_count > 0 ? 'text-red-300 font-medium' : ''}`}>{status.tagging_failed_count}</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 function DatabasesTab() {
   const { databases, activeId, fetchDatabases, renameDatabase, deleteDatabase, setDefaultDatabase, getDatabaseStats } = useDatabasesStore();
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -236,10 +489,70 @@ function DatabasesTab() {
   const [deleteStats, setDeleteStats] = useState<DatabaseStats | null>(null);
   const [isLoadingStats, setIsLoadingStats] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [pipelineItems, setPipelineItems] = useState<DatabasePipelineStatus[]>([]);
+  const [pipelineLoading, setPipelineLoading] = useState(false);
+  const [pipelineError, setPipelineError] = useState<string | null>(null);
+  const [retrying, setRetrying] = useState<string | null>(null);
+  const [reembeddingDb, setReembeddingDb] = useState<string | null>(null);
+  const [retaggingDb, setRetaggingDb] = useState<string | null>(null);
+  const [exportingDb, setExportingDb] = useState<string | null>(null);
+  const [exportJobsByDb, setExportJobsByDb] = useState<Record<string, ExportJob>>({});
+  const [confirmReembedDb, setConfirmReembedDb] = useState<DatabaseInfo | null>(null);
+  const [confirmRetagDb, setConfirmRetagDb] = useState<DatabaseInfo | null>(null);
+  const [expandedPipeline, setExpandedPipeline] = useState<string | null>(null);
+  const liveRefreshTimer = useRef<ReturnType<typeof setTimeout>>();
+
+  const pipelineByDb = useMemo(() => {
+    return new Map(pipelineItems.map(item => [item.database.id, item.status]));
+  }, [pipelineItems]);
 
   useEffect(() => {
     fetchDatabases();
   }, [fetchDatabases]);
+
+  const loadPipelineStatuses = useCallback(async (silent = false) => {
+    if (!silent) setPipelineLoading(true);
+    setPipelineError(null);
+    try {
+      setPipelineItems(await getAllPipelineStatuses());
+    } catch (e) {
+      setPipelineError(String(e));
+    } finally {
+      if (!silent) setPipelineLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadPipelineStatuses();
+  }, [loadPipelineStatuses]);
+
+  useEffect(() => {
+    const transport = getTransport();
+    const scheduleRefresh = () => {
+      clearTimeout(liveRefreshTimer.current);
+      liveRefreshTimer.current = setTimeout(() => {
+        void loadPipelineStatuses(true);
+      }, 600);
+    };
+
+    const events = [
+      'atom-created',
+      'atom-updated',
+      'embedding-started',
+      'embedding-complete',
+      'tagging-complete',
+      'embeddings-reset',
+      'pipeline-queue-started',
+      'pipeline-queue-progress',
+      'pipeline-queue-completed',
+    ];
+    const unsubs = events.map(event => transport.subscribe(event, scheduleRefresh));
+
+    return () => {
+      clearTimeout(liveRefreshTimer.current);
+      unsubs.forEach(unsub => unsub());
+    };
+  }, [loadPipelineStatuses]);
 
   const handleRename = async (id: string) => {
     const trimmed = editName.trim();
@@ -278,6 +591,73 @@ function DatabasesTab() {
     await setDefaultDatabase(id);
   };
 
+  const handleExportMarkdown = async (db: DatabaseInfo) => {
+    if (exportingDb) return;
+    setExportingDb(db.id);
+    setPipelineError(null);
+    try {
+      const job = await exportDatabaseMarkdownArchive(db.id, progress => {
+        setExportJobsByDb(current => ({ ...current, [db.id]: progress }));
+      });
+      toast.success(`Exported ${job.total_atoms} ${job.total_atoms === 1 ? 'atom' : 'atoms'} as markdown`);
+    } catch (e) {
+      toast.error('Failed to export database', { description: String(e) });
+    } finally {
+      setExportingDb(null);
+    }
+  };
+
+  const retryFailed = async (dbId: string, stage: 'embedding' | 'tagging') => {
+    const key = `${dbId}:${stage}`;
+    setRetrying(key);
+    setPipelineError(null);
+    try {
+      const count = stage === 'embedding'
+        ? await retryFailedEmbeddings(dbId)
+        : await retryFailedTagging(dbId);
+      toast.success(`Queued ${count} failed ${stage === 'embedding' ? 'embedding' : 'tagging'} ${count === 1 ? 'job' : 'jobs'}`);
+      await loadPipelineStatuses();
+    } catch (e) {
+      setPipelineError(String(e));
+    } finally {
+      setRetrying(null);
+    }
+  };
+
+  const handleConfirmReembedAll = async () => {
+    if (!confirmReembedDb || reembeddingDb) return;
+    const db = confirmReembedDb;
+    setReembeddingDb(db.id);
+    setPipelineError(null);
+    try {
+      const count = await reembedAllAtoms(db.id);
+      toast.success(`Queued ${count} ${count === 1 ? 'atom' : 'atoms'} for re-embedding`);
+      setConfirmReembedDb(null);
+      await loadPipelineStatuses();
+    } catch (e) {
+      setPipelineError(String(e));
+    } finally {
+      setReembeddingDb(null);
+    }
+  };
+
+  const handleConfirmRetagAll = async () => {
+    if (!confirmRetagDb || retaggingDb) return;
+    const db = confirmRetagDb;
+    setRetaggingDb(db.id);
+    setPipelineError(null);
+    try {
+      const count = await retagAllAtoms(db.id);
+      toast.success(`Queued ${count} ${count === 1 ? 'atom' : 'atoms'} for re-tagging`);
+      setConfirmRetagDb(null);
+      await loadPipelineStatuses();
+    } catch (e) {
+      setPipelineError(String(e));
+    } finally {
+      setRetaggingDb(null);
+    }
+  };
+
   return (
     <>
       <div className="space-y-1">
@@ -287,116 +667,325 @@ function DatabasesTab() {
         </p>
       </div>
 
-      <div className="space-y-1">
-        {databases.map(db => (
-          <div
-            key={db.id}
-            className="flex items-center gap-3 px-3 py-2.5 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-main)]"
-          >
-            {editingId === db.id ? (
-              <input
-                autoFocus
-                className="flex-1 bg-transparent border border-[var(--color-accent)] rounded px-2 py-1 text-sm text-[var(--color-text-primary)] outline-none"
-                value={editName}
-                onChange={e => setEditName(e.target.value)}
-                onKeyDown={e => {
-                  if (e.key === 'Enter') handleRename(db.id);
-                  if (e.key === 'Escape') setEditingId(null);
-                }}
-                onBlur={() => handleRename(db.id)}
-              />
-            ) : (
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-2">
-                  <span className="text-sm text-[var(--color-text-primary)] truncate">{db.name}</span>
-                  {db.is_default && (
-                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--color-accent)]/20 text-[var(--color-accent)] font-medium">
-                      Default
-                    </span>
+      <div className="space-y-2">
+        {databases.map(db => {
+          const status = pipelineByDb.get(db.id);
+          const summary = pipelineSummary(status);
+          const embeddingRetryKey = `${db.id}:embedding`;
+          const taggingRetryKey = `${db.id}:tagging`;
+          const exportJob = exportJobsByDb[db.id];
+          const isExpanded = expandedPipeline === db.id;
+          const summaryClass = summary.tone === 'error'
+            ? 'text-red-300'
+            : summary.tone === 'working'
+              ? 'text-amber-300'
+              : summary.tone === 'healthy'
+                ? 'text-green-300'
+                : 'text-[var(--color-text-secondary)]';
+
+          return (
+            <div
+              key={db.id}
+              className="rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-main)]"
+            >
+              <div className="flex items-start gap-3 px-3 py-2.5">
+                {editingId === db.id ? (
+                  <input
+                    autoFocus
+                    className="flex-1 bg-transparent border border-[var(--color-accent)] rounded px-2 py-1 text-sm text-[var(--color-text-primary)] outline-none"
+                    value={editName}
+                    onChange={e => setEditName(e.target.value)}
+                    onKeyDown={e => {
+                      if (e.key === 'Enter') handleRename(db.id);
+                      if (e.key === 'Escape') setEditingId(null);
+                    }}
+                    onBlur={() => handleRename(db.id)}
+                  />
+                ) : (
+                  <div className="flex-1 min-w-0 space-y-1">
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm text-[var(--color-text-primary)] truncate font-medium">{db.name}</span>
+                      {db.is_default && (
+                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--color-accent)]/20 text-[var(--color-accent)] font-medium">
+                          Default
+                        </span>
+                      )}
+                      {db.id === activeId && (
+                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-green-500/20 text-green-400 font-medium">
+                          Active
+                        </span>
+                      )}
+                    </div>
+                    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
+                      <span className={`font-medium ${summaryClass}`}>{summary.label}</span>
+                      <span className="text-[var(--color-text-secondary)]">{summary.detail}</span>
+                    </div>
+                  </div>
+                )}
+
+                {editingId !== db.id && (
+                  <div className="flex items-center gap-1 flex-shrink-0">
+                    {status && status.failed_count > 0 && (
+                      <button
+                        onClick={() => retryFailed(db.id, 'embedding')}
+                        disabled={retrying === embeddingRetryKey}
+                        className="inline-flex items-center gap-1 rounded px-2 py-1 text-[11px] text-red-300 hover:bg-red-500/10 disabled:opacity-50"
+                        title="Retry failed embeddings"
+                      >
+                        {retrying === embeddingRetryKey ? <Loader2 className="w-3.5 h-3.5 animate-spin" strokeWidth={2} /> : <RefreshCw className="w-3.5 h-3.5" strokeWidth={2} />}
+                        Emb
+                      </button>
+                    )}
+                    {status && status.tagging_failed_count > 0 && (
+                      <button
+                        onClick={() => retryFailed(db.id, 'tagging')}
+                        disabled={retrying === taggingRetryKey}
+                        className="inline-flex items-center gap-1 rounded px-2 py-1 text-[11px] text-red-300 hover:bg-red-500/10 disabled:opacity-50"
+                        title="Retry failed tagging"
+                      >
+                        {retrying === taggingRetryKey ? <Loader2 className="w-3.5 h-3.5 animate-spin" strokeWidth={2} /> : <RefreshCw className="w-3.5 h-3.5" strokeWidth={2} />}
+                        Tag
+                      </button>
+                    )}
+                    {status && (
+                      <button
+                        onClick={() => setExpandedPipeline(isExpanded ? null : db.id)}
+                        className="px-2 py-1 text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-hover)] rounded transition-colors"
+                      >
+                        {isExpanded ? 'Hide' : 'Details'}
+                      </button>
+                    )}
+                    <button
+                      onClick={() => handleExportMarkdown(db)}
+                      disabled={!!exportingDb}
+                      className="inline-flex items-center gap-1 rounded px-2 py-1 text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-hover)] disabled:opacity-50 disabled:hover:bg-transparent transition-colors"
+                      title="Export database as markdown archive"
+                    >
+                      {exportingDb === db.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" strokeWidth={2} /> : <Download className="w-3.5 h-3.5" strokeWidth={2} />}
+                      {exportingDb === db.id && exportJob?.total_atoms
+                        ? `${Math.round((exportJob.processed_atoms / exportJob.total_atoms) * 100)}%`
+                        : 'Export'}
+                    </button>
+                    {!db.is_default && (
+                      <button
+                        onClick={() => handleSetDefault(db.id)}
+                        className="px-2 py-1 text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-hover)] rounded transition-colors"
+                        title="Set as default"
+                      >
+                        Set default
+                      </button>
+                    )}
+                    <button
+                      onClick={() => { setEditingId(db.id); setEditName(db.name); }}
+                      className="p-1.5 text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-hover)] rounded transition-colors"
+                      title="Rename"
+                    >
+                      <Pencil width="14" height="14" strokeWidth={2} />
+                    </button>
+                    {!db.is_default && (
+                      <button
+                        onClick={() => handleStartDelete(db)}
+                        className="p-1.5 text-[var(--color-text-tertiary)] hover:text-red-400 hover:bg-[var(--color-bg-hover)] rounded transition-colors"
+                        title="Delete database"
+                      >
+                        <Trash2 width="14" height="14" strokeWidth={2} />
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {isExpanded && status && (
+                <div className="px-3 pb-3 space-y-3">
+                  <PipelineDetailCounts status={status} />
+                  {status.complete > 0 && (
+                    <div className="flex items-center justify-between gap-3 rounded border border-[var(--color-border)] bg-[var(--color-bg-panel)] px-3 py-2">
+                      <div className="min-w-0">
+                        <div className="text-xs font-medium text-[var(--color-text-primary)]">Recalculate embeddings</div>
+                        <div className="text-[11px] text-[var(--color-text-secondary)]">
+                          Queues embed-only work for this database while preserving tags and chunk content.
+                        </div>
+                      </div>
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        onClick={() => setConfirmReembedDb(db)}
+                        disabled={reembeddingDb === db.id}
+                        title="Re-embed all atoms in this database"
+                        className="flex-shrink-0 gap-1"
+                      >
+                        {reembeddingDb === db.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" strokeWidth={2} /> : <RefreshCw className="w-3.5 h-3.5" strokeWidth={2} />}
+                        Re-embed
+                      </Button>
+                    </div>
                   )}
-                  {db.id === activeId && (
-                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-green-500/20 text-green-400 font-medium">
-                      Active
-                    </span>
+                  {status.complete > 0 && (
+                    <div className="flex items-center justify-between gap-3 rounded border border-[var(--color-border)] bg-[var(--color-bg-panel)] px-3 py-2">
+                      <div className="min-w-0">
+                        <div className="text-xs font-medium text-[var(--color-text-primary)]">Re-run auto-tagging</div>
+                        <div className="text-[11px] text-[var(--color-text-secondary)]">
+                          Removes auto-generated tags (except those whose tag has a wiki article) and re-extracts tags using your current tagging model. Manual tags are preserved.
+                        </div>
+                      </div>
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        onClick={() => setConfirmRetagDb(db)}
+                        disabled={retaggingDb === db.id}
+                        title="Re-run auto-tagging for all atoms in this database"
+                        className="flex-shrink-0 gap-1"
+                      >
+                        {retaggingDb === db.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" strokeWidth={2} /> : <RefreshCw className="w-3.5 h-3.5" strokeWidth={2} />}
+                        Re-tag
+                      </Button>
+                    </div>
                   )}
                 </div>
-              </div>
-            )}
-
-            {editingId !== db.id && (
-              <div className="flex items-center gap-1">
-                {!db.is_default && (
-                  <button
-                    onClick={() => handleSetDefault(db.id)}
-                    className="px-2 py-1 text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-hover)] rounded transition-colors"
-                    title="Set as default"
-                  >
-                    Set default
-                  </button>
-                )}
-                <button
-                  onClick={() => { setEditingId(db.id); setEditName(db.name); }}
-                  className="p-1.5 text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-hover)] rounded transition-colors"
-                  title="Rename"
-                >
-                  <Pencil width="14" height="14" strokeWidth={2} />
-                </button>
-                {!db.is_default && (
-                  <button
-                    onClick={() => handleStartDelete(db)}
-                    className="p-1.5 text-[var(--color-text-tertiary)] hover:text-red-400 hover:bg-[var(--color-bg-hover)] rounded transition-colors"
-                    title="Delete database"
-                  >
-                    <Trash2 width="14" height="14" strokeWidth={2} />
-                  </button>
-                )}
-              </div>
-            )}
-          </div>
-        ))}
+              )}
+            </div>
+          );
+        })}
       </div>
 
       {databases.length === 0 && (
         <p className="text-sm text-[var(--color-text-secondary)] text-center py-4">No databases found.</p>
       )}
 
-      {/* Delete confirmation dialog */}
-      {confirmDeleteDb && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 safe-area-padding">
-          <div className="bg-[var(--color-bg-panel)] border border-[var(--color-border)] rounded-lg shadow-xl p-6 mx-4 max-w-sm w-full space-y-4">
-            <div className="space-y-2">
-              <h3 className="text-sm font-semibold text-[var(--color-text-primary)]">Delete database?</h3>
-              <p className="text-xs text-[var(--color-text-secondary)]">
-                This will permanently delete <span className="font-medium text-[var(--color-text-primary)]">"{confirmDeleteDb.name}"</span>
-                {isLoadingStats ? (
-                  <span> and all its data.</span>
-                ) : deleteStats && deleteStats.atom_count >= 0 ? (
-                  <span> and its <span className="font-medium text-[var(--color-text-primary)]">{deleteStats.atom_count} atom{deleteStats.atom_count !== 1 ? 's' : ''}</span>. </span>
-                ) : (
-                  <span> and all its data. </span>
-                )}
-                This action cannot be undone.
-              </p>
-            </div>
-            <div className="flex gap-2 justify-end">
-              <button
-                onClick={() => setConfirmDeleteDb(null)}
-                disabled={isDeleting}
-                className="px-3 py-1.5 text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-hover)] rounded transition-colors"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleConfirmDelete}
-                disabled={isDeleting || isLoadingStats}
-                className="px-3 py-1.5 text-xs bg-red-600 hover:bg-red-700 text-white rounded transition-colors disabled:opacity-50"
-              >
-                {isDeleting ? 'Deleting...' : 'Delete'}
-              </button>
-            </div>
-          </div>
+      {pipelineError && (
+        <div className="p-3 bg-red-500/10 border border-red-500/30 rounded-md text-sm text-red-300">
+          {pipelineError}
         </div>
       )}
+
+      {pipelineLoading && databases.length > 0 && (
+        <div className="flex items-center gap-2 text-xs text-[var(--color-text-secondary)]">
+          <Loader2 className="w-3.5 h-3.5 animate-spin" strokeWidth={2} />
+          Checking AI pipeline status...
+        </div>
+      )}
+
+      {/* Delete confirmation dialog */}
+      <Modal
+        isOpen={!!confirmDeleteDb}
+        onClose={() => {
+          if (!isDeleting) setConfirmDeleteDb(null);
+        }}
+        title="Delete database?"
+        showFooter={false}
+      >
+        <div className="space-y-4">
+          <p className="text-xs text-[var(--color-text-secondary)]">
+            This will permanently delete <span className="font-medium text-[var(--color-text-primary)]">"{confirmDeleteDb?.name}"</span>
+            {isLoadingStats ? (
+              <span> and all its data.</span>
+            ) : deleteStats && deleteStats.atom_count >= 0 ? (
+              <span> and its <span className="font-medium text-[var(--color-text-primary)]">{deleteStats.atom_count} atom{deleteStats.atom_count !== 1 ? 's' : ''}</span>. </span>
+            ) : (
+              <span> and all its data. </span>
+            )}
+            This action cannot be undone.
+          </p>
+          <div className="flex gap-2 justify-end">
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => setConfirmDeleteDb(null)}
+              disabled={isDeleting}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="danger"
+              size="sm"
+              onClick={handleConfirmDelete}
+              disabled={isDeleting || isLoadingStats}
+            >
+              {isDeleting ? 'Deleting...' : 'Delete'}
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
+      <Modal
+        isOpen={!!confirmReembedDb}
+        onClose={() => {
+          if (!reembeddingDb) setConfirmReembedDb(null);
+        }}
+        title="Re-embed database?"
+        showFooter={false}
+      >
+        <div className="space-y-4">
+          <p className="text-xs text-[var(--color-text-secondary)]">
+            This clears embedding status for <span className="font-medium text-[var(--color-text-primary)]">"{confirmReembedDb?.name}"</span> and queues embed-only work for its atoms.
+            Existing tags and chunk content are preserved.
+          </p>
+          <div className="flex gap-2 justify-end">
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => setConfirmReembedDb(null)}
+              disabled={!!reembeddingDb}
+            >
+              Cancel
+            </Button>
+            <Button
+              size="sm"
+              onClick={handleConfirmReembedAll}
+              disabled={!!reembeddingDb}
+            >
+              {reembeddingDb === confirmReembedDb?.id ? 'Queuing...' : 'Re-embed'}
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
+      <Modal
+        isOpen={!!confirmRetagDb}
+        onClose={() => {
+          if (!retaggingDb) setConfirmRetagDb(null);
+        }}
+        title="Re-run auto-tagging?"
+        showFooter={false}
+      >
+        <div className="space-y-3">
+          <p className="text-xs text-[var(--color-text-secondary)]">
+            This will remove auto-generated tag assignments from <span className="font-medium text-[var(--color-text-primary)]">"{confirmRetagDb?.name}"</span> and re-run auto-tagging across every atom using your current tagging model.
+          </p>
+          <ul className="text-xs text-[var(--color-text-secondary)] space-y-1 pl-4 list-disc">
+            <li>Manually-added tags are preserved.</li>
+            <li>Tags with a wiki article are preserved (across all their atoms).</li>
+            <li>All other auto-generated tag assignments are removed before re-tagging.</li>
+          </ul>
+          {(() => {
+            const legacy = confirmRetagDb
+              ? pipelineByDb.get(confirmRetagDb.id)?.legacy_auto_tag_count ?? 0
+              : 0;
+            if (legacy <= 0) return null;
+            return (
+              <p className="text-xs text-amber-300/90 bg-amber-500/10 border border-amber-500/30 rounded px-2 py-1.5">
+                Note: {legacy.toLocaleString()} tag assignment{legacy === 1 ? '' : 's'} from before this update will be treated as auto-generated and may be removed if the tag has no wiki article.
+              </p>
+            );
+          })()}
+          <div className="flex gap-2 justify-end">
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => setConfirmRetagDb(null)}
+              disabled={!!retaggingDb}
+            >
+              Cancel
+            </Button>
+            <Button
+              size="sm"
+              onClick={handleConfirmRetagAll}
+              disabled={!!retaggingDb}
+            >
+              {retaggingDb === confirmRetagDb?.id ? 'Queuing...' : 'Re-tag'}
+            </Button>
+          </div>
+        </div>
+      </Modal>
     </>
   );
 }
@@ -412,10 +1001,23 @@ export function SettingsModal({ isOpen, onClose, initialTab }: SettingsModalProp
   const fetchSettings = useSettingsStore(s => s.fetchSettings);
   const setSetting = useSettingsStore(s => s.setSetting);
   const testOpenRouterConnection = useSettingsStore(s => s.testOpenRouterConnection);
+  const activeDatabaseId = useDatabasesStore(s => s.activeId);
+  const activeDatabaseName = useDatabasesStore(s => s.databases.find(db => db.id === s.activeId)?.name);
+  const databaseCount = useDatabasesStore(s => s.databases.length);
 
   // Theme & Font
   const [theme, setTheme] = useState<Theme>('obsidian');
   const [font, setFont] = useState<Font>('ibm-plex-sans');
+  const [briefingSchedule, setBriefingSchedule] = useState<BriefingSchedule>({
+    frequency: 'daily',
+    time: '09:00',
+    weekday: null,
+  });
+  const [timezone, setTimezone] = useState(getBrowserTimeZone());
+  const [briefingScheduleStatus, setBriefingScheduleStatus] = useState<BriefingScheduleStatus | null>(null);
+  const [isLoadingBriefingSchedule, setIsLoadingBriefingSchedule] = useState(false);
+  const [briefingScheduleError, setBriefingScheduleError] = useState<string | null>(null);
+  const supportedTimeZones = useMemo(() => getSupportedTimeZones(), []);
 
   // Provider selection
   const [provider, setProvider] = useState<'openrouter' | 'ollama' | 'openai_compat'>('openrouter');
@@ -460,6 +1062,9 @@ export function SettingsModal({ isOpen, onClose, initialTab }: SettingsModalProp
   const [wikiStrategy, setWikiStrategy] = useState('centroid');
   const [wikiGenerationPrompt, setWikiGenerationPrompt] = useState('');
   const [wikiUpdatePrompt, setWikiUpdatePrompt] = useState('');
+  const [briefingPrompt, setBriefingPrompt] = useState('');
+  const [chatPrompt, setChatPrompt] = useState('');
+  const [taggingPrompt, setTaggingPrompt] = useState('');
   const [chatModel, setChatModel] = useState('anthropic/claude-sonnet-4.6');
   const [saveError, setSaveError] = useState<string | null>(null);
 
@@ -517,6 +1122,8 @@ export function SettingsModal({ isOpen, onClose, initialTab }: SettingsModalProp
   const [tokenCopied, setTokenCopied] = useState(false);
   const [showTokenSection, setShowTokenSection] = useState(false);
   const [confirmRevokeId, setConfirmRevokeId] = useState<string | null>(null);
+  const [localUrlCopied, setLocalUrlCopied] = useState(false);
+  const [localTokenCopied, setLocalTokenCopied] = useState(false);
 
   // Feeds state
   const [feeds, setFeeds] = useState<Feed[]>([]);
@@ -531,12 +1138,6 @@ export function SettingsModal({ isOpen, onClose, initialTab }: SettingsModalProp
   const [ingestResult, setIngestResult] = useState<IngestionResult | null>(null);
   const [ingestError, setIngestError] = useState<string | null>(null);
 
-  // Re-embed state
-  const [showReembedConfirm, setShowReembedConfirm] = useState(false);
-  const [reembedding, setReembedding] = useState(false);
-  const [reembedResult, setReembedResult] = useState<number | null>(null);
-  const [reembedError, setReembedError] = useState<string | null>(null);
-
   // Feed action state
   const [pollingFeedId, setPollingFeedId] = useState<string | null>(null);
   const [pollResult, setPollResult] = useState<FeedPollResult | null>(null);
@@ -547,6 +1148,7 @@ export function SettingsModal({ isOpen, onClose, initialTab }: SettingsModalProp
   // Derived: whether we're connected to a remote (non-local) server
   // Desktop + local sidecar → false; Desktop + remote override → true; Web → always true
   const isRemoteMode = isDesktopApp() ? !isLocalServer() : true;
+  const localServerConfig = isDesktopApp() ? getLocalServerConfig() : null;
 
   // Check Ollama connection
   const checkOllamaConnection = useCallback(async (host: string) => {
@@ -634,6 +1236,50 @@ export function SettingsModal({ isOpen, onClose, initialTab }: SettingsModalProp
       setIsLoadingTokens(false);
     }
   }, []);
+
+  const loadBriefingSchedule = useCallback(async () => {
+    if (!getTransport().isConnected()) return;
+    setIsLoadingBriefingSchedule(true);
+    setBriefingScheduleError(null);
+    try {
+      const status = await getTransport().invoke<BriefingScheduleStatus>('get_briefing_schedule');
+      const schedule = { ...status.schedule };
+      if (schedule.frequency === 'weekly' && !schedule.weekday) {
+        schedule.weekday = 'monday';
+      }
+      setBriefingSchedule(schedule);
+      setBriefingScheduleStatus(status);
+    } catch (e) {
+      setBriefingScheduleError(String(e));
+    } finally {
+      setIsLoadingBriefingSchedule(false);
+    }
+  }, []);
+
+  const saveBriefingSchedule = useCallback(async (next: BriefingSchedule) => {
+    const normalized: BriefingSchedule = {
+      ...next,
+      time: next.time || '09:00',
+      weekday: next.frequency === 'weekly' ? (next.weekday || 'monday') : null,
+    };
+    setBriefingSchedule(normalized);
+    setBriefingScheduleError(null);
+    try {
+      if (!settings.timezone) {
+        await setSetting('timezone', timezone || getBrowserTimeZone());
+      }
+      const status = await getTransport().invoke<BriefingScheduleStatus>('set_briefing_schedule', {
+        frequency: normalized.frequency,
+        time: normalized.time,
+        weekday: normalized.weekday,
+      });
+      setBriefingSchedule(status.schedule);
+      setBriefingScheduleStatus(status);
+    } catch (e) {
+      setBriefingScheduleError(String(e));
+      toast.error('Failed to save briefing schedule', { description: String(e) });
+    }
+  }, [setSetting, settings.timezone, timezone]);
 
   // Create new API token
   const handleCreateToken = async () => {
@@ -794,6 +1440,28 @@ export function SettingsModal({ isOpen, onClose, initialTab }: SettingsModalProp
     }
   };
 
+  const handleCopyLocalUrl = async () => {
+    if (!localServerConfig) return;
+    try {
+      await copyToClipboard(localServerConfig.baseUrl);
+      setLocalUrlCopied(true);
+      setTimeout(() => setLocalUrlCopied(false), 2000);
+    } catch (e) {
+      console.error('Failed to copy local server URL:', e);
+    }
+  };
+
+  const handleCopyLocalToken = async () => {
+    if (!localServerConfig?.authToken) return;
+    try {
+      await copyToClipboard(localServerConfig.authToken);
+      setLocalTokenCopied(true);
+      setTimeout(() => setLocalTokenCopied(false), 2000);
+    } catch (e) {
+      console.error('Failed to copy local API token:', e);
+    }
+  };
+
   useEffect(() => {
     if (isOpen) {
       // Load saved server config, defaulting to current origin
@@ -809,6 +1477,7 @@ export function SettingsModal({ isOpen, onClose, initialTab }: SettingsModalProp
       const transport = getTransport();
       if (transport.isConnected()) {
         fetchSettings();
+        loadBriefingSchedule();
         // Fetch OpenRouter models
         setIsLoadingModels(true);
         getAvailableLlmModels()
@@ -830,13 +1499,19 @@ export function SettingsModal({ isOpen, onClose, initialTab }: SettingsModalProp
       setShowTokenSection(false);
       setConfirmRevokeId(null);
     }
-  }, [isOpen, fetchSettings, loadApiTokens]);
+  }, [isOpen, fetchSettings, loadApiTokens, loadBriefingSchedule]);
 
-  // Load feeds when feeds tab is active
   useEffect(() => {
-    if (isOpen && activeTab === 'feeds' && getTransport().isConnected()) {
+    if (isOpen && activeDatabaseId) {
+      loadBriefingSchedule();
+    }
+  }, [isOpen, activeDatabaseId, loadBriefingSchedule]);
+
+  // Load feeds when integrations tab is active.
+  useEffect(() => {
+    if (isOpen && activeTab === 'integrations' && getTransport().isConnected()) {
       loadFeeds();
-      // Reset ingest state when switching to feeds tab
+      // Reset ingest state when switching to integrations tab
       setIngestResult(null);
       setIngestError(null);
       setPollResult(null);
@@ -849,6 +1524,7 @@ export function SettingsModal({ isOpen, onClose, initialTab }: SettingsModalProp
     const p = settings.provider as 'openrouter' | 'ollama' | 'openai_compat' | undefined;
     setTheme((settings.theme as Theme) || 'obsidian');
     setFont((settings.font as Font) || 'ibm-plex-sans');
+    setTimezone(settings.timezone || getBrowserTimeZone());
     setProvider(p || 'openrouter');
     setApiKey(settings.openrouter_api_key || '');
     setOpenrouterContextLength(settings.openrouter_context_length || '');
@@ -859,6 +1535,9 @@ export function SettingsModal({ isOpen, onClose, initialTab }: SettingsModalProp
     setWikiStrategy(settings.wiki_strategy || 'centroid');
     setWikiGenerationPrompt(settings.wiki_generation_prompt || '');
     setWikiUpdatePrompt(settings.wiki_update_prompt || '');
+    setBriefingPrompt(settings.briefing_prompt || '');
+    setChatPrompt(settings.chat_prompt || '');
+    setTaggingPrompt(settings.tagging_prompt || '');
     setChatModel(settings.chat_model || 'anthropic/claude-sonnet-4.6');
     setOllamaHost(settings.ollama_host || 'http://127.0.0.1:11434');
     setOllamaEmbeddingModel(settings.ollama_embedding_model || 'nomic-embed-text');
@@ -885,6 +1564,7 @@ export function SettingsModal({ isOpen, onClose, initialTab }: SettingsModalProp
   useEffect(() => {
     const handleEscape = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
+        if (document.querySelector('[data-modal="true"]')) return;
         onClose();
       }
     };
@@ -1150,42 +1830,60 @@ export function SettingsModal({ isOpen, onClose, initialTab }: SettingsModalProp
       onClick={handleOverlayClick}
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm safe-area-padding"
     >
-      <div className="relative bg-[var(--color-bg-panel)] rounded-lg shadow-xl border border-[var(--color-border)] w-full max-w-2xl mx-4 h-[80vh] flex flex-col animate-in fade-in zoom-in-95 duration-200">
+      <div className="relative bg-[var(--color-bg-panel)] rounded-lg shadow-xl border border-[var(--color-border)] w-[min(1120px,calc(100vw-2rem))] h-[84vh] flex flex-col animate-in fade-in zoom-in-95 duration-200">
         {/* Header */}
-        <div className="px-6 py-4 border-b border-[var(--color-border)]">
-          <div className="flex items-center justify-between">
-            <div>
-              <h2 className="text-lg font-semibold text-[var(--color-text-primary)]">
-                Settings
-              </h2>
-            </div>
-            <button
-              onClick={onClose}
-              className="text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] transition-colors"
-            >
-              <X className="w-5 h-5" strokeWidth={2} />
-            </button>
-          </div>
+        <div className="px-5 py-3 border-b border-[var(--color-border)] flex items-center justify-between">
+          <h2 className="text-base font-semibold text-[var(--color-text-primary)]">
+            Settings
+          </h2>
+          <button
+            onClick={onClose}
+            className="p-1.5 text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-hover)] rounded transition-colors"
+            title="Close"
+          >
+            <X className="w-5 h-5" strokeWidth={2} />
+          </button>
+        </div>
 
-          <div className="flex gap-1 mt-4 -mb-4 px-0 overflow-x-auto">
+        <div className="flex min-h-0 flex-1 flex-col md:flex-row">
+          <nav className="md:hidden border-b border-[var(--color-border)] bg-[var(--color-bg-main)]/35 overflow-x-auto">
+            <div className="flex gap-1 p-2 min-w-max">
               {SETTINGS_TABS.map((tab) => (
                 <button
                   key={tab.id}
                   onClick={() => setActiveTab(tab.id)}
-                  className={`px-3 py-2 text-sm font-medium rounded-t-md transition-colors whitespace-nowrap flex-shrink-0 ${
+                  className={`px-3 py-2 text-sm rounded-md transition-colors whitespace-nowrap ${
                     activeTab === tab.id
-                      ? 'bg-[var(--color-bg-main)] text-[var(--color-text-primary)] border border-b-0 border-[var(--color-border)]'
-                      : 'text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-hover)]'
+                      ? 'bg-[var(--color-bg-hover)] text-[var(--color-text-primary)]'
+                      : 'text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-hover)]/70'
                   }`}
                 >
                   {tab.label}
                 </button>
               ))}
             </div>
-        </div>
+          </nav>
 
-        {/* Content */}
-        <div className="px-6 py-4 space-y-6 overflow-y-auto flex-1">
+          <nav className="hidden md:block w-48 flex-shrink-0 border-r border-[var(--color-border)] bg-[var(--color-bg-main)]/35 p-2 overflow-y-auto">
+            <div className="space-y-1">
+              {SETTINGS_TABS.map((tab) => (
+                <button
+                  key={tab.id}
+                  onClick={() => setActiveTab(tab.id)}
+                  className={`w-full px-3 py-2 text-left text-sm rounded-md transition-colors ${
+                    activeTab === tab.id
+                      ? 'bg-[var(--color-bg-hover)] text-[var(--color-text-primary)]'
+                      : 'text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-hover)]/70'
+                  }`}
+                >
+                  {tab.label}
+                </button>
+              ))}
+            </div>
+          </nav>
+
+          {/* Content */}
+          <div className="px-4 py-4 md:px-6 md:py-5 space-y-6 overflow-y-auto flex-1 min-w-0">
               {/* ===== GENERAL TAB ===== */}
               {activeTab === 'general' && (
                 <>
@@ -1213,31 +1911,112 @@ export function SettingsModal({ isOpen, onClose, initialTab }: SettingsModalProp
                     />
                   </div>
 
-                  {/* Auto-tagging Toggle Section */}
-                  <div className="flex items-center justify-between">
+                  {/* Time Zone */}
+                  <div className="space-y-2">
+                    <label className="block text-sm font-medium text-[var(--color-text-primary)]">
+                      Time Zone
+                    </label>
+                    <input
+                      type="text"
+                      list="settings-timezones"
+                      value={timezone}
+                      onChange={(e) => setTimezone(e.target.value)}
+                      onBlur={() => autoSave('timezone', timezone || getBrowserTimeZone())}
+                      className="w-full px-3 py-2 rounded-md bg-[var(--color-bg-card)] border border-[var(--color-border)] text-sm text-[var(--color-text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)] focus:border-transparent"
+                    />
+                    <datalist id="settings-timezones">
+                      {supportedTimeZones.map((tz) => (
+                        <option key={tz} value={tz} />
+                      ))}
+                    </datalist>
+                  </div>
+
+                  {/* Briefing Schedule */}
+                  <div className="space-y-3 pt-4 border-t border-[var(--color-border)]">
                     <div className="space-y-1">
                       <label className="block text-sm font-medium text-[var(--color-text-primary)]">
-                        Automatic Tag Extraction
+                        Briefing Schedule
                       </label>
                       <p className="text-xs text-[var(--color-text-secondary)]">
-                        Automatically suggest tags when creating atoms
+                        {databaseCount > 1
+                          ? `Schedule for ${activeDatabaseName || 'the active database'}.`
+                          : 'Generate briefings on a per-database schedule.'}
                       </p>
                     </div>
-                    <button
-                      type="button"
-                      role="switch"
-                      aria-checked={autoTaggingEnabled}
-                      onClick={() => { const next = !autoTaggingEnabled; setAutoTaggingEnabled(next); autoSave('auto_tagging_enabled', next ? 'true' : 'false'); }}
-                      className={`relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)] focus:ring-offset-2 focus:ring-offset-[var(--color-bg-panel)] ${
-                        autoTaggingEnabled ? 'bg-[var(--color-accent)]' : 'bg-[var(--color-bg-hover)]'
-                      }`}
-                    >
-                      <span
-                        className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
-                          autoTaggingEnabled ? 'translate-x-5' : 'translate-x-0'
-                        }`}
-                      />
-                    </button>
+
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <div className="space-y-1">
+                        <label className="block text-xs font-medium text-[var(--color-text-secondary)]">
+                          Frequency
+                        </label>
+                        <CustomSelect
+                          value={briefingSchedule.frequency}
+                          onChange={(value) => {
+                            const frequency = value as BriefingFrequency;
+                            saveBriefingSchedule({
+                              ...briefingSchedule,
+                              frequency,
+                              weekday: frequency === 'weekly' ? (briefingSchedule.weekday || 'monday') : null,
+                            });
+                          }}
+                          options={BRIEFING_FREQUENCY_OPTIONS}
+                        />
+                      </div>
+
+                      {briefingSchedule.frequency === 'weekly' && (
+                        <div className="space-y-1">
+                          <label className="block text-xs font-medium text-[var(--color-text-secondary)]">
+                            Day
+                          </label>
+                          <CustomSelect
+                            value={briefingSchedule.weekday || 'monday'}
+                            onChange={(value) => {
+                              saveBriefingSchedule({
+                                ...briefingSchedule,
+                                weekday: value as BriefingWeekday,
+                              });
+                            }}
+                            options={BRIEFING_WEEKDAY_OPTIONS}
+                          />
+                        </div>
+                      )}
+
+                      {briefingSchedule.frequency !== 'off' && (
+                        <div className="space-y-1">
+                          <label className="block text-xs font-medium text-[var(--color-text-secondary)]">
+                            Time
+                          </label>
+                          <CustomSelect
+                            value={briefingSchedule.time}
+                            onChange={(value) => {
+                              saveBriefingSchedule({ ...briefingSchedule, time: value });
+                            }}
+                            options={BRIEFING_TIME_OPTIONS}
+                          />
+                        </div>
+                      )}
+                    </div>
+
+                    {(() => {
+                      const scheduleTimeZone = briefingScheduleStatus?.timezone || timezone;
+                      const nextRun = formatBriefingRunAt(
+                        briefingScheduleStatus?.next_run_at,
+                        scheduleTimeZone,
+                      );
+                      return (
+                        <div className="min-h-5 text-xs text-[var(--color-text-secondary)]">
+                          {isLoadingBriefingSchedule ? (
+                            <span>Loading schedule...</span>
+                          ) : briefingScheduleError ? (
+                            <span className="text-red-400">{briefingScheduleError}</span>
+                          ) : nextRun ? (
+                            <span>Next briefing: {nextRun} ({scheduleTimeZone})</span>
+                          ) : (
+                            <span>Saved separately for each database.</span>
+                          )}
+                        </div>
+                      );
+                    })()}
                   </div>
 
                   {/* Troubleshooting */}
@@ -1312,6 +2091,7 @@ export function SettingsModal({ isOpen, onClose, initialTab }: SettingsModalProp
                         {testError || 'Connection failed'}
                       </div>
                     )}
+                    <OverrideControls settingKey="provider" />
                   </div>
 
                   {/* OpenRouter Settings */}
@@ -1371,6 +2151,7 @@ export function SettingsModal({ isOpen, onClose, initialTab }: SettingsModalProp
                             }))}
                             placeholder="Select embedding model..."
                           />
+                          <OverrideControls settingKey="embedding_model" />
                         </div>
 
                         {/* Tagging Model */}
@@ -1388,6 +2169,7 @@ export function SettingsModal({ isOpen, onClose, initialTab }: SettingsModalProp
                             isLoading={isLoadingModels}
                             placeholder="Select tagging model..."
                           />
+                          <OverrideControls settingKey="tagging_model" />
                         </div>
 
                         {/* Wiki Model */}
@@ -1405,6 +2187,7 @@ export function SettingsModal({ isOpen, onClose, initialTab }: SettingsModalProp
                             isLoading={isLoadingModels}
                             placeholder="Select wiki model..."
                           />
+                          <OverrideControls settingKey="wiki_model" />
                         </div>
 
                         {/* Wiki Strategy */}
@@ -1423,58 +2206,7 @@ export function SettingsModal({ isOpen, onClose, initialTab }: SettingsModalProp
                               { value: 'agentic', label: 'Agentic — AI agent searches and curates sources' },
                             ]}
                           />
-                        </div>
-
-                        {/* Wiki Generation Prompt */}
-                        <div className="space-y-1">
-                          <label className="block text-sm font-medium text-[var(--color-text-primary)]">
-                            Wiki Generation Prompt
-                          </label>
-                          <p className="text-xs text-[var(--color-text-secondary)]">
-                            System prompt for generating new wiki articles. Leave empty to use the default.
-                          </p>
-                          <textarea
-                            value={wikiGenerationPrompt}
-                            onChange={(e) => setWikiGenerationPrompt(e.target.value)}
-                            onBlur={() => autoSave('wiki_generation_prompt', wikiGenerationPrompt)}
-                            placeholder={"You are synthesizing a wiki article based on the user's personal knowledge base. Write a well-structured, informative article that summarizes what is known about the topic.\n\nGuidelines:\n- Use markdown formatting with ## for main sections and ### for subsections\n- Every factual claim MUST have a citation using [N] notation\n- Place citations immediately after the relevant statement\n- If sources contain contradictions, note them\n- Structure logically: overview first, then thematic sections\n- Keep tone informative and neutral\n- Do not invent information not present in the sources\n- When mentioning topics that have their own articles in the knowledge base, use [[Topic Name]] wiki-link notation to cross-reference them\n- Only use [[wiki links]] for topics listed in the EXISTING WIKI ARTICLES section provided\n- Do not force wiki links where they don't fit naturally"}
-                            rows={8}
-                            className="w-full px-3 py-2 rounded-md bg-[var(--color-bg-main)] border border-[var(--color-border)] text-sm text-[var(--color-text-primary)] font-mono resize-y placeholder:text-[var(--color-text-secondary)]/40"
-                          />
-                          {wikiGenerationPrompt && (
-                            <button
-                              onClick={() => { setWikiGenerationPrompt(''); autoSave('wiki_generation_prompt', ''); }}
-                              className="text-xs text-[var(--color-accent)] hover:underline"
-                            >
-                              Reset to default
-                            </button>
-                          )}
-                        </div>
-
-                        {/* Wiki Update Prompt */}
-                        <div className="space-y-1">
-                          <label className="block text-sm font-medium text-[var(--color-text-primary)]">
-                            Wiki Update Prompt
-                          </label>
-                          <p className="text-xs text-[var(--color-text-secondary)]">
-                            Custom instructions prepended to the update prompt. Use this to control tone, style, or focus. Leave empty to use the default.
-                          </p>
-                          <textarea
-                            value={wikiUpdatePrompt}
-                            onChange={(e) => setWikiUpdatePrompt(e.target.value)}
-                            onBlur={() => autoSave('wiki_update_prompt', wikiUpdatePrompt)}
-                            placeholder={"e.g. Write in a casual, conversational tone. Focus on practical implications rather than theory."}
-                            rows={4}
-                            className="w-full px-3 py-2 rounded-md bg-[var(--color-bg-main)] border border-[var(--color-border)] text-sm text-[var(--color-text-primary)] font-mono resize-y placeholder:text-[var(--color-text-secondary)]/40"
-                          />
-                          {wikiUpdatePrompt && (
-                            <button
-                              onClick={() => { setWikiUpdatePrompt(''); autoSave('wiki_update_prompt', ''); }}
-                              className="text-xs text-[var(--color-accent)] hover:underline"
-                            >
-                              Reset to default
-                            </button>
-                          )}
+                          <OverrideControls settingKey="wiki_strategy" />
                         </div>
 
                         {/* Chat Model */}
@@ -1492,6 +2224,7 @@ export function SettingsModal({ isOpen, onClose, initialTab }: SettingsModalProp
                             isLoading={isLoadingModels}
                             placeholder="Select chat model..."
                           />
+                          <OverrideControls settingKey="chat_model" />
                         </div>
 
                         {/* Context Length */}
@@ -1516,6 +2249,7 @@ export function SettingsModal({ isOpen, onClose, initialTab }: SettingsModalProp
                               { value: '1000000', label: '1M' },
                             ]}
                           />
+                          <OverrideControls settingKey="openrouter_context_length" />
                         </div>
                       </div>
                     </>
@@ -1565,6 +2299,7 @@ export function SettingsModal({ isOpen, onClose, initialTab }: SettingsModalProp
                                 No embedding models found. Run: ollama pull nomic-embed-text
                               </div>
                             )}
+                            <OverrideControls settingKey="ollama_embedding_model" />
                           </div>
 
                           {/* Ollama LLM Model */}
@@ -1588,6 +2323,7 @@ export function SettingsModal({ isOpen, onClose, initialTab }: SettingsModalProp
                                 No LLM models found. Run: ollama pull llama3.2
                               </div>
                             )}
+                            <OverrideControls settingKey="ollama_llm_model" />
                           </div>
 
                           {/* Context Length */}
@@ -1613,6 +2349,7 @@ export function SettingsModal({ isOpen, onClose, initialTab }: SettingsModalProp
                                 { value: '1000000', label: '1M' },
                               ]}
                             />
+                            <OverrideControls settingKey="ollama_context_length" />
                           </div>
 
                           {/* Timeout */}
@@ -1635,6 +2372,7 @@ export function SettingsModal({ isOpen, onClose, initialTab }: SettingsModalProp
                                 { value: '600', label: '10 minutes' },
                               ]}
                             />
+                            <OverrideControls settingKey="ollama_timeout_secs" />
                           </div>
                         </div>
                       )}
@@ -1755,6 +2493,7 @@ export function SettingsModal({ isOpen, onClose, initialTab }: SettingsModalProp
                             placeholder="text-embedding-3-small"
                             className="w-full px-3 py-2 bg-[var(--color-bg-card)] border border-[var(--color-border)] rounded-md text-[var(--color-text-primary)] placeholder-[var(--color-text-secondary)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)] focus:border-transparent transition-colors duration-150"
                           />
+                          <OverrideControls settingKey="openai_compat_embedding_model" />
                         </div>
 
                         {/* Embedding Dimension */}
@@ -1777,6 +2516,7 @@ export function SettingsModal({ isOpen, onClose, initialTab }: SettingsModalProp
                             placeholder="1536"
                             className="w-full px-3 py-2 bg-[var(--color-bg-card)] border border-[var(--color-border)] rounded-md text-[var(--color-text-primary)] placeholder-[var(--color-text-secondary)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)] focus:border-transparent transition-colors duration-150"
                           />
+                          <OverrideControls settingKey="openai_compat_embedding_dimension" />
                         </div>
 
                         {/* LLM Model */}
@@ -1795,6 +2535,7 @@ export function SettingsModal({ isOpen, onClose, initialTab }: SettingsModalProp
                             placeholder="meta-llama/Llama-3.1-8B-Instruct"
                             className="w-full px-3 py-2 bg-[var(--color-bg-card)] border border-[var(--color-border)] rounded-md text-[var(--color-text-primary)] placeholder-[var(--color-text-secondary)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)] focus:border-transparent transition-colors duration-150"
                           />
+                          <OverrideControls settingKey="openai_compat_llm_model" />
                         </div>
 
                         {/* Context Length */}
@@ -1820,6 +2561,7 @@ export function SettingsModal({ isOpen, onClose, initialTab }: SettingsModalProp
                               { value: '1000000', label: '1M' },
                             ]}
                           />
+                          <OverrideControls settingKey="openai_compat_context_length" />
                         </div>
 
                         {/* Timeout */}
@@ -1842,89 +2584,192 @@ export function SettingsModal({ isOpen, onClose, initialTab }: SettingsModalProp
                               { value: '600', label: '10 minutes' },
                             ]}
                           />
+                          <OverrideControls settingKey="openai_compat_timeout_secs" />
                         </div>
                       </div>
                     </>
                   )}
-                  {/* Re-embed All Section */}
-                  <div className="space-y-3 pt-4 border-t border-[var(--color-border)]">
-                    <div className="space-y-1">
-                      <label className="block text-sm font-medium text-[var(--color-text-primary)]">
-                        Re-embed All Atoms
-                      </label>
-                      <p className="text-xs text-[var(--color-text-secondary)]">
-                        Regenerate embeddings for every atom in the current database. Useful after changing providers or if embeddings were interrupted.
-                      </p>
-                    </div>
-
-                    {!showReembedConfirm ? (
-                      <Button
-                        variant="secondary"
-                        onClick={() => { setShowReembedConfirm(true); setReembedResult(null); setReembedError(null); }}
-                        disabled={reembedding}
-                      >
-                        Re-embed All Atoms
-                      </Button>
-                    ) : (
-                      <div className="p-3 bg-yellow-500/10 border border-yellow-500/30 rounded-md space-y-3">
-                        <p className="text-sm text-yellow-200">
-                          This will re-embed <strong>all</strong> atoms in the current database. This is a bulk operation that may take a while depending on how many atoms you have and your provider's rate limits.
-                        </p>
-                        <div className="flex gap-2">
-                          <Button
-                            onClick={async () => {
-                              setReembedding(true);
-                              setShowReembedConfirm(false);
-                              setReembedResult(null);
-                              setReembedError(null);
-                              try {
-                                const count = await reembedAllAtoms();
-                                setReembedResult(count);
-                              } catch (e) {
-                                setReembedError(String(e));
-                              } finally {
-                                setReembedding(false);
-                              }
-                            }}
-                            disabled={reembedding}
-                          >
-                            {reembedding ? (
-                              <>
-                                <Loader2 className="w-4 h-4 animate-spin mr-1" strokeWidth={2} />
-                                Starting...
-                              </>
-                            ) : 'Confirm Re-embed'}
-                          </Button>
-                          <Button
-                            variant="secondary"
-                            onClick={() => setShowReembedConfirm(false)}
-                          >
-                            Cancel
-                          </Button>
-                        </div>
-                      </div>
-                    )}
-
-                    {reembedResult !== null && (
-                      <div className="p-3 bg-green-500/10 border border-green-500/30 rounded-md text-sm">
-                        <div className="text-green-400 font-medium">Queued {reembedResult} atoms for re-embedding</div>
-                        <div className="text-[var(--color-text-secondary)]">Embeddings are being generated in the background.</div>
-                      </div>
-                    )}
-
-                    {reembedError && (
-                      <div className="p-3 bg-red-500/10 border border-red-500/30 rounded-md text-sm">
-                        <div className="text-red-400 font-medium">Re-embedding failed</div>
-                        <div className="text-[var(--color-text-secondary)]">{reembedError}</div>
-                      </div>
-                    )}
-                  </div>
                 </>
               )}
 
+
+              {/* ===== PROMPTS TAB ===== */}
+              {activeTab === 'prompts' && (
+                <div className="space-y-6">
+
+                  {/* Wiki Generation Prompt */}
+                  <div className="space-y-1">
+                    <label className="block text-sm font-medium text-[var(--color-text-primary)]">
+                      Wiki Generation Prompt
+                    </label>
+                    <p className="text-xs text-[var(--color-text-secondary)]">
+                      System prompt for generating new wiki articles. Leave empty to use the default.
+                    </p>
+                    <textarea
+                      value={wikiGenerationPrompt}
+                      onChange={(e) => setWikiGenerationPrompt(e.target.value)}
+                      onBlur={() => autoSave('wiki_generation_prompt', wikiGenerationPrompt)}
+                      placeholder={"You are synthesizing a wiki article based on the user's personal knowledge base. Write a well-structured, informative article that summarizes what is known about the topic.\n\nGuidelines:\n- Use markdown formatting with ## for main sections and ### for subsections\n- Every factual claim MUST have a citation using [N] notation\n- Place citations immediately after the relevant statement\n- If sources contain contradictions, note them\n- Structure logically: overview first, then thematic sections\n- Keep tone informative and neutral\n- Do not invent information not present in the sources\n- When mentioning topics that have their own articles in the knowledge base, use [[Topic Name]] wiki-link notation to cross-reference them\n- Only use [[wiki links]] for topics listed in the EXISTING WIKI ARTICLES section provided\n- Do not force wiki links where they don't fit naturally"}
+                      rows={8}
+                      className="w-full px-3 py-2 rounded-md bg-[var(--color-bg-main)] border border-[var(--color-border)] text-sm text-[var(--color-text-primary)] font-mono resize-y placeholder:text-[var(--color-text-secondary)]/40"
+                    />
+                    {wikiGenerationPrompt && (
+                      <button
+                        onClick={() => { setWikiGenerationPrompt(''); autoSave('wiki_generation_prompt', ''); }}
+                        className="text-xs text-[var(--color-accent)] hover:underline"
+                      >
+                        Reset to default
+                      </button>
+                    )}
+                    <OverrideControls settingKey="wiki_generation_prompt" />
+                  </div>
+
+                  {/* Wiki Update Prompt */}
+                  <div className="space-y-1">
+                    <label className="block text-sm font-medium text-[var(--color-text-primary)]">
+                      Wiki Update Prompt
+                    </label>
+                    <p className="text-xs text-[var(--color-text-secondary)]">
+                      Custom instructions prepended to the update prompt. Controls tone, style, or focus. Leave empty to use the default.
+                    </p>
+                    <textarea
+                      value={wikiUpdatePrompt}
+                      onChange={(e) => setWikiUpdatePrompt(e.target.value)}
+                      onBlur={() => autoSave('wiki_update_prompt', wikiUpdatePrompt)}
+                      placeholder={"e.g. Write in a casual, conversational tone. Focus on practical implications rather than theory."}
+                      rows={4}
+                      className="w-full px-3 py-2 rounded-md bg-[var(--color-bg-main)] border border-[var(--color-border)] text-sm text-[var(--color-text-primary)] font-mono resize-y placeholder:text-[var(--color-text-secondary)]/40"
+                    />
+                    {wikiUpdatePrompt && (
+                      <button
+                        onClick={() => { setWikiUpdatePrompt(''); autoSave('wiki_update_prompt', ''); }}
+                        className="text-xs text-[var(--color-accent)] hover:underline"
+                      >
+                        Reset to default
+                      </button>
+                    )}
+                    <OverrideControls settingKey="wiki_update_prompt" />
+                  </div>
+
+                  {/* Briefing Prompt */}
+                  <div className="space-y-1">
+                    <label className="block text-sm font-medium text-[var(--color-text-primary)]">
+                      Briefing Prompt
+                    </label>
+                    <p className="text-xs text-[var(--color-text-secondary)]">
+                      System prompt for daily briefing generation. Leave empty to use the default.
+                    </p>
+                    <textarea
+                      value={briefingPrompt}
+                      onChange={(e) => setBriefingPrompt(e.target.value)}
+                      onBlur={() => autoSave('briefing_prompt', briefingPrompt)}
+                      placeholder={"You are writing a short daily briefing of newly captured notes for a personal knowledge base.\n\nGuidelines:\n- Keep the briefing to 2-3 short paragraphs. Do not write a long digest.\n- Write in the user's voice: concise, direct, mildly analytical, no filler.\n- Use [N] inline citation markers to cite specific new atoms."}
+                      rows={6}
+                      className="w-full px-3 py-2 rounded-md bg-[var(--color-bg-main)] border border-[var(--color-border)] text-sm text-[var(--color-text-primary)] font-mono resize-y placeholder:text-[var(--color-text-secondary)]/40"
+                    />
+                    {briefingPrompt && (
+                      <button
+                        onClick={() => { setBriefingPrompt(''); autoSave('briefing_prompt', ''); }}
+                        className="text-xs text-[var(--color-accent)] hover:underline"
+                      >
+                        Reset to default
+                      </button>
+                    )}
+                    <OverrideControls settingKey="briefing_prompt" />
+                  </div>
+
+                  {/* Chat Prompt */}
+                  <div className="space-y-1">
+                    <label className="block text-sm font-medium text-[var(--color-text-primary)]">
+                      Chat Prompt
+                    </label>
+                    <p className="text-xs text-[var(--color-text-secondary)]">
+                      Prepended to the chat assistant system prompt. Leave empty to use the default.
+                    </p>
+                    <textarea
+                      value={chatPrompt}
+                      onChange={(e) => setChatPrompt(e.target.value)}
+                      onBlur={() => autoSave('chat_prompt', chatPrompt)}
+                      placeholder={"You are a helpful AI assistant with access to the user's personal knowledge base.\n\nGuidelines:\n- Use search_atoms to find relevant information before answering\n- Cite sources using [N] notation\n- Be honest if you cannot find information\n- Keep responses concise but informative"}
+                      rows={6}
+                      className="w-full px-3 py-2 rounded-md bg-[var(--color-bg-main)] border border-[var(--color-border)] text-sm text-[var(--color-text-primary)] font-mono resize-y placeholder:text-[var(--color-text-secondary)]/40"
+                    />
+                    {chatPrompt && (
+                      <button
+                        onClick={() => { setChatPrompt(''); autoSave('chat_prompt', ''); }}
+                        className="text-xs text-[var(--color-accent)] hover:underline"
+                      >
+                        Reset to default
+                      </button>
+                    )}
+                    <OverrideControls settingKey="chat_prompt" />
+                  </div>
+
+                  {/* Tagging Prompt */}
+                  <div className="space-y-1">
+                    <label className="block text-sm font-medium text-[var(--color-text-primary)]">
+                      Tagging Prompt
+                    </label>
+                    <p className="text-xs text-[var(--color-text-secondary)]">
+                      System prompt for auto-tagging. Leave empty to use the default.
+                    </p>
+                    <textarea
+                      value={taggingPrompt}
+                      onChange={(e) => setTaggingPrompt(e.target.value)}
+                      onBlur={() => autoSave('tagging_prompt', taggingPrompt)}
+                      placeholder={"You are a knowledge management assistant that categorizes text with tags.\n\nGuidelines:\n- Each tag MUST have a parent_name set to one of the existing top-level categories\n- Prefer broad tags rather than overly specific ones\n- If none of the categories feel like a natural fit, return an empty tag list"}
+                      rows={4}
+                      className="w-full px-3 py-2 rounded-md bg-[var(--color-bg-main)] border border-[var(--color-border)] text-sm text-[var(--color-text-primary)] font-mono resize-y placeholder:text-[var(--color-text-secondary)]/40"
+                    />
+                    {taggingPrompt && (
+                      <button
+                        onClick={() => { setTaggingPrompt(''); autoSave('tagging_prompt', ''); }}
+                        className="text-xs text-[var(--color-accent)] hover:underline"
+                      >
+                        Reset to default
+                      </button>
+                    )}
+                    <OverrideControls settingKey="tagging_prompt" />
+                  </div>
+
+                </div>
+              )}
               {/* ===== TAG CATEGORIES TAB ===== */}
               {activeTab === 'tag-categories' && (
-                <TagCategoriesTab />
+                <>
+                  {/* Auto-tagging master toggle — gates everything below;
+                      tag categories only matter when this is on. */}
+                  <div className="space-y-1">
+                    <div className="flex items-center justify-between">
+                      <div className="space-y-1">
+                        <label className="block text-sm font-medium text-[var(--color-text-primary)]">
+                          Automatic Tag Extraction
+                        </label>
+                        <p className="text-xs text-[var(--color-text-secondary)]">
+                          Automatically suggest tags when creating atoms
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        role="switch"
+                        aria-checked={autoTaggingEnabled}
+                        onClick={() => { const next = !autoTaggingEnabled; setAutoTaggingEnabled(next); autoSave('auto_tagging_enabled', next ? 'true' : 'false'); }}
+                        className={`relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)] focus:ring-offset-2 focus:ring-offset-[var(--color-bg-panel)] ${
+                          autoTaggingEnabled ? 'bg-[var(--color-accent)]' : 'bg-[var(--color-bg-hover)]'
+                        }`}
+                      >
+                        <span
+                          className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
+                            autoTaggingEnabled ? 'translate-x-5' : 'translate-x-0'
+                          }`}
+                        />
+                      </button>
+                    </div>
+                    <OverrideControls settingKey="auto_tagging_enabled" />
+                  </div>
+
+                  <TagCategoriesTab />
+                </>
               )}
 
               {/* ===== CONNECTION TAB ===== */}
@@ -1947,40 +2792,78 @@ export function SettingsModal({ isOpen, onClose, initialTab }: SettingsModalProp
                           {showChangeServer ? 'Cancel' : 'Connect to Custom Server'}
                         </Button>
                       </div>
+                      {localServerConfig && (
+                        <div className="space-y-2 pt-2">
+                          <div className="space-y-1">
+                            <label className="block text-xs font-medium text-[var(--color-text-secondary)]">
+                              Local Server URL
+                            </label>
+                            <div className="flex gap-2">
+                              <code className="flex-1 px-3 py-2 bg-[var(--color-bg-main)] border border-[var(--color-border)] rounded-md text-xs text-[var(--color-text-primary)] truncate">
+                                {localServerConfig.baseUrl}
+                              </code>
+                              <Button variant="secondary" size="sm" onClick={handleCopyLocalUrl}>
+                                {localUrlCopied ? 'Copied' : 'Copy'}
+                              </Button>
+                            </div>
+                          </div>
+                          <div className="space-y-1">
+                            <label className="block text-xs font-medium text-[var(--color-text-secondary)]">
+                              Local API Token
+                            </label>
+                            <div className="flex gap-2">
+                              <code className="flex-1 px-3 py-2 bg-[var(--color-bg-main)] border border-[var(--color-border)] rounded-md text-xs text-[var(--color-text-primary)] truncate">
+                                {localServerConfig.authToken ? `${localServerConfig.authToken.substring(0, 12)}...` : 'N/A'}
+                              </code>
+                              <Button
+                                variant="secondary"
+                                size="sm"
+                                onClick={handleCopyLocalToken}
+                                disabled={!localServerConfig.authToken}
+                              >
+                                {localTokenCopied ? 'Copied' : 'Copy'}
+                              </Button>
+                            </div>
+                          </div>
+                          <p className="text-xs text-[var(--color-text-secondary)]">
+                            Use these values for local integrations such as the Obsidian plugin.
+                          </p>
+                        </div>
+                      )}
                       {showChangeServer && (
-                      <div className="space-y-3 pt-2">
-                      <p className="text-xs text-[var(--color-text-secondary)]">
-                        Connect to a remote atomic-server instance
-                      </p>
-                      <input
-                        type="text"
-                        value={serverUrl}
-                        onChange={(e) => { setServerUrl(e.target.value); setServerTestResult(null); }}
-                        placeholder="http://localhost:8080"
-                        className="w-full px-3 py-2 bg-[var(--color-bg-card)] border border-[var(--color-border)] rounded-md text-[var(--color-text-primary)] placeholder-[var(--color-text-secondary)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)] focus:border-transparent transition-colors duration-150 text-sm"
-                      />
-                      <input
-                        type="password"
-                        value={serverToken}
-                        onChange={(e) => { setServerToken(e.target.value); setServerTestResult(null); }}
-                        placeholder="Auth token"
-                        className="w-full px-3 py-2 bg-[var(--color-bg-card)] border border-[var(--color-border)] rounded-md text-[var(--color-text-primary)] placeholder-[var(--color-text-secondary)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)] focus:border-transparent transition-colors duration-150 text-sm"
-                      />
-                      <div className="flex gap-2">
-                        <Button variant="secondary" onClick={handleTestServer} disabled={!serverUrl.trim() || !serverToken.trim() || isTestingServer}>
-                          {isTestingServer ? 'Testing...' : 'Test'}
-                        </Button>
-                        <Button onClick={handleConnectServer} disabled={serverTestResult !== 'success'}>
-                          Connect
-                        </Button>
-                      </div>
-                      {serverTestResult === 'success' && (
-                        <div className="text-sm text-green-500">Server reachable</div>
-                      )}
-                      {serverTestResult === 'error' && (
-                        <div className="text-sm text-red-500">{serverTestError}</div>
-                      )}
-                      </div>
+                        <div className="space-y-3 pt-2">
+                          <p className="text-xs text-[var(--color-text-secondary)]">
+                            Connect to a remote atomic-server instance
+                          </p>
+                          <input
+                            type="text"
+                            value={serverUrl}
+                            onChange={(e) => { setServerUrl(e.target.value); setServerTestResult(null); }}
+                            placeholder="http://localhost:8080"
+                            className="w-full px-3 py-2 bg-[var(--color-bg-card)] border border-[var(--color-border)] rounded-md text-[var(--color-text-primary)] placeholder-[var(--color-text-secondary)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)] focus:border-transparent transition-colors duration-150 text-sm"
+                          />
+                          <input
+                            type="password"
+                            value={serverToken}
+                            onChange={(e) => { setServerToken(e.target.value); setServerTestResult(null); }}
+                            placeholder="Auth token"
+                            className="w-full px-3 py-2 bg-[var(--color-bg-card)] border border-[var(--color-border)] rounded-md text-[var(--color-text-primary)] placeholder-[var(--color-text-secondary)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)] focus:border-transparent transition-colors duration-150 text-sm"
+                          />
+                          <div className="flex gap-2">
+                            <Button variant="secondary" onClick={handleTestServer} disabled={!serverUrl.trim() || !serverToken.trim() || isTestingServer}>
+                              {isTestingServer ? 'Testing...' : 'Test'}
+                            </Button>
+                            <Button onClick={handleConnectServer} disabled={serverTestResult !== 'success'}>
+                              Connect
+                            </Button>
+                          </div>
+                          {serverTestResult === 'success' && (
+                            <div className="text-sm text-green-500">Server reachable</div>
+                          )}
+                          {serverTestResult === 'error' && (
+                            <div className="text-sm text-red-500">{serverTestError}</div>
+                          )}
+                        </div>
                       )}
                     </div>
                   )}
@@ -2194,8 +3077,8 @@ export function SettingsModal({ isOpen, onClose, initialTab }: SettingsModalProp
                 </>
               )}
 
-              {/* ===== FEEDS TAB ===== */}
-              {activeTab === 'feeds' && (
+              {/* ===== INTEGRATIONS TAB ===== */}
+              {activeTab === 'integrations' && (
                 <>
                   {/* Ingest URL Section */}
                   <div className="space-y-3">
@@ -2377,12 +3260,7 @@ export function SettingsModal({ isOpen, onClose, initialTab }: SettingsModalProp
                       </Button>
                     </div>
                   </div>
-                </>
-              )}
 
-              {/* ===== INTEGRATIONS TAB ===== */}
-              {activeTab === 'integrations' && (
-                <>
                   {/* Shared import status (used by both Markdown and Apple Notes) */}
                   {(importResult || importError) && (
                     <div className="space-y-2">
@@ -2679,6 +3557,7 @@ export function SettingsModal({ isOpen, onClose, initialTab }: SettingsModalProp
               {activeTab === 'databases' && (
                 <DatabasesTab />
               )}
+          </div>
         </div>
 
         {saveError && (
@@ -2690,24 +3569,18 @@ export function SettingsModal({ isOpen, onClose, initialTab }: SettingsModalProp
           </div>
         )}
 
-        {/* Re-embedding confirmation dialog */}
-        {pendingEmbeddingChange && (
-          <div className="absolute inset-0 z-10 flex items-center justify-center bg-black/40 rounded-lg">
-            <div className="bg-[var(--color-bg-panel)] border border-[var(--color-border)] rounded-lg shadow-xl p-6 mx-8 max-w-sm space-y-4">
-              <div className="space-y-2">
-                <h3 className="text-sm font-semibold text-[var(--color-text-primary)]">Re-embed all atoms?</h3>
-                <p className="text-xs text-[var(--color-text-secondary)]">
-                  Changing the embedding model to <span className="font-medium text-[var(--color-text-primary)]">{pendingEmbeddingChange.label}</span> will
-                  re-embed all atoms. This may take a while and will use API credits.
-                </p>
-              </div>
-              <div className="flex justify-end gap-2">
-                <Button variant="secondary" onClick={cancelEmbeddingChange}>Cancel</Button>
-                <Button onClick={confirmEmbeddingChange}>Re-embed</Button>
-              </div>
-            </div>
-          </div>
-        )}
+        <Modal
+          isOpen={!!pendingEmbeddingChange}
+          onClose={cancelEmbeddingChange}
+          title="Re-embed all atoms?"
+          confirmLabel="Re-embed"
+          onConfirm={confirmEmbeddingChange}
+        >
+          <p className="text-sm text-[var(--color-text-secondary)]">
+            Changing the embedding model to <span className="font-medium text-[var(--color-text-primary)]">{pendingEmbeddingChange?.label}</span> will
+            re-embed all atoms. This may take a while and will use API credits.
+          </p>
+        </Modal>
       </div>
     </div>,
     document.body

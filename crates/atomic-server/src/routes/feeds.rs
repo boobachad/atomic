@@ -26,7 +26,11 @@ pub async fn create_feed(
     let on_ingest = ingestion_event_callback(state.event_tx.clone());
     let on_embed = embedding_event_callback(state.event_tx.clone());
 
-    match db.0.create_feed(body.into_inner(), on_ingest, on_embed).await {
+    match db
+        .0
+        .create_feed(body.into_inner(), on_ingest, on_embed)
+        .await
+    {
         Ok(feed) => HttpResponse::Created().json(feed),
         Err(e) => crate::error::error_response(e),
     }
@@ -52,7 +56,11 @@ pub async fn delete_feed(db: Db, path: web::Path<String>) -> HttpResponse {
 }
 
 #[utoipa::path(post, path = "/api/feeds/{id}/poll", params(("id" = String, Path, description = "Feed ID")), responses((status = 200, description = "Poll results")), tag = "feeds")]
-pub async fn poll_feed(state: web::Data<AppState>, db: Db, path: web::Path<String>) -> HttpResponse {
+pub async fn poll_feed(
+    state: web::Data<AppState>,
+    db: Db,
+    path: web::Path<String>,
+) -> HttpResponse {
     let feed_id = path.into_inner();
     let on_ingest = ingestion_event_callback(state.event_tx.clone());
     let on_embed = embedding_event_callback(state.event_tx.clone());

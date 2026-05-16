@@ -9,6 +9,7 @@ export interface Tag {
   parent_id: string | null;
   created_at: string;
   is_autotag_target: boolean;
+  autotag_description: string;
 }
 
 export interface TagWithCount extends Tag {
@@ -43,6 +44,7 @@ interface TagsStore {
   updateTag: (id: string, name: string, parentId?: string) => Promise<Tag>;
   deleteTag: (id: string, recursive?: boolean) => Promise<void>;
   setTagAutotagTarget: (id: string, value: boolean) => Promise<void>;
+  setTagAutotagDescription: (id: string, description: string) => Promise<void>;
   configureAutotagTargets: (keepDefaults: string[], addCustom: string[]) => Promise<Tag[]>;
   compactTags: () => Promise<CompactionResult>;
   clearError: () => void;
@@ -219,6 +221,18 @@ export const useTagsStore = create<TagsStore>((set, get) => ({
     set({ error: null });
     try {
       await getTransport().invoke('set_tag_autotag_target', { id, value });
+      const tags = await fetchAllTagsFresh();
+      set({ tags });
+    } catch (error) {
+      set({ error: String(error) });
+      throw error;
+    }
+  },
+
+  setTagAutotagDescription: async (id: string, description: string) => {
+    set({ error: null });
+    try {
+      await getTransport().invoke('set_tag_autotag_description', { id, description });
       const tags = await fetchAllTagsFresh();
       set({ tags });
     } catch (error) {

@@ -7,6 +7,7 @@ pub mod auth;
 mod db_extractor;
 pub mod error;
 pub mod event_bridge;
+pub mod export_jobs;
 pub mod log_buffer;
 pub mod mcp;
 pub mod mcp_auth;
@@ -29,9 +30,13 @@ pub use utoipa_scalar::{Scalar, Servable};
         // Atoms
         routes::atoms::get_atoms,
         routes::atoms::get_atom,
+        routes::atoms::get_atom_links,
+        routes::atoms::get_atom_link_suggestions,
+        routes::atoms::get_atom_by_source_url,
         routes::atoms::create_atom,
         routes::atoms::update_atom,
         routes::atoms::update_atom_content_only,
+        routes::atoms::process_atom_pipeline,
         routes::atoms::delete_atom,
         routes::atoms::bulk_create_atoms,
         routes::atoms::get_source_list,
@@ -42,9 +47,11 @@ pub use utoipa_scalar::{Scalar, Servable};
         routes::atoms::update_tag,
         routes::atoms::delete_tag,
         routes::atoms::set_tag_autotag_target,
+        routes::atoms::set_tag_autotag_description,
         routes::atoms::configure_autotag_targets,
         // Search
         routes::search::search,
+        routes::search::global_search,
         routes::search::find_similar,
         // Wiki
         routes::wiki::get_all_wiki_articles,
@@ -59,9 +66,22 @@ pub use utoipa_scalar::{Scalar, Servable};
         routes::wiki::list_wiki_versions,
         routes::wiki::get_wiki_version,
         routes::wiki::recompute_all_tag_embeddings,
+        routes::wiki::propose_wiki,
+        routes::wiki::get_wiki_proposal,
+        routes::wiki::accept_wiki_proposal,
+        routes::wiki::dismiss_wiki_proposal,
+        // Briefings
+        routes::briefings::get_latest_briefing,
+        routes::briefings::list_briefings,
+        routes::briefings::get_briefing,
+        routes::briefings::run_briefing_now,
+        routes::briefings::get_briefing_schedule,
+        routes::briefings::set_briefing_schedule,
         // Settings
         routes::settings::get_settings,
         routes::settings::set_setting,
+        routes::settings::clear_setting_override,
+        routes::settings::list_setting_overrides,
         routes::settings::test_openrouter_connection,
         routes::settings::test_openai_compat_connection,
         routes::settings::get_available_llm_models,
@@ -70,9 +90,14 @@ pub use utoipa_scalar::{Scalar, Servable};
         routes::embedding::process_pending_embeddings,
         routes::embedding::process_pending_tagging,
         routes::embedding::retry_embedding,
+        routes::embedding::retry_failed_embeddings,
+        routes::embedding::retry_failed_tagging,
         routes::embedding::retry_tagging,
         routes::embedding::reembed_all_atoms,
+        routes::embedding::retag_all_atoms,
         routes::embedding::reset_stuck_processing,
+        routes::embedding::get_pipeline_status,
+        routes::embedding::get_all_pipeline_statuses,
         routes::embedding::get_embedding_status,
         // Canvas
         routes::canvas::get_positions,
@@ -117,6 +142,22 @@ pub use utoipa_scalar::{Scalar, Servable};
         routes::databases::rename_database,
         routes::databases::delete_database,
         routes::databases::activate_database,
+        routes::databases::set_default_database,
+        routes::databases::database_stats,
+        routes::exports::start_markdown_export,
+        routes::exports::get_export_job,
+        routes::exports::cancel_or_delete_export_job,
+        routes::exports::download_export,
+        // Setup
+        routes::setup::setup_status,
+        routes::setup::claim_instance,
+        // OAuth
+        routes::oauth::resource_metadata,
+        routes::oauth::metadata,
+        routes::oauth::register,
+        routes::oauth::authorize_page,
+        routes::oauth::authorize_approve,
+        routes::oauth::token,
         // Import
         routes::import::import_obsidian_vault,
         // Ingestion
@@ -129,10 +170,14 @@ pub use utoipa_scalar::{Scalar, Servable};
         routes::feeds::update_feed,
         routes::feeds::delete_feed,
         routes::feeds::poll_feed,
+        // Logs
+        routes::logs::get_logs,
     ),
     components(schemas(
         // Core types
         atomic_core::Atom,
+        atomic_core::AtomLink,
+        atomic_core::AtomLinkSuggestion,
         atomic_core::Tag,
         atomic_core::AtomWithTags,
         atomic_core::AtomSummary,
@@ -143,6 +188,11 @@ pub use utoipa_scalar::{Scalar, Servable};
         atomic_core::SourceInfo,
         atomic_core::SimilarAtomResult,
         atomic_core::SemanticSearchResult,
+        atomic_core::GlobalSearchResponse,
+        atomic_core::GlobalWikiSearchResult,
+        atomic_core::GlobalChatSearchResult,
+        atomic_core::GlobalTagSearchResult,
+        atomic_core::MatchOffset,
         // Wiki
         atomic_core::WikiArticle,
         atomic_core::WikiCitation,
@@ -154,6 +204,11 @@ pub use utoipa_scalar::{Scalar, Servable};
         atomic_core::SuggestedArticle,
         atomic_core::WikiArticleVersion,
         atomic_core::WikiVersionSummary,
+        atomic_core::WikiProposal,
+        // Briefings
+        atomic_core::Briefing,
+        atomic_core::BriefingCitation,
+        atomic_core::BriefingWithCitations,
         // Canvas
         atomic_core::AtomPosition,
         atomic_core::AtomWithEmbedding,
@@ -162,6 +217,10 @@ pub use utoipa_scalar::{Scalar, Servable};
         atomic_core::CanvasNodeType,
         atomic_core::CanvasEdge,
         atomic_core::BreadcrumbEntry,
+        atomic_core::CanvasAtomPosition,
+        atomic_core::CanvasEdgeData,
+        atomic_core::CanvasClusterLabel,
+        atomic_core::GlobalCanvasData,
         // Graph
         atomic_core::SemanticEdge,
         atomic_core::NeighborhoodGraph,
@@ -181,6 +240,8 @@ pub use utoipa_scalar::{Scalar, Servable};
         // Auth & Databases
         atomic_core::ApiTokenInfo,
         atomic_core::DatabaseInfo,
+        atomic_core::PipelineStatus,
+        atomic_core::FailedAtom,
         // Server request types
         routes::atoms::CreateAtomRequest,
         routes::atoms::UpdateAtomRequest,
@@ -189,9 +250,11 @@ pub use utoipa_scalar::{Scalar, Servable};
         routes::atoms::SetAutotagTargetRequest,
         routes::atoms::ConfigureAutotagTargetsRequest,
         routes::search::SearchRequest,
+        routes::search::GlobalSearchRequest,
         routes::wiki::GenerateWikiBody,
         routes::settings::SetSettingBody,
         routes::settings::TestOpenRouterBody,
+        routes::settings::OverrideEntry,
         routes::canvas::CanvasLevelBody,
         routes::clustering::ComputeClustersBody,
         routes::chat::CreateConversationBody,
@@ -203,6 +266,21 @@ pub use utoipa_scalar::{Scalar, Servable};
         routes::auth::CreateTokenBody,
         routes::databases::CreateDatabaseBody,
         routes::databases::RenameDatabaseBody,
+        routes::embedding::DatabasePipelineStatus,
+        routes::embedding::AllPipelineStatuses,
+        routes::setup::SetupStatusResponse,
+        routes::setup::ClaimBody,
+        routes::setup::ClaimResponse,
+        routes::logs::LogsResponse,
+        routes::exports::DownloadQuery,
+        routes::oauth::OAuthProtectedResourceMetadata,
+        routes::oauth::OAuthAuthorizationServerMetadata,
+        routes::oauth::RegisterRequest,
+        routes::oauth::RegisterResponse,
+        routes::oauth::AuthorizeQuery,
+        routes::oauth::AuthorizeApproveForm,
+        routes::oauth::TokenRequest,
+        routes::oauth::TokenResponse,
         routes::import::ImportObsidianRequest,
         routes::ingest::IngestUrlRequest,
         routes::ingest::IngestUrlsRequest,
@@ -225,9 +303,13 @@ pub use utoipa_scalar::{Scalar, Servable};
         (name = "utils", description = "Utility endpoints"),
         (name = "auth", description = "API token management"),
         (name = "databases", description = "Multi-database management"),
+        (name = "setup", description = "Initial instance setup"),
         (name = "import", description = "Data import"),
         (name = "ingestion", description = "URL content ingestion"),
         (name = "feeds", description = "RSS/Atom feed management"),
+        (name = "briefings", description = "Daily briefing generation and history"),
+        (name = "logs", description = "Server log access"),
+        (name = "oauth", description = "OAuth 2.0 endpoints for remote MCP clients"),
     ),
     security(
         ("bearer_auth" = []),
@@ -243,11 +325,9 @@ impl utoipa::Modify for SecurityAddon {
         let components = openapi.components.get_or_insert_with(Default::default);
         components.add_security_scheme(
             "bearer_auth",
-            utoipa::openapi::security::SecurityScheme::Http(
-                utoipa::openapi::security::Http::new(
-                    utoipa::openapi::security::HttpAuthScheme::Bearer,
-                ),
-            ),
+            utoipa::openapi::security::SecurityScheme::Http(utoipa::openapi::security::Http::new(
+                utoipa::openapi::security::HttpAuthScheme::Bearer,
+            )),
         );
     }
 }

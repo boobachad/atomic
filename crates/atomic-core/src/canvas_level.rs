@@ -33,8 +33,6 @@ const COUNT_GROUP_TARGET: usize = 15;
 
 /// Precomputed tag tree data — loaded once per request, reused across functions.
 struct TagTree {
-    /// (id, name, parent_id) for every tag
-    all_tags: Vec<(String, String, Option<String>)>,
     /// tag_id → number of atoms directly tagged (not counting descendants)
     direct_counts: HashMap<String, i32>,
     /// tag_id → total atom count including all descendant tags (computed in one pass)
@@ -55,7 +53,9 @@ impl TagTree {
         let mut count_stmt =
             conn.prepare("SELECT tag_id, COUNT(*) FROM atom_tags GROUP BY tag_id")?;
         let direct_counts: HashMap<String, i32> = count_stmt
-            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i32>(1)?)))?
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i32>(1)?))
+            })?
             .filter_map(|r| r.ok())
             .collect();
 
@@ -63,10 +63,7 @@ impl TagTree {
         let mut children_map: HashMap<String, Vec<String>> = HashMap::new();
         for (id, _, parent) in &all_tags {
             if let Some(p) = parent {
-                children_map
-                    .entry(p.clone())
-                    .or_default()
-                    .push(id.clone());
+                children_map.entry(p.clone()).or_default().push(id.clone());
             }
         }
 
@@ -83,7 +80,6 @@ impl TagTree {
         }
 
         Ok(TagTree {
-            all_tags,
             direct_counts,
             transitive_counts,
             children_map,
@@ -283,11 +279,7 @@ fn build_tag_level(conn: &Connection, tag_id: &str) -> Result<CanvasLevel, Atomi
     let breadcrumb = build_breadcrumb(conn, tag_id)?;
 
     // Find direct children of this tag
-    let child_ids: Vec<String> = tree
-        .children_map
-        .get(tag_id)
-        .cloned()
-        .unwrap_or_default();
+    let child_ids: Vec<String> = tree.children_map.get(tag_id).cloned().unwrap_or_default();
 
     if !child_ids.is_empty() {
         // This tag has child tags — show them as nodes
@@ -329,8 +321,7 @@ fn build_tag_level(conn: &Connection, tag_id: &str) -> Result<CanvasLevel, Atomi
             if rest.len() <= MAX_TAGS_FOR_CLUSTERING {
                 // Small enough for semantic clustering
                 let rest_ids: Vec<String> = rest.iter().map(|(n, _)| n.id.clone()).collect();
-                let cluster_nodes =
-                    cluster_tags_by_similarity(conn, &rest_ids, &tree, tag_id)?;
+                let cluster_nodes = cluster_tags_by_similarity(conn, &rest_ids, &tree, tag_id)?;
                 nodes.extend(cluster_nodes);
             } else {
                 // Too many for semantic clustering — group by count ranking (O(n), no SQL)
@@ -539,8 +530,7 @@ fn build_hint_level(
 
             if rest.len() <= MAX_TAGS_FOR_CLUSTERING {
                 let rest_ids: Vec<String> = rest.iter().map(|(n, _)| n.id.clone()).collect();
-                let cluster_nodes =
-                    cluster_tags_by_similarity(conn, &rest_ids, &tree, parent_id)?;
+                let cluster_nodes = cluster_tags_by_similarity(conn, &rest_ids, &tree, parent_id)?;
                 result.extend(cluster_nodes);
             } else {
                 let group_nodes = group_tags_by_count(rest, &tree, parent_id);
@@ -914,7 +904,9 @@ fn batch_get_atom_ids_for_tags(
     for tid in tag_ids {
         for desc in tree.descendant_tag_ids(tid) {
             // If multiple originals claim the same descendant, first one wins
-            descendant_to_original.entry(desc).or_insert_with(|| tid.clone());
+            descendant_to_original
+                .entry(desc)
+                .or_insert_with(|| tid.clone());
         }
     }
 
@@ -929,7 +921,9 @@ fn batch_get_atom_ids_for_tags(
     )?;
 
     let rows: Vec<(String, String)> = stmt
-        .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?
         .collect::<Result<Vec<_>, _>>()?;
 
     // Group by original tag
@@ -969,9 +963,8 @@ fn batch_lookup_tag_names(
     }
 
     populate_temp_table(conn, "_canvas_tag_ids", ids)?;
-    let mut stmt = conn.prepare(
-        "SELECT id, name FROM tags WHERE id IN (SELECT id FROM _canvas_tag_ids)",
-    )?;
+    let mut stmt =
+        conn.prepare("SELECT id, name FROM tags WHERE id IN (SELECT id FROM _canvas_tag_ids)")?;
     let result = stmt
         .query_map([], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
@@ -1058,7 +1051,9 @@ fn batch_lookup_atom_tags(
         return Ok(HashMap::new());
     }
 
-    let query_and_collect = |stmt: &mut rusqlite::Statement, params: &[&dyn rusqlite::ToSql]| -> Result<HashMap<String, Vec<String>>, AtomicCoreError> {
+    let query_and_collect = |stmt: &mut rusqlite::Statement,
+                             params: &[&dyn rusqlite::ToSql]|
+     -> Result<HashMap<String, Vec<String>>, AtomicCoreError> {
         let mut result: HashMap<String, Vec<String>> = HashMap::new();
         let rows = stmt.query_map(params, |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
@@ -1080,7 +1075,8 @@ fn batch_lookup_atom_tags(
             placeholders
         );
         let mut stmt = conn.prepare(&sql)?;
-        let params: Vec<&dyn rusqlite::ToSql> = atom_ids.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
+        let params: Vec<&dyn rusqlite::ToSql> =
+            atom_ids.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
         return query_and_collect(&mut stmt, &params);
     }
 
@@ -1269,8 +1265,14 @@ fn compute_edges_for_atom_set(
     // For each atom, keep only its top-K strongest edges
     let mut per_atom: HashMap<String, Vec<(String, String, f32)>> = HashMap::new();
     for (src, tgt, score) in &edges {
-        per_atom.entry(src.clone()).or_default().push((src.clone(), tgt.clone(), *score));
-        per_atom.entry(tgt.clone()).or_default().push((src.clone(), tgt.clone(), *score));
+        per_atom
+            .entry(src.clone())
+            .or_default()
+            .push((src.clone(), tgt.clone(), *score));
+        per_atom
+            .entry(tgt.clone())
+            .or_default()
+            .push((src.clone(), tgt.clone(), *score));
     }
 
     let mut kept: HashSet<(String, String)> = HashSet::new();
@@ -1285,7 +1287,11 @@ fn compute_edges_for_atom_set(
     Ok(edges
         .into_iter()
         .filter(|(src, tgt, _)| {
-            let key = if src < tgt { (src.clone(), tgt.clone()) } else { (tgt.clone(), src.clone()) };
+            let key = if src < tgt {
+                (src.clone(), tgt.clone())
+            } else {
+                (tgt.clone(), src.clone())
+            };
             kept.contains(&key)
         })
         .map(|(src, tgt, score)| CanvasEdge {
@@ -1386,8 +1392,7 @@ fn get_atom_ids_for_node(
                     .collect::<Result<Vec<String>, _>>()?;
                 Ok(ids)
             } else if let Some(tid) = node.id.strip_prefix("direct:") {
-                let mut stmt =
-                    conn.prepare("SELECT atom_id FROM atom_tags WHERE tag_id = ?1")?;
+                let mut stmt = conn.prepare("SELECT atom_id FROM atom_tags WHERE tag_id = ?1")?;
                 let ids = stmt
                     .query_map([tid], |row| row.get(0))?
                     .collect::<Result<Vec<String>, _>>()?;
@@ -1504,7 +1509,9 @@ fn snippet_label(content: &str) -> String {
     let trimmed = first_line.trim().trim_start_matches('#').trim();
     if trimmed.len() > 60 {
         let mut end = 57;
-        while end > 0 && !trimmed.is_char_boundary(end) { end -= 1; }
+        while end > 0 && !trimmed.is_char_boundary(end) {
+            end -= 1;
+        }
         format!("{}...", &trimmed[..end])
     } else if trimmed.is_empty() {
         "Empty".to_string()

@@ -4,6 +4,7 @@
   <img alt="Atomic" src="./docs/images/logo.svg" width="300">
 </picture>
 
+[![Discord](https://img.shields.io/discord/1489017497200885800?label=discord&logo=discord&logoColor=white&color=5865F2)](https://discord.gg/fT4vTERhz3)
 [![Desktop App](https://img.shields.io/github/v/release/kenforthewin/atomic?label=desktop&logo=github)](https://github.com/kenforthewin/atomic/releases/latest)
 [![Server Image](https://img.shields.io/github/v/tag/kenforthewin/atomic?label=server&logo=docker)](https://github.com/kenforthewin/atomic/pkgs/container/atomic-server)
 [![Web Image](https://img.shields.io/github/v/tag/kenforthewin/atomic?label=web&logo=docker)](https://github.com/kenforthewin/atomic/pkgs/container/atomic-web)
@@ -12,13 +13,7 @@ A personal knowledge base that turns markdown notes into a semantically-connecte
 
 Atomic stores knowledge as **atoms** — markdown notes that are automatically chunked, embedded, tagged, and linked by semantic similarity. Your atoms can be synthesized into wiki articles, explored on a spatial canvas, and queried through an agentic chat interface.
 
-https://github.com/user-attachments/assets/e8cd771f-6e23-46cf-86d1-3c70cb8d1954
-
-*Daily briefing — AI summary of recent atoms with inline citations that highlight the source on a mini-canvas*
-
-https://github.com/user-attachments/assets/282da0e3-4969-42dd-b591-7da974078e87
-
-*Atoms — markdown notes with tags, sources, and neighborhood graph*
+https://github.com/user-attachments/assets/1992fcf7-1d6b-41b1-a177-2da2e8b57676
 
 ![Atom Viewer](./docs/images/atom.png)
 
@@ -64,10 +59,11 @@ On first launch, the setup wizard walks you through AI provider configuration.
 ```bash
 git clone https://github.com/kenforthewin/atomic.git
 cd atomic
+echo "ATOMIC_SETUP_TOKEN=$(openssl rand -base64 24)" > .env
 docker compose up -d
 ```
 
-This starts three services: the API server, the web frontend, and an nginx reverse proxy. Open `http://localhost:8080` and claim your instance through the setup wizard.
+This starts three services: the API server, the web frontend, and an nginx reverse proxy. Open `http://localhost:8080` and claim your instance through the setup wizard with the `ATOMIC_SETUP_TOKEN` value from `.env`.
 
 The proxy service is provided for convenience — if you already run your own reverse proxy (Caddy, Traefik, etc.), you can skip it and route traffic to the `server` and `web` containers directly. See `docker/nginx.conf` for an example configuration.
 
@@ -77,18 +73,20 @@ The proxy service is provided for convenience — if you already run your own re
 cp fly.toml.example fly.toml
 fly launch --copy-config --no-deploy
 fly volumes create atomic_data --region <your-region> --size 1
+fly secrets set ATOMIC_SETUP_TOKEN="$(openssl rand -base64 24)"
 fly deploy
 ```
 
-Open `https://your-app.fly.dev` and claim your instance. The public URL for OAuth/MCP is auto-detected from the Fly app name.
+Open `https://your-app.fly.dev` and claim your instance with the setup token. The public URL for OAuth/MCP is auto-detected from the Fly app name.
 
 ### Standalone Server
 
 ```bash
+ATOMIC_SETUP_TOKEN="$(openssl rand -base64 24)" \
 cargo run -p atomic-server -- --data-dir ./data serve --port 8080
 ```
 
-On first run, create an API token:
+On first run, enter `ATOMIC_SETUP_TOKEN` in the setup wizard, or create an API token directly:
 
 ```bash
 cargo run -p atomic-server -- --data-dir ./data token create --name default
@@ -112,7 +110,7 @@ Captures are queued offline and synced when the server is available.
 
 ## MCP Server
 
-Atomic exposes an MCP endpoint for Claude and other AI tools to search and create atoms.
+Atomic exposes an MCP endpoint for Claude and other AI tools to search, read, create, update, and ingest atoms.
 
 ### Desktop App (Local Mode)
 
@@ -154,7 +152,7 @@ Create a token from Settings > Connection > API Tokens, or via the CLI:
 atomic-server token create --name "claude"
 ```
 
-**Available tools:** `semantic_search`, `read_atom`, `create_atom`, `update_atom`
+**Available tools:** `semantic_search`, `read_atom`, `create_atom`, `ingest_url`, `update_atom`
 
 ## Architecture
 
@@ -192,7 +190,6 @@ crates/atomic-server/       # REST + WebSocket + MCP server
 crates/mcp-bridge/          # HTTP-to-stdio MCP bridge
 src-tauri/                  # Tauri desktop app (launches server as sidecar)
 src/                        # React frontend (TypeScript)
-ios/                        # Native iOS app (SwiftUI)
 extension/                  # Chromium browser extension
 scripts/                    # Import and utility scripts
 ```
@@ -236,7 +233,6 @@ npx tsc --noEmit                  # Frontend type check
 | Frontend | React 18, TypeScript, Vite 6, Tailwind CSS v4, Zustand 5 |
 | Editor | CodeMirror 6 |
 | Canvas | Sigma.js, Graphology |
-| iOS | SwiftUI, XcodeGen |
 | AI | OpenRouter, Ollama, or OpenAI-compatible (pluggable) |
 
 ## License

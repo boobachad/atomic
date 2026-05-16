@@ -4,16 +4,14 @@
 //! then synthesizes the article from the agent's selected chunks.
 
 use crate::chunking::count_tokens;
-use crate::models::{ChunkWithContext, ChunkSearchResult, WikiArticleWithCitations};
+use crate::models::{ChunkSearchResult, ChunkWithContext, WikiArticleWithCitations};
 use crate::providers::types::{CompletionResponse, Message, ToolDefinition};
-use crate::providers::{get_llm_provider, get_embedding_provider, EmbeddingConfig, LlmConfig};
+use crate::providers::{get_embedding_provider, get_llm_provider, EmbeddingConfig, LlmConfig};
 use crate::storage::StorageBackend;
 
 use std::collections::HashSet;
 
-use super::{
-    synthesize_article, WikiStrategyContext,
-};
+use super::{synthesize_article, WikiStrategyContext};
 
 // ==================== Constants ====================
 
@@ -41,10 +39,7 @@ impl ResearchContext {
             returned_chunks: Vec::new(),
             seen_chunk_ids: HashSet::new(),
             selected_indices: HashSet::new(),
-            messages: vec![
-                Message::system(system_prompt),
-                Message::user(user_prompt),
-            ],
+            messages: vec![Message::system(system_prompt), Message::user(user_prompt)],
             selected_tokens: 0,
         }
     }
@@ -157,7 +152,10 @@ async fn handle_search(
     tracing::debug!(query = %query, limit, "[wiki/agentic] search");
 
     // Perform hybrid search: keyword + vector, merged via RRF
-    let keyword_results = match storage.keyword_search_chunks_sync(&query, limit * 2, scope_tag_ids, None).await {
+    let keyword_results = match storage
+        .keyword_search_chunks_sync(&query, limit * 2, scope_tag_ids, None)
+        .await
+    {
         Ok(r) => r,
         Err(e) => return format!("Keyword search error: {}", e),
     };
@@ -168,7 +166,16 @@ async fn handle_search(
             let embed_config = EmbeddingConfig::new(provider_config.embedding_model());
             match provider.embed_batch(&[query.clone()], &embed_config).await {
                 Ok(embeddings) if !embeddings.is_empty() && !embeddings[0].is_empty() => {
-                    match storage.vector_search_chunks_sync(&embeddings[0], limit * 2, 0.3, scope_tag_ids, None).await {
+                    match storage
+                        .vector_search_chunks_sync(
+                            &embeddings[0],
+                            limit * 2,
+                            0.3,
+                            scope_tag_ids,
+                            None,
+                        )
+                        .await
+                    {
                         Ok(r) => r,
                         Err(_) => Vec::new(),
                     }
@@ -214,7 +221,12 @@ async fn handle_search(
     }
 
     let start_idx = rc.returned_chunks.len();
-    tracing::debug!(count = new_results.len(), range_start = start_idx + 1, range_end = start_idx + new_results.len(), "[wiki/agentic] new results");
+    tracing::debug!(
+        count = new_results.len(),
+        range_start = start_idx + 1,
+        range_end = start_idx + new_results.len(),
+        "[wiki/agentic] new results"
+    );
     let mut output = String::new();
 
     for (i, chunk) in new_results.into_iter().enumerate() {
@@ -233,7 +245,11 @@ async fn handle_search(
     output
 }
 
-fn handle_select(rc: &mut ResearchContext, args: &serde_json::Value, max_source_tokens: usize) -> String {
+fn handle_select(
+    rc: &mut ResearchContext,
+    args: &serde_json::Value,
+    max_source_tokens: usize,
+) -> String {
     let chunk_ids = match args.get("chunk_ids").and_then(|v| v.as_array()) {
         Some(arr) => arr
             .iter()
@@ -340,7 +356,9 @@ async fn run_research(
             _ => {
                 // No tool calls — agent is done (or just sent text)
                 if !response.content.is_empty() {
-                    tracing::debug!("[wiki/agentic] Agent sent text without tools, ending research");
+                    tracing::debug!(
+                        "[wiki/agentic] Agent sent text without tools, ending research"
+                    );
                 }
                 break;
             }
@@ -404,7 +422,10 @@ async fn run_research(
 
 /// Trim selected chunks to fit within the token budget.
 /// Takes chunks in order (agent's selection order) until the budget is hit.
-fn trim_to_budget(chunks: Vec<ChunkWithContext>, max_source_tokens: usize) -> Vec<ChunkWithContext> {
+fn trim_to_budget(
+    chunks: Vec<ChunkWithContext>,
+    max_source_tokens: usize,
+) -> Vec<ChunkWithContext> {
     let mut total_tokens = 0;
     let mut trimmed = Vec::new();
     for chunk in chunks {
@@ -469,9 +490,15 @@ pub(crate) async fn generate(
     tracing::info!(tag_name = %ctx.tag_name, budget_tokens = max_tokens, "[wiki/agentic] Starting agentic research");
 
     // Get scope tag IDs and atom count
-    let scope_tag_ids = ctx.storage.get_tag_hierarchy_impl(&ctx.tag_id).await
+    let scope_tag_ids = ctx
+        .storage
+        .get_tag_hierarchy_impl(&ctx.tag_id)
+        .await
         .map_err(|e| e.to_string())?;
-    let atom_count = ctx.storage.count_atoms_with_tags_impl(&scope_tag_ids).await
+    let atom_count = ctx
+        .storage
+        .count_atoms_with_tags_impl(&scope_tag_ids)
+        .await
         .map_err(|e| e.to_string())?;
 
     if atom_count == 0 {
@@ -550,9 +577,15 @@ pub(crate) async fn research_for_update(
         "[wiki/agentic] Starting agentic research for update"
     );
 
-    let scope_tag_ids = ctx.storage.get_tag_hierarchy_impl(&ctx.tag_id).await
+    let scope_tag_ids = ctx
+        .storage
+        .get_tag_hierarchy_impl(&ctx.tag_id)
+        .await
         .map_err(|e| e.to_string())?;
-    let atom_count = ctx.storage.count_atoms_with_tags_impl(&scope_tag_ids).await
+    let atom_count = ctx
+        .storage
+        .count_atoms_with_tags_impl(&scope_tag_ids)
+        .await
         .map_err(|e| e.to_string())?;
 
     let mut rc = ResearchContext::new(
@@ -604,7 +637,9 @@ pub(crate) async fn research_for_update(
             );
         }
         if filtered.is_empty() {
-            tracing::info!("[wiki/agentic] All selected chunks were already cited, no update needed");
+            tracing::info!(
+                "[wiki/agentic] All selected chunks were already cited, no update needed"
+            );
             return Ok(None);
         }
         filtered

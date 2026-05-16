@@ -14,6 +14,7 @@
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -40,15 +41,25 @@ pub const EDGE_SIMILARITY_THRESHOLD: f32 = 0.5;
 /// `/v1/chat/completions`. Holds the server handle for lifetime management.
 pub struct MockAiServer {
     server: MockServer,
+    counters: Arc<MockAiCounters>,
+}
+
+#[derive(Default)]
+struct MockAiCounters {
+    embedding_requests: AtomicUsize,
+    chat_requests: AtomicUsize,
 }
 
 impl MockAiServer {
     pub async fn start() -> Self {
         let server = MockServer::start().await;
+        let counters = Arc::new(MockAiCounters::default());
 
         Mock::given(method("POST"))
             .and(path("/v1/embeddings"))
-            .respond_with(EmbedResponder)
+            .respond_with(EmbedResponder {
+                counters: counters.clone(),
+            })
             .mount(&server)
             .await;
 
@@ -58,17 +69,32 @@ impl MockAiServer {
         // for tagging we return a deterministic {"tags":[...]} shape.
         Mock::given(method("POST"))
             .and(path("/v1/chat/completions"))
-            .respond_with(ChatResponder)
+            .respond_with(ChatResponder {
+                counters: counters.clone(),
+            })
             .mount(&server)
             .await;
 
-        Self { server }
+        Self { server, counters }
     }
 
     /// Base URL the `OpenAICompatProvider` should hit. No `/v1` suffix —
     /// the provider normalizes the URL itself.
     pub fn base_url(&self) -> String {
         self.server.uri()
+    }
+
+    pub fn embedding_request_count(&self) -> usize {
+        self.counters.embedding_requests.load(Ordering::Relaxed)
+    }
+
+    pub fn chat_request_count(&self) -> usize {
+        self.counters.chat_requests.load(Ordering::Relaxed)
+    }
+
+    pub fn reset_counts(&self) {
+        self.counters.embedding_requests.store(0, Ordering::Relaxed);
+        self.counters.chat_requests.store(0, Ordering::Relaxed);
     }
 }
 
@@ -104,10 +130,15 @@ fn embed_text(text: &str) -> Vec<f32> {
     vec
 }
 
-struct EmbedResponder;
+struct EmbedResponder {
+    counters: Arc<MockAiCounters>,
+}
 
 impl Respond for EmbedResponder {
     fn respond(&self, req: &Request) -> ResponseTemplate {
+        self.counters
+            .embedding_requests
+            .fetch_add(1, Ordering::Relaxed);
         let body: Value = match serde_json::from_slice(&req.body) {
             Ok(v) => v,
             Err(_) => return ResponseTemplate::new(400),
@@ -135,10 +166,13 @@ impl Respond for EmbedResponder {
     }
 }
 
-struct ChatResponder;
+struct ChatResponder {
+    counters: Arc<MockAiCounters>,
+}
 
 impl Respond for ChatResponder {
     fn respond(&self, req: &Request) -> ResponseTemplate {
+        self.counters.chat_requests.fetch_add(1, Ordering::Relaxed);
         let body: Value = match serde_json::from_slice(&req.body) {
             Ok(v) => v,
             Err(_) => return ResponseTemplate::new(400),
@@ -151,13 +185,24 @@ impl Respond for ChatResponder {
             .and_then(|v| v.as_str())
             .unwrap_or("");
 
+        let request_text = body.to_string().to_lowercase();
+
         let content = match schema_name {
-            "extraction_result" => json!({
-                "tags": [
-                    { "name": "Physics", "parent_name": "Topics" },
-                ]
-            })
-            .to_string(),
+            "extraction_result" => {
+                let tag_name = if request_text.contains("biology") {
+                    "Biology"
+                } else if request_text.contains("cooking") || request_text.contains("pasta") {
+                    "Cooking"
+                } else {
+                    "Physics"
+                };
+                json!({
+                    "tags": [
+                        { "name": tag_name, "parent_name": "Topics" },
+                    ]
+                })
+                .to_string()
+            }
             // Default: empty content, still valid JSON for callers that
             // tolerate-parse. Individual tests can assert on the request
             // shape they care about.
@@ -266,9 +311,9 @@ pub async fn truncate_postgres_for_test(url: &str) {
         .expect("connect truncate pool");
     // Same list as storage_tests.rs — keeps both files in sync.
     let _ = sqlx::raw_sql(
-        "TRUNCATE atoms, tags, atom_tags, atom_chunks, atom_positions, \
+        "TRUNCATE atoms, tags, atom_tags, atom_chunks, atom_positions, atom_pipeline_jobs, \
          semantic_edges, atom_clusters, tag_embeddings, \
-         wiki_articles, wiki_citations, wiki_links, wiki_article_versions, \
+         wiki_articles, wiki_citations, wiki_links, wiki_article_versions, atom_links, \
          conversations, conversation_tags, chat_messages, chat_tool_calls, chat_citations, \
          feeds, feed_tags, feed_items, settings, \
          briefing_citations, briefings, oauth_codes, oauth_clients, api_tokens \
@@ -289,7 +334,7 @@ pub type EventRx = UnboundedReceiver<atomic_core::EmbeddingEvent>;
 /// in the test). The callback is `Arc`-backed because `create_atom`'s bound
 /// is `Fn + Send + Sync + 'static`.
 pub fn event_collector() -> (
-    impl Fn(atomic_core::EmbeddingEvent) + Send + Sync + 'static,
+    impl Fn(atomic_core::EmbeddingEvent) + Send + Sync + Clone + 'static,
     EventRx,
 ) {
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
@@ -300,24 +345,23 @@ pub fn event_collector() -> (
     (cb, rx)
 }
 
-/// Wait until both `EmbeddingComplete` and a terminal tagging event
-/// (`TaggingComplete` / `TaggingSkipped` / `TaggingFailed`) have fired for
-/// `atom_id`. Returns the captured events so tests can assert on payloads.
-pub async fn await_pipeline(
-    rx: &mut EventRx,
-    atom_id: &str,
-) -> Vec<atomic_core::EmbeddingEvent> {
+/// Wait until both `EmbeddingComplete`, a terminal tagging event
+/// (`TaggingComplete` / `TaggingSkipped` / `TaggingFailed`), and the owning
+/// queue run's completion have fired. Returns the captured target-atom events
+/// so tests can assert on payloads.
+pub async fn await_pipeline(rx: &mut EventRx, atom_id: &str) -> Vec<atomic_core::EmbeddingEvent> {
     use atomic_core::EmbeddingEvent;
 
     let mut captured = Vec::new();
     let mut embedding_done = false;
     let mut tagging_done = false;
+    let mut queue_done = false;
 
     // A generous budget — the mock responds instantly, but CI runners can
     // stall under load. Fails loudly instead of hanging forever.
     let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
 
-    while !(embedding_done && tagging_done) {
+    while !(embedding_done && tagging_done && queue_done) {
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         if remaining.is_zero() {
             panic!(
@@ -342,7 +386,13 @@ pub async fn await_pipeline(
             | EmbeddingEvent::TaggingComplete { atom_id: id, .. }
             | EmbeddingEvent::TaggingSkipped { atom_id: id }
             | EmbeddingEvent::TaggingFailed { atom_id: id, .. } => id == atom_id,
-            EmbeddingEvent::BatchProgress { .. } => false,
+            EmbeddingEvent::BatchProgress { .. }
+            | EmbeddingEvent::PipelineQueueStarted { .. }
+            | EmbeddingEvent::PipelineQueueProgress { .. } => false,
+            EmbeddingEvent::PipelineQueueCompleted { .. } => {
+                queue_done = true;
+                false
+            }
         };
 
         if matches_target {

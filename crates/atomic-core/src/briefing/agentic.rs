@@ -169,15 +169,14 @@ fn snippet_for(atom: &AtomWithTags) -> String {
     } else {
         atom.atom.content.as_str()
     };
-    let cleaned: String = src.chars().map(|c| if c == '\n' { ' ' } else { c }).collect();
+    let cleaned: String = src
+        .chars()
+        .map(|c| if c == '\n' { ' ' } else { c })
+        .collect();
     truncate_on_char_boundary(cleaned.trim(), SNIPPET_LEN)
 }
 
-fn build_user_prompt(
-    since: &DateTime<Utc>,
-    new_atoms: &[AtomWithTags],
-    total_new: i32,
-) -> String {
+fn build_user_prompt(since: &DateTime<Utc>, new_atoms: &[AtomWithTags], total_new: i32) -> String {
     let mut out = String::new();
     out.push_str(&format!(
         "The following {} atoms were added since {}. Summarize them in a 2-3 paragraph briefing.\n\n",
@@ -321,7 +320,9 @@ struct AgentState {
     done_called: bool,
 }
 
-async fn resolve_model(core: &AtomicCore) -> Result<(ProviderConfig, String), String> {
+async fn resolve_model(
+    core: &AtomicCore,
+) -> Result<(ProviderConfig, String, Option<String>), String> {
     let settings = core
         .get_settings()
         .await
@@ -337,7 +338,11 @@ async fn resolve_model(core: &AtomicCore) -> Result<(ProviderConfig, String), St
             .cloned()
             .unwrap_or_else(|| "anthropic/claude-sonnet-4.6".to_string()),
     };
-    Ok((config, model))
+    let custom_prompt = settings
+        .get("briefing_prompt")
+        .filter(|s| !s.is_empty())
+        .cloned();
+    Ok((config, model, custom_prompt))
 }
 
 async fn run_research(
@@ -450,10 +455,7 @@ async fn final_briefing_call(
 /// initial new-atoms list (1-indexed). Citations that don't map are dropped
 /// with a warning — this is the spec'd behavior for "agent cites something
 /// it doesn't have."
-fn extract_citations(
-    content: &str,
-    new_atoms: &[AtomWithTags],
-) -> Vec<(i32, String, String)> {
+fn extract_citations(content: &str, new_atoms: &[AtomWithTags]) -> Vec<(i32, String, String)> {
     let re = match Regex::new(r"\[(\d+)\]") {
         Ok(r) => r,
         Err(e) => {
@@ -505,14 +507,15 @@ pub(crate) async fn generate(
     new_atoms: &[AtomWithTags],
     total_new: i32,
 ) -> Result<(String, Vec<(i32, String, String)>), String> {
-    let (provider_config, model) = resolve_model(core).await?;
+    let (provider_config, model, custom_system_prompt) = resolve_model(core).await?;
     tracing::info!(model = %model, atoms = new_atoms.len(), "[briefing/agentic] Running agent");
 
     let user_prompt = build_user_prompt(since, new_atoms, total_new);
 
+    let system = custom_system_prompt.as_deref().unwrap_or(SYSTEM_PROMPT);
     let mut state = AgentState {
         messages: vec![
-            Message::system(SYSTEM_PROMPT.to_string()),
+            Message::system(system.to_string()),
             Message::user(user_prompt),
         ],
         done_called: false,
@@ -558,8 +561,7 @@ mod tests {
 
     #[test]
     fn lint_briefing_schema_is_portable() {
-        lint_schema(&briefing_schema())
-            .expect("briefing_schema must be portable across providers");
+        lint_schema(&briefing_schema()).expect("briefing_schema must be portable across providers");
     }
 
     #[test]

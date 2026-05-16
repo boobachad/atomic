@@ -20,12 +20,24 @@ impl BriefingStore for PostgresStorage {
         since: &str,
         limit: i32,
     ) -> StorageResult<Vec<AtomWithTags>> {
-        let atoms: Vec<Atom> = sqlx::query_as::<_, (
-            String, String, String, String,
-            Option<String>, Option<String>, Option<String>,
-            String, String, String, String,
-            Option<String>, Option<String>,
-        )>(
+        let atoms: Vec<Atom> = sqlx::query_as::<
+            _,
+            (
+                String,
+                String,
+                String,
+                String,
+                Option<String>,
+                Option<String>,
+                Option<String>,
+                String,
+                String,
+                String,
+                String,
+                Option<String>,
+                Option<String>,
+            ),
+        >(
             "SELECT id, content, title, snippet, source_url, source, published_at,
                     created_at, updated_at, embedding_status, tagging_status,
                     embedding_error, tagging_error
@@ -41,13 +53,37 @@ impl BriefingStore for PostgresStorage {
         .await
         .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?
         .into_iter()
-        .map(|(id, content, title, snippet, source_url, source, published_at,
-               created_at, updated_at, embedding_status, tagging_status,
-               embedding_error, tagging_error)| Atom {
-            id, content, title, snippet, source_url, source, published_at,
-            created_at, updated_at, embedding_status, tagging_status,
-            embedding_error, tagging_error,
-        })
+        .map(
+            |(
+                id,
+                content,
+                title,
+                snippet,
+                source_url,
+                source,
+                published_at,
+                created_at,
+                updated_at,
+                embedding_status,
+                tagging_status,
+                embedding_error,
+                tagging_error,
+            )| Atom {
+                id,
+                content,
+                title,
+                snippet,
+                source_url,
+                source,
+                published_at,
+                created_at,
+                updated_at,
+                embedding_status,
+                tagging_status,
+                embedding_error,
+                tagging_error,
+            },
+        )
         .collect();
 
         if atoms.is_empty() {
@@ -55,28 +91,30 @@ impl BriefingStore for PostgresStorage {
         }
 
         let atom_ids: Vec<String> = atoms.iter().map(|a| a.id.clone()).collect();
-        let tag_rows = sqlx::query_as::<_, (
-            String, String, String, Option<String>, String, bool,
-        )>(
-            "SELECT at.atom_id, t.id, t.name, t.parent_id, t.created_at, t.is_autotag_target
+        let tag_rows =
+            sqlx::query_as::<_, (String, String, String, Option<String>, String, bool, String)>(
+                "SELECT at.atom_id, t.id, t.name, t.parent_id, t.created_at, t.is_autotag_target, t.autotag_description
              FROM atom_tags at
              INNER JOIN tags t ON t.id = at.tag_id
              WHERE at.atom_id = ANY($1) AND at.db_id = $2",
-        )
-        .bind(&atom_ids)
-        .bind(&self.db_id)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+            )
+            .bind(&atom_ids)
+            .bind(&self.db_id)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
 
         let mut tag_map: HashMap<String, Vec<Tag>> = HashMap::new();
-        for (atom_id, id, name, parent_id, created_at, is_autotag_target) in tag_rows {
+        for (atom_id, id, name, parent_id, created_at, is_autotag_target, autotag_description) in
+            tag_rows
+        {
             tag_map.entry(atom_id).or_default().push(Tag {
                 id,
                 name,
                 parent_id,
                 created_at,
                 is_autotag_target,
+                autotag_description,
             });
         }
 
@@ -90,14 +128,13 @@ impl BriefingStore for PostgresStorage {
     }
 
     async fn count_new_atoms_since(&self, since: &str) -> StorageResult<i32> {
-        let count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM atoms WHERE created_at > $1 AND db_id = $2",
-        )
-        .bind(since)
-        .bind(&self.db_id)
-        .fetch_one(&self.pool)
-        .await
-        .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM atoms WHERE created_at > $1 AND db_id = $2")
+                .bind(since)
+                .bind(&self.db_id)
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
         Ok(count as i32)
     }
 
@@ -192,9 +229,10 @@ impl BriefingStore for PostgresStorage {
             last_run_at,
         };
 
-        let citations: Vec<BriefingCitation> = sqlx::query_as::<_, (
-            String, String, i32, String, String, Option<String>,
-        )>(
+        let citations: Vec<BriefingCitation> = sqlx::query_as::<
+            _,
+            (String, String, i32, String, String, Option<String>),
+        >(
             "SELECT bc.id, bc.briefing_id, bc.citation_index, bc.atom_id, bc.excerpt, a.source_url
              FROM briefing_citations bc
              LEFT JOIN atoms a ON a.id = bc.atom_id AND a.db_id = $2
@@ -207,19 +245,22 @@ impl BriefingStore for PostgresStorage {
         .await
         .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?
         .into_iter()
-        .map(|(id, briefing_id, citation_index, atom_id, excerpt, source_url)| {
-            BriefingCitation {
+        .map(
+            |(id, briefing_id, citation_index, atom_id, excerpt, source_url)| BriefingCitation {
                 id,
                 briefing_id,
                 citation_index,
                 atom_id,
                 excerpt,
                 source_url,
-            }
-        })
+            },
+        )
         .collect();
 
-        Ok(Some(BriefingWithCitations { briefing, citations }))
+        Ok(Some(BriefingWithCitations {
+            briefing,
+            citations,
+        }))
     }
 
     async fn list_briefings(&self, limit: i32) -> StorageResult<Vec<Briefing>> {
@@ -238,13 +279,15 @@ impl BriefingStore for PostgresStorage {
 
         Ok(rows
             .into_iter()
-            .map(|(id, content, created_at, atom_count, last_run_at)| Briefing {
-                id,
-                content,
-                created_at,
-                atom_count,
-                last_run_at,
-            })
+            .map(
+                |(id, content, created_at, atom_count, last_run_at)| Briefing {
+                    id,
+                    content,
+                    created_at,
+                    atom_count,
+                    last_run_at,
+                },
+            )
             .collect())
     }
 

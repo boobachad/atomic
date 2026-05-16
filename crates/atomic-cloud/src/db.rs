@@ -1,7 +1,7 @@
 //! Database queries for the management plane
 
 use crate::error::CloudError;
-use crate::models::{Customer, Event, Instance, Subscription};
+use crate::models::{status, subscription_status, Customer, Instance, Subscription};
 use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -35,19 +35,14 @@ pub async fn get_customer_by_stripe_id(
     pool: &PgPool,
     stripe_customer_id: &str,
 ) -> Result<Option<Customer>, CloudError> {
-    sqlx::query_as::<_, Customer>(
-        "SELECT * FROM customers WHERE stripe_customer_id = $1",
-    )
-    .bind(stripe_customer_id)
-    .fetch_optional(pool)
-    .await
-    .map_err(CloudError::from)
+    sqlx::query_as::<_, Customer>("SELECT * FROM customers WHERE stripe_customer_id = $1")
+        .bind(stripe_customer_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(CloudError::from)
 }
 
-pub async fn get_customer_by_id(
-    pool: &PgPool,
-    id: Uuid,
-) -> Result<Option<Customer>, CloudError> {
+pub async fn get_customer_by_id(pool: &PgPool, id: Uuid) -> Result<Option<Customer>, CloudError> {
     sqlx::query_as::<_, Customer>("SELECT * FROM customers WHERE id = $1")
         .bind(id)
         .fetch_optional(pool)
@@ -88,19 +83,6 @@ pub async fn upsert_subscription(
     .map_err(CloudError::from)
 }
 
-pub async fn get_subscription_by_stripe_id(
-    pool: &PgPool,
-    stripe_subscription_id: &str,
-) -> Result<Option<Subscription>, CloudError> {
-    sqlx::query_as::<_, Subscription>(
-        "SELECT * FROM subscriptions WHERE stripe_subscription_id = $1",
-    )
-    .bind(stripe_subscription_id)
-    .fetch_optional(pool)
-    .await
-    .map_err(CloudError::from)
-}
-
 pub async fn update_subscription_status(
     pool: &PgPool,
     stripe_subscription_id: &str,
@@ -135,7 +117,7 @@ pub async fn create_instance(
     sqlx::query_as::<_, Instance>(
         r#"
         INSERT INTO instances (id, customer_id, subscription_id, subdomain, fly_app_name, status, management_token)
-        VALUES ($1, $2, $3, $4, $5, 'provisioning', $6)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
         RETURNING *
         "#,
     )
@@ -144,6 +126,7 @@ pub async fn create_instance(
     .bind(subscription_id)
     .bind(subdomain)
     .bind(fly_app_name)
+    .bind(status::PROVISIONING)
     .bind(management_token)
     .fetch_one(pool)
     .await
@@ -155,34 +138,28 @@ pub async fn get_instance_by_customer_id(
     customer_id: Uuid,
 ) -> Result<Option<Instance>, CloudError> {
     sqlx::query_as::<_, Instance>(
-        "SELECT * FROM instances WHERE customer_id = $1 AND status NOT IN ('destroyed', 'failed') ORDER BY created_at DESC LIMIT 1",
+        "SELECT * FROM instances WHERE customer_id = $1 AND status NOT IN ($2, $3) ORDER BY created_at DESC LIMIT 1",
     )
     .bind(customer_id)
+    .bind(status::DESTROYED)
+    .bind(status::FAILED)
     .fetch_optional(pool)
     .await
     .map_err(CloudError::from)
-}
-
-pub async fn get_instance_by_id(
-    pool: &PgPool,
-    instance_id: Uuid,
-) -> Result<Option<Instance>, CloudError> {
-    sqlx::query_as::<_, Instance>("SELECT * FROM instances WHERE id = $1")
-        .bind(instance_id)
-        .fetch_optional(pool)
-        .await
-        .map_err(CloudError::from)
 }
 
 pub async fn get_instance_by_management_token(
     pool: &PgPool,
     token: &str,
 ) -> Result<Option<Instance>, CloudError> {
-    sqlx::query_as::<_, Instance>("SELECT * FROM instances WHERE management_token = $1 AND status != 'destroyed'")
-        .bind(token)
-        .fetch_optional(pool)
-        .await
-        .map_err(CloudError::from)
+    sqlx::query_as::<_, Instance>(
+        "SELECT * FROM instances WHERE management_token = $1 AND status != $2",
+    )
+    .bind(token)
+    .bind(status::DESTROYED)
+    .fetch_optional(pool)
+    .await
+    .map_err(CloudError::from)
 }
 
 pub async fn get_instance_by_subdomain(
@@ -190,12 +167,14 @@ pub async fn get_instance_by_subdomain(
     subdomain: &str,
 ) -> Result<Option<Instance>, CloudError> {
     sqlx::query_as::<_, Instance>(
-        "SELECT * FROM instances WHERE subdomain = $1 AND status NOT IN ('destroyed', 'failed')",
+        "SELECT * FROM instances WHERE subdomain = $1 AND status NOT IN ($2, $3)",
     )
     .bind(subdomain)
+    .bind(status::DESTROYED)
+    .bind(status::FAILED)
     .fetch_optional(pool)
-        .await
-        .map_err(CloudError::from)
+    .await
+    .map_err(CloudError::from)
 }
 
 pub async fn update_instance_status(
@@ -248,13 +227,15 @@ pub async fn list_instances_for_teardown(
         r#"
         SELECT i.* FROM instances i
         JOIN subscriptions s ON i.subscription_id = s.id
-        WHERE s.status = 'canceled'
+        WHERE s.status = $2
         AND s.cancel_at IS NOT NULL
         AND s.cancel_at + make_interval(days => $1) < now()
-        AND i.status != 'destroyed'
+        AND i.status != $3
         "#,
     )
     .bind(grace_period_days as i32)
+    .bind(subscription_status::CANCELED)
+    .bind(status::DESTROYED)
     .fetch_all(pool)
     .await
     .map_err(CloudError::from)
@@ -268,24 +249,19 @@ pub async fn create_magic_link(
     token: &str,
     expires_at: DateTime<Utc>,
 ) -> Result<(), CloudError> {
-    sqlx::query(
-        "INSERT INTO magic_links (id, email, token, expires_at) VALUES ($1, $2, $3, $4)",
-    )
-    .bind(Uuid::new_v4())
-    .bind(email)
-    .bind(token)
-    .bind(expires_at)
-    .execute(pool)
-    .await
-    .map_err(CloudError::from)?;
+    sqlx::query("INSERT INTO magic_links (id, email, token, expires_at) VALUES ($1, $2, $3, $4)")
+        .bind(Uuid::new_v4())
+        .bind(email)
+        .bind(token)
+        .bind(expires_at)
+        .execute(pool)
+        .await
+        .map_err(CloudError::from)?;
     Ok(())
 }
 
 /// Consume a magic link token. Returns the email if valid and unused.
-pub async fn consume_magic_link(
-    pool: &PgPool,
-    token: &str,
-) -> Result<Option<String>, CloudError> {
+pub async fn consume_magic_link(pool: &PgPool, token: &str) -> Result<Option<String>, CloudError> {
     let row = sqlx::query_as::<_, (String,)>(
         r#"
         UPDATE magic_links SET used = true

@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 description = "Standalone HTTP server for Atomic knowledge base"
 license = "MIT"
+default-run = "atomic-server"
 
 [lib]
 name = "atomic_server"
@@ -13,6 +14,10 @@ path = "src/lib.rs"
 name = "atomic-server"
 path = "src/main.rs"
 
+[[bin]]
+name = "export-openapi"
+path = "src/bin/export-openapi.rs"
+
 [dependencies]
 # Core library
 atomic-core = { path = "../atomic-core", features = ["openapi", "postgres"] }
@@ -21,10 +26,13 @@ atomic-core = { path = "../atomic-core", features = ["openapi", "postgres"] }
 actix-web = "4.9"
 actix-cors = "0.7"
 actix-ws = "0.3"
+actix-files = "0.6"
 
 # Async
-tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros", "signal"] }
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros", "signal", "process"] }
 futures = "0.3"
+async-stream = "0.3"
+tokio-stream = "0.1"
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
@@ -46,7 +54,6 @@ reqwest = { version = "0.12", features = ["json"] }
 
 # MCP server
 rmcp = { version = "0.15", features = ["server", "macros", "transport-streamable-http-server"] }
-rmcp-actix-web = "0.11"
 schemars = "1.0"
 
 # OpenAPI

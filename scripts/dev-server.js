@@ -17,8 +17,10 @@
  *   --port PORT          Server port (default: 8080)
  *   --bind ADDR          Bind address (default: 0.0.0.0)
  *   --data-dir PATH      Data directory for registry.db
+ *   --setup-token TOKEN  Override the default dev setup-token bypass
  *
- * All other flags are forwarded to atomic-server.
+ * All other flags are forwarded to atomic-server. By default this helper passes
+ * --dangerously-skip-setup-token for local development.
  * Both processes are killed together on Ctrl+C.
  */
 
@@ -61,6 +63,19 @@ const hasServeSubcommand = forwardArgs.includes('serve');
 const serverArgs = hasServeSubcommand
   ? forwardArgs
   : [...forwardArgs, 'serve', '--bind', '0.0.0.0'];
+
+const hasSetupBypassEnv = Object.prototype.hasOwnProperty.call(
+  process.env,
+  'ATOMIC_DANGEROUSLY_SKIP_SETUP_TOKEN'
+);
+
+if (
+  !hasSetupBypassEnv &&
+  !serverArgs.includes('--setup-token') &&
+  !serverArgs.includes('--dangerously-skip-setup-token')
+) {
+  serverArgs.push('--dangerously-skip-setup-token');
+}
 
 if (usePostgres) {
   if (!serverArgs.includes('--storage')) {

@@ -7,10 +7,32 @@ export type { Transport, HttpTransportConfig };
 let activeTransport: Transport | null = null;
 let localServerConfig: HttpTransportConfig | null = null;
 
+export const TRANSPORT_CHANGED_EVENT = 'atomic:transport-changed';
+export const TRANSPORT_CONNECTION_EVENT = 'atomic:transport-connection';
+
+function dispatchTransportChanged(): void {
+  if (typeof window === 'undefined') return;
+  window.dispatchEvent(new CustomEvent(TRANSPORT_CHANGED_EVENT));
+}
+
+function dispatchTransportConnection(connected: boolean): void {
+  if (typeof window === 'undefined') return;
+  window.dispatchEvent(new CustomEvent(TRANSPORT_CONNECTION_EVENT, {
+    detail: { connected },
+  }));
+}
+
 function wireConnectionCallback(transport: Transport): void {
   (transport as HttpTransport).onConnectionChange = (connected) => {
     useUIStore.getState().setServerConnected(connected);
+    dispatchTransportConnection(connected);
   };
+}
+
+function connectInBackground(transport: Transport): void {
+  void transport.connect().catch((err) => {
+    console.error('Transport connection failed:', err);
+  });
 }
 
 export function getTransport(): Transport {
@@ -30,7 +52,7 @@ export async function initTransport(): Promise<void> {
 
     activeTransport = new HttpTransport(config);
     wireConnectionCallback(activeTransport);
-    await activeTransport.connect();
+    connectInBackground(activeTransport);
   } else {
     // Web SPA — require explicit config from localStorage or prompt user
     const saved = localStorage.getItem('atomic-server-config');
@@ -38,7 +60,7 @@ export async function initTransport(): Promise<void> {
       const config: HttpTransportConfig = JSON.parse(saved);
       activeTransport = new HttpTransport(config);
       wireConnectionCallback(activeTransport);
-      await activeTransport.connect();
+      connectInBackground(activeTransport);
       void syncSharedConfig({ serverURL: config.baseUrl, apiToken: config.authToken });
     } else {
       // Create a disconnected HttpTransport — user must configure via settings
@@ -55,6 +77,7 @@ export async function switchTransport(config: HttpTransportConfig): Promise<void
   await activeTransport.connect();
   localStorage.setItem('atomic-server-config', JSON.stringify(config));
   void syncSharedConfig({ serverURL: config.baseUrl, apiToken: config.authToken });
+  dispatchTransportChanged();
 }
 
 /// Switch back to the local sidecar server (desktop only)
@@ -68,6 +91,7 @@ export async function switchToLocal(): Promise<void> {
   await activeTransport.connect();
   localStorage.removeItem('atomic-server-config');
   void clearSharedConfig();
+  dispatchTransportChanged();
 }
 
 /// True when running inside the Tauri desktop app (sidecar available)

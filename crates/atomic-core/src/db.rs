@@ -68,57 +68,7 @@ impl Database {
         create: bool,
         pool_size: usize,
     ) -> Result<Self, AtomicCoreError> {
-        // Register sqlite-vec extension
-        unsafe {
-            #[allow(clippy::missing_transmute_annotations)]
-            sqlite3_auto_extension(Some(std::mem::transmute(sqlite3_vec_init as *const ())));
-        }
-
-        // Create parent directory if needed
-        if create {
-            if let Some(parent) = path.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-        }
-
-        let conn = Connection::open(path)?;
-        conn.set_prepared_statement_cache_capacity(STMT_CACHE_CAPACITY);
-
-        // Base PRAGMAs + WAL size limit (64 MB) to prevent unbounded WAL growth
-        conn.execute_batch(&format!(
-            "{} PRAGMA journal_size_limit=67108864;",
-            BASE_PRAGMAS
-        ))?;
-
-        // Checkpoint any WAL from a previous run to start clean
-        conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
-
-        // Always run migrations — idempotent, handles both new and existing DBs
-        Self::run_migrations(&conn)?;
-
-        // Update query planner statistics so the optimizer has fresh data
-        conn.execute_batch("PRAGMA optimize=0x10002;")?;
-
-        // Warm the OS page cache and SQLite page cache by touching the indexes
-        // and table pages that the most common queries need on startup.
-        Self::warm_cache(&conn);
-
-        let db_path = path.to_path_buf();
-
-        // Pre-open read connections for the pool
-        let mut read_pool = Vec::with_capacity(pool_size);
-        for _ in 0..pool_size {
-            let rc = Connection::open(&db_path)?;
-            rc.set_prepared_statement_cache_capacity(STMT_CACHE_CAPACITY);
-            rc.execute_batch(&format!("{} PRAGMA query_only=ON;", BASE_PRAGMAS))?;
-            read_pool.push(Mutex::new(rc));
-        }
-
-        Ok(Database {
-            conn: Mutex::new(conn),
-            read_pool,
-            db_path,
-        })
+        Self::open_with_pool_size_and_settings_cleanup(path, create, pool_size, false)
     }
 
     /// Acquire a read-only connection from the pool.
@@ -151,6 +101,68 @@ impl Database {
     /// Creates the DB and parent directories if they don't exist.
     pub fn open_for_server(path: impl AsRef<Path>) -> Result<Self, AtomicCoreError> {
         Self::open_with_pool_size(path.as_ref(), true, SERVER_READ_POOL_SIZE)
+    }
+
+    /// Open a registry-backed data database with a larger read pool.
+    ///
+    /// This is the same as `open_for_server`, but runs the one migration step
+    /// that is only valid when this SQLite file is a per-database store whose
+    /// defaults live in registry.db.
+    pub fn open_for_server_with_registry(path: impl AsRef<Path>) -> Result<Self, AtomicCoreError> {
+        Self::open_with_pool_size_and_settings_cleanup(
+            path.as_ref(),
+            true,
+            SERVER_READ_POOL_SIZE,
+            true,
+        )
+    }
+
+    fn open_with_pool_size_and_settings_cleanup(
+        path: &Path,
+        create: bool,
+        pool_size: usize,
+        cleanup_legacy_seed_settings: bool,
+    ) -> Result<Self, AtomicCoreError> {
+        // Register sqlite-vec extension
+        unsafe {
+            #[allow(clippy::missing_transmute_annotations)]
+            sqlite3_auto_extension(Some(std::mem::transmute(sqlite3_vec_init as *const ())));
+        }
+
+        if create {
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+        }
+
+        let conn = Connection::open(path)?;
+        conn.set_prepared_statement_cache_capacity(STMT_CACHE_CAPACITY);
+
+        conn.execute_batch(&format!(
+            "{} PRAGMA journal_size_limit=67108864;",
+            BASE_PRAGMAS
+        ))?;
+        conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
+
+        Self::run_migrations_internal(&conn, cleanup_legacy_seed_settings)?;
+
+        conn.execute_batch("PRAGMA optimize=0x10002;")?;
+        Self::warm_cache(&conn);
+
+        let db_path = path.to_path_buf();
+        let mut read_pool = Vec::with_capacity(pool_size);
+        for _ in 0..pool_size {
+            let rc = Connection::open(&db_path)?;
+            rc.set_prepared_statement_cache_capacity(STMT_CACHE_CAPACITY);
+            rc.execute_batch(&format!("{} PRAGMA query_only=ON;", BASE_PRAGMAS))?;
+            read_pool.push(Mutex::new(rc));
+        }
+
+        Ok(Database {
+            conn: Mutex::new(conn),
+            read_pool,
+            db_path,
+        })
     }
 
     /// Walk the hot indexes and table pages into the OS + SQLite page caches.
@@ -199,9 +211,20 @@ impl Database {
     ///   1. Add a new `if version < N` block at the end (before the virtual-table section)
     ///   2. End the block with `PRAGMA user_version = N;`
     ///   3. Bump LATEST_VERSION
-    const LATEST_VERSION: i32 = 12;
+    const LATEST_VERSION: i32 = 17;
 
     pub fn run_migrations(conn: &Connection) -> Result<(), AtomicCoreError> {
+        Self::run_migrations_internal(conn, false)
+    }
+
+    pub fn run_migrations_for_registry(conn: &Connection) -> Result<(), AtomicCoreError> {
+        Self::run_migrations_internal(conn, true)
+    }
+
+    fn run_migrations_internal(
+        conn: &Connection,
+        cleanup_legacy_seed_settings: bool,
+    ) -> Result<(), AtomicCoreError> {
         let version: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
 
         // --- V0 → V1: Baseline schema (tables + indexes) ---
@@ -446,9 +469,8 @@ impl Database {
                     .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
                     .collect::<Result<Vec<_>, _>>()?;
 
-                let mut update_stmt = conn.prepare(
-                    "UPDATE atoms SET title = ?1, snippet = ?2 WHERE id = ?3",
-                )?;
+                let mut update_stmt =
+                    conn.prepare("UPDATE atoms SET title = ?1, snippet = ?2 WHERE id = ?3")?;
                 for (id, content) in &atoms {
                     let (title, snippet) = crate::extract_title_and_snippet(content, 300);
                     update_stmt.execute(rusqlite::params![title, snippet, id])?;
@@ -674,6 +696,171 @@ impl Database {
             )?;
         }
 
+        // --- V12 → V13: Materialized markdown atom links ---
+        if version < 13 {
+            conn.execute_batch(
+                r#"
+                CREATE TABLE IF NOT EXISTS atom_links (
+                    id TEXT PRIMARY KEY,
+                    source_atom_id TEXT NOT NULL,
+                    target_atom_id TEXT,
+                    raw_target TEXT NOT NULL,
+                    label TEXT,
+                    target_kind TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    start_offset INTEGER,
+                    end_offset INTEGER,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_atom_links_source
+                    ON atom_links(source_atom_id, start_offset);
+                CREATE INDEX IF NOT EXISTS idx_atom_links_target
+                    ON atom_links(target_atom_id)
+                    WHERE target_atom_id IS NOT NULL;
+                CREATE INDEX IF NOT EXISTS idx_atom_links_status
+                    ON atom_links(status);
+                "#,
+            )?;
+
+            conn.execute_batch("PRAGMA user_version = 13;")?;
+        }
+
+        // --- V13 → V14: Durable atom pipeline queue ---
+        if version < 14 {
+            conn.execute_batch(
+                r#"
+                CREATE TABLE IF NOT EXISTS atom_pipeline_jobs (
+                    atom_id TEXT PRIMARY KEY REFERENCES atoms(id) ON DELETE CASCADE,
+                    embed_requested INTEGER NOT NULL DEFAULT 0,
+                    tag_requested INTEGER NOT NULL DEFAULT 0,
+                    reason TEXT NOT NULL,
+                    not_before TEXT NOT NULL,
+                    state TEXT NOT NULL DEFAULT 'pending',
+                    lease_until TEXT,
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    atom_updated_at TEXT NOT NULL,
+                    last_error TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_atom_pipeline_jobs_claim
+                    ON atom_pipeline_jobs(state, not_before, updated_at);
+                CREATE INDEX IF NOT EXISTS idx_atom_pipeline_jobs_lease
+                    ON atom_pipeline_jobs(state, lease_until);
+
+                PRAGMA user_version = 14;
+                "#,
+            )?;
+        }
+
+        // --- V14 → V15: Finish settings resolver migration ---
+        //
+        // Pre-this-version, every per-DB settings table was seeded with the
+        // entire `DEFAULT_SETTINGS` map at open time. The override-aware
+        // resolver in `AtomicCore::get_settings_with_source` treats any
+        // per-DB row as an override on top of the registry default. As long
+        // as those legacy rows match the registry value they look harmless
+        // — but the moment the user edits a setting at N=1 (which writes
+        // only to the registry), the registry diverges from the stale
+        // per-DB row and the row starts shadowing the new value, making
+        // edits appear to do nothing. Wipe the seeds so future resolver
+        // reads fall through to the registry cleanly.
+        //
+        // This cleanup is only valid for registry-backed data DBs. Standalone
+        // SQLite `AtomicCore::open_or_create` DBs store their canonical
+        // settings in this table, so plain Database opens preserve rows and
+        // only advance the schema version.
+        //
+        // In registry-backed deployments before this version, settings writes
+        // routed to the registry, so a per-DB row for one of these keys was
+        // definitionally a seed (never user-set). Per CLAUDE.md pre-alpha
+        // policy we accept erasing any in-flight per-DB overrides written by
+        // builds of this branch before the resolver landed.
+        if version < 15 {
+            if cleanup_legacy_seed_settings {
+                let keys: Vec<&str> = crate::settings::DEFAULT_SETTINGS
+                    .iter()
+                    .map(|(k, _)| *k)
+                    .collect();
+                if !keys.is_empty() {
+                    let placeholders = std::iter::repeat("?")
+                        .take(keys.len())
+                        .collect::<Vec<_>>()
+                        .join(",");
+                    let sql = format!("DELETE FROM settings WHERE key IN ({})", placeholders);
+                    conn.execute(&sql, rusqlite::params_from_iter(keys.iter()))?;
+                }
+            }
+            conn.execute_batch("PRAGMA user_version = 15;")?;
+        }
+
+        // --- V15 → V16: Per-target auto-tag guidance ---
+        if version < 16 {
+            let has_col: bool = conn
+                .query_row(
+                    "SELECT 1 FROM pragma_table_info('tags') WHERE name='autotag_description'",
+                    [],
+                    |_| Ok(true),
+                )
+                .unwrap_or(false);
+
+            if !has_col {
+                conn.execute_batch(
+                    "ALTER TABLE tags ADD COLUMN autotag_description TEXT NOT NULL DEFAULT '';",
+                )?;
+            }
+
+            conn.execute_batch("PRAGMA user_version = 16;")?;
+        }
+
+        // --- V16 → V17: atom_tags.source + legacy-count snapshot ---
+        // We need to distinguish auto-extracted tag assignments from manual ones
+        // so the "Re-tag all atoms" feature can prune auto-only assignments
+        // without touching the user's deliberate work. Rows that exist before
+        // this migration runs have unknown provenance — they default to 'auto'
+        // (the realistic majority case), and we snapshot how many such rows
+        // existed so the UI can warn about them honestly. The snapshot is
+        // intentionally NOT written when we're migrating the registry DB; only
+        // data DBs hold atom_tags.
+        if version < 17 {
+            let has_col: bool = conn
+                .query_row(
+                    "SELECT 1 FROM pragma_table_info('atom_tags') WHERE name='source'",
+                    [],
+                    |_| Ok(true),
+                )
+                .unwrap_or(false);
+
+            if !has_col {
+                conn.execute_batch(
+                    "ALTER TABLE atom_tags ADD COLUMN source TEXT NOT NULL DEFAULT 'auto';",
+                )?;
+
+                if !cleanup_legacy_seed_settings {
+                    let legacy_count: i64 = conn
+                        .query_row("SELECT COUNT(*) FROM atom_tags", [], |row| row.get(0))
+                        .unwrap_or(0);
+                    // Only persist the snapshot when there are actually rows
+                    // being defaulted to 'auto'. Skipping the write on fresh
+                    // DBs preserves the "per-DB settings table starts empty"
+                    // invariant; the pipeline-status query treats a missing
+                    // key as 0, which is the correct UI state in both cases.
+                    if legacy_count > 0 {
+                        crate::settings::set_setting(
+                            conn,
+                            "atom_tags_legacy_auto_count",
+                            &legacy_count.to_string(),
+                        )?;
+                    }
+                }
+            }
+
+            conn.execute_batch(&format!("PRAGMA user_version = {};", Self::LATEST_VERSION))?;
+        }
+
         // --- Triggers (recreated every startup to stay current) ---
         conn.execute_batch(
             "DROP TRIGGER IF EXISTS atom_tags_insert_count;
@@ -733,8 +920,7 @@ impl Database {
             )
             .unwrap_or_default();
 
-        if vec_tags_sql.is_empty()
-            || !vec_tags_sql.contains(&format!("float[{}]", vec_chunks_dim))
+        if vec_tags_sql.is_empty() || !vec_tags_sql.contains(&format!("float[{}]", vec_chunks_dim))
         {
             conn.execute("DROP TABLE IF EXISTS vec_tags", []).ok();
             conn.execute("DELETE FROM tag_embeddings", []).ok();
@@ -780,7 +966,96 @@ impl Database {
             )?;
         }
 
-        crate::settings::migrate_settings(conn)?;
+        // FTS5 for atom-level keyword search (powers the search palette).
+        // External content backed by the atoms table; kept in sync manually
+        // from `storage::sqlite::atoms` on insert/update/delete.
+        let atoms_fts_sql: String = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='atoms_fts'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or_default();
+
+        let has_atoms_fts = atoms_fts_sql.contains("content='atoms'");
+
+        if !has_atoms_fts {
+            conn.execute_batch("DROP TABLE IF EXISTS atoms_fts")?;
+            conn.execute_batch(
+                r#"
+                CREATE VIRTUAL TABLE atoms_fts USING fts5(
+                    id UNINDEXED,
+                    content,
+                    content='atoms',
+                    content_rowid='rowid'
+                );
+                "#,
+            )?;
+            conn.execute("INSERT INTO atoms_fts(atoms_fts) VALUES('rebuild')", [])?;
+        }
+
+        let wiki_fts_sql: String = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='wiki_articles_fts'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or_default();
+
+        if wiki_fts_sql.is_empty() {
+            conn.execute_batch(
+                r#"
+                CREATE VIRTUAL TABLE wiki_articles_fts USING fts5(
+                    id UNINDEXED,
+                    tag_id UNINDEXED,
+                    tag_name,
+                    content
+                );
+                "#,
+            )?;
+            conn.execute("DELETE FROM wiki_articles_fts", [])?;
+            conn.execute(
+                "INSERT INTO wiki_articles_fts(id, tag_id, tag_name, content)
+                 SELECT w.id, w.tag_id, t.name, w.content
+                 FROM wiki_articles w
+                 JOIN tags t ON t.id = w.tag_id",
+                [],
+            )?;
+        }
+
+        let chat_fts_sql: String = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='chat_messages_fts'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or_default();
+
+        if chat_fts_sql.is_empty() {
+            conn.execute_batch(
+                r#"
+                CREATE VIRTUAL TABLE chat_messages_fts USING fts5(
+                    id UNINDEXED,
+                    conversation_id UNINDEXED,
+                    content
+                );
+                "#,
+            )?;
+            conn.execute("DELETE FROM chat_messages_fts", [])?;
+            conn.execute(
+                "INSERT INTO chat_messages_fts(id, conversation_id, content)
+                 SELECT id, conversation_id, content FROM chat_messages",
+                [],
+            )?;
+        }
+
+        // Per-DB settings tables intentionally start empty under the
+        // registry-defaults + per-DB-overrides model. Defaults live in
+        // `registry.db` (seeded by `Registry::open` via `migrate_settings_to`);
+        // per-DB rows only exist when the user explicitly overrides a value.
+        // Registry-backed opens run the V14→V15 cleanup above to purge any
+        // legacy seed rows so the resolver's "any per-DB row is an override"
+        // rule stays correct.
 
         Ok(())
     }
@@ -813,7 +1088,9 @@ pub fn will_dimension_change(conn: &Connection, key: &str, new_value: &str) -> (
     (current_dim != new_dim, new_dim)
 }
 
-/// Recreate vec_chunks table with a new dimension and reset embedding status
+/// Recreate vec_chunks table with a new dimension and reset embedding status.
+/// Chunk rows are preserved so embed-only re-embedding can reuse the existing
+/// markdown-aware chunk boundaries.
 pub fn recreate_vec_chunks_with_dimension(
     conn: &Connection,
     dimension: usize,
@@ -827,28 +1104,16 @@ pub fn recreate_vec_chunks_with_dimension(
     conn.execute(&create_sql, [])?;
 
     // Reset ONLY embedding status to pending
-    conn.execute(
-        "UPDATE atoms SET embedding_status = 'pending'",
-        [],
-    )?;
+    conn.execute("UPDATE atoms SET embedding_status = 'pending'", [])?;
 
     // Set tagging_status to 'skipped' - existing tags are preserved
-    conn.execute(
-        "UPDATE atoms SET tagging_status = 'skipped'",
-        [],
-    )?;
+    conn.execute("UPDATE atoms SET tagging_status = 'skipped'", [])?;
 
-    // Clear all existing chunk data
-    conn.execute("DELETE FROM atom_chunks", [])?;
-
-    // Clear FTS5 table
-    conn.execute("DELETE FROM atom_chunks_fts", [])?;
+    // Clear old chunk vectors while preserving chunk ids/content.
+    conn.execute("UPDATE atom_chunks SET embedding = NULL", [])?;
 
     // Clear semantic edges
     conn.execute("DELETE FROM semantic_edges", [])?;
-
-    // Clear canvas positions
-    conn.execute("DELETE FROM atom_positions", [])?;
 
     // Clear tag embeddings and recreate vec_tags with new dimension
     conn.execute("DELETE FROM tag_embeddings", []).ok();
@@ -868,6 +1133,81 @@ mod tests {
     use tempfile::NamedTempFile;
 
     #[test]
+    fn test_v15_wipes_legacy_per_db_seed_rows() {
+        // Pre-V15, every per-DB connection got the entire DEFAULT_SETTINGS
+        // map seeded into its `settings` table. The resolver treats per-DB
+        // rows as overrides on top of registry defaults — the moment the
+        // user edits a setting at N=1 (writes to registry only), the
+        // registry diverges from the stale per-DB row and the row starts
+        // shadowing the new value, making edits look broken. V15 deletes
+        // those rows.
+        //
+        // Simulate the pre-V15 state by opening a fresh DB (which now runs
+        // *all* migrations including V15), forcibly downgrading the
+        // user_version, re-inserting seed rows, then re-running the
+        // migration.
+        let temp_file = NamedTempFile::new().unwrap();
+        let db = Database::open_or_create(temp_file.path()).unwrap();
+
+        {
+            let conn = db.conn.lock().unwrap();
+            // Force the schema back to V14 and re-seed the legacy rows.
+            conn.execute_batch("PRAGMA user_version = 14;").unwrap();
+            crate::settings::migrate_settings(&conn).unwrap();
+            let pre_count: i64 = conn
+                .query_row("SELECT COUNT(*) FROM settings", [], |row| row.get(0))
+                .unwrap();
+            assert!(
+                pre_count > 0,
+                "test setup: legacy rows should be present before V15"
+            );
+
+            // Run migrations again — V15 should fire and wipe the seed rows.
+            Database::run_migrations_for_registry(&conn).unwrap();
+
+            let version: i32 = conn
+                .query_row("PRAGMA user_version", [], |row| row.get(0))
+                .unwrap();
+            assert!(
+                version >= 15,
+                "user_version should be ≥15 after migration, got {version}"
+            );
+
+            // Every key in DEFAULT_SETTINGS must be gone — they were seeds.
+            for (key, _) in crate::settings::DEFAULT_SETTINGS {
+                let exists: bool = conn
+                    .query_row("SELECT 1 FROM settings WHERE key = ?1", [key], |_| Ok(true))
+                    .unwrap_or(false);
+                assert!(
+                    !exists,
+                    "V15 should have removed legacy seed row for '{key}'"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_v15_preserves_standalone_settings_rows() {
+        // Registry-less SQLite cores use the data DB's settings table as the
+        // canonical settings store. The V15 seed cleanup is only valid when a
+        // registry is attached, so the plain migration path must preserve
+        // those rows.
+        let temp_file = NamedTempFile::new().unwrap();
+        let db = Database::open_or_create(temp_file.path()).unwrap();
+
+        {
+            let conn = db.conn.lock().unwrap();
+            conn.execute_batch("PRAGMA user_version = 14;").unwrap();
+            crate::settings::set_setting(&conn, "chat_model", "custom/model").unwrap();
+
+            Database::run_migrations(&conn).unwrap();
+
+            let value = crate::settings::get_setting(&conn, "chat_model").unwrap();
+            assert_eq!(value, "custom/model");
+        }
+    }
+
+    #[test]
     fn test_create_database() {
         let temp_file = NamedTempFile::new().unwrap();
         let db = Database::open_or_create(temp_file.path()).unwrap();
@@ -875,7 +1215,11 @@ mod tests {
         // Verify we got a valid database
         let conn = db.conn.lock().unwrap();
         let count: i32 = conn
-            .query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table'", [], |row| row.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table'",
+                [],
+                |row| row.get(0),
+            )
             .unwrap();
 
         // Should have at least our core tables (16 regular + 2 virtual)

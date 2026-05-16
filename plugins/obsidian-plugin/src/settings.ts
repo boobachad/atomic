@@ -69,7 +69,7 @@ export class AtomicSettingTab extends PluginSettingTab {
         text.inputEl.type = "password";
       });
 
-    let dbDebounce: ReturnType<typeof setTimeout> | null = null;
+    let dbDebounce: ReturnType<Window["setTimeout"]> | null = null;
     new Setting(containerEl)
       .setName("Database")
       .setDesc("Name of the database to sync with (leave empty for default)")
@@ -80,8 +80,8 @@ export class AtomicSettingTab extends PluginSettingTab {
           .onChange(async (value) => {
             this.plugin.settings.databaseName = value;
             await this.plugin.saveSettings();
-            if (dbDebounce) clearTimeout(dbDebounce);
-            dbDebounce = setTimeout(() => {
+            if (dbDebounce) activeWindow.clearTimeout(dbDebounce);
+            dbDebounce = activeWindow.setTimeout(() => {
               this.plugin.syncEngine.resetAndResync().catch((e) =>
                 console.error("Atomic: resetAndResync failed:", e)
               );

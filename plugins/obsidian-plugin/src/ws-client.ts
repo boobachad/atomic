@@ -47,7 +47,7 @@ export class AtomicWebSocket {
   private handlers = new Set<EventHandler>();
   private wantOpen = false;
   private reconnectAttempt = 0;
-  private reconnectTimer: number | null = null;
+  private reconnectTimer: ReturnType<Window["setTimeout"]> | null = null;
 
   constructor(settings: AtomicSettings) {
     this.settings = settings;
@@ -79,7 +79,7 @@ export class AtomicWebSocket {
   close(): void {
     this.wantOpen = false;
     if (this.reconnectTimer !== null) {
-      window.clearTimeout(this.reconnectTimer);
+      activeWindow.clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
     if (this.socket) {
@@ -134,7 +134,7 @@ export class AtomicWebSocket {
     const delays = [500, 1000, 2000, 4000, 8000, 15000];
     const delay = delays[Math.min(this.reconnectAttempt, delays.length - 1)];
     this.reconnectAttempt++;
-    this.reconnectTimer = window.setTimeout(() => {
+    this.reconnectTimer = activeWindow.setTimeout(() => {
       this.reconnectTimer = null;
       this.connect();
     }, delay);

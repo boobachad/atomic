@@ -66,6 +66,49 @@ export interface ConversationWithMessages extends Conversation {
   messages: ChatMessageWithContext[];
 }
 
+interface PageContext {
+  view: string;
+  atom_id?: string | null;
+  atom_title?: string | null;
+  atom_snippet?: string | null;
+  wiki_tag_id?: string | null;
+  wiki_tag_name?: string | null;
+  selected_tag_id?: string | null;
+}
+
+function buildPageContext(): PageContext {
+  const ui = useUIStore.getState();
+
+  if (ui.readerState.atomId) {
+    return {
+      view: ui.readerState.editing ? 'atom_editor' : 'atom_reader',
+      atom_id: ui.readerState.atomId,
+      selected_tag_id: ui.selectedTagId,
+    };
+  }
+
+  if (ui.wikiReaderState.tagId) {
+    return {
+      view: 'wiki_reader',
+      wiki_tag_id: ui.wikiReaderState.tagId,
+      wiki_tag_name: ui.wikiReaderState.tagName,
+      selected_tag_id: ui.selectedTagId,
+    };
+  }
+
+  if (ui.localGraph.isOpen && ui.localGraph.centerAtomId) {
+    return {
+      view: 'atom_graph',
+      atom_id: ui.localGraph.centerAtomId,
+      selected_tag_id: ui.selectedTagId,
+    };
+  }
+
+  return {
+    view: ui.viewMode,
+    selected_tag_id: ui.selectedTagId,
+  };
+}
 
 // ==================== Store ====================
 
@@ -180,7 +223,11 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         });
         useUIStore.getState().setChatSidebarConversationId(id);
       } else {
-        set({ error: 'Conversation not found', isLoading: false });
+        // Conversation went missing (deleted, different DB, stale persisted
+        // id from a prior session) — fall back to the list rather than
+        // leaving the user staring at an error with no recovery path.
+        set({ isLoading: false, error: null });
+        get().showList();
       }
     } catch (e) {
       set({ error: String(e), isLoading: false });
@@ -391,6 +438,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         conversationId: currentConversation.id,
         content,
         canvasContext,
+        pageContext: buildPageContext(),
       });
 
       // Refetch the conversation to get the properly saved messages

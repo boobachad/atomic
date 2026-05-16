@@ -83,9 +83,26 @@ export const COMMAND_MAP: Record<string, CommandSpec> = {
     argsMode: 'body',
     transformArgs: atomBody,
   },
+  process_atom_pipeline: {
+    method: 'POST',
+    path: (a) => `/api/atoms/${encodeURIComponent(a.id as string)}/process`,
+  },
   delete_atom: {
     method: 'DELETE',
     path: (a) => `/api/atoms/${encodeURIComponent(a.id as string)}`,
+  },
+  get_atom_link_suggestions: {
+    method: 'GET',
+    path: (a) => {
+      const params = new URLSearchParams();
+      if (a.q != null) params.set('q', String(a.q));
+      if (a.limit != null) params.set('limit', String(a.limit));
+      return `/api/atoms/link-suggestions${params.toString() ? `?${params}` : ''}`;
+    },
+  },
+  get_atom_links: {
+    method: 'GET',
+    path: (a) => `/api/atoms/${encodeURIComponent(a.id as string)}/links`,
   },
 
   // ==================== Tags ====================
@@ -131,6 +148,12 @@ export const COMMAND_MAP: Record<string, CommandSpec> = {
     argsMode: 'body',
     transformArgs: (a) => ({ value: a.value }),
   },
+  set_tag_autotag_description: {
+    method: 'PUT',
+    path: (a) => `/api/tags/${encodeURIComponent(a.id as string)}/autotag-description`,
+    argsMode: 'body',
+    transformArgs: (a) => ({ description: a.description ?? '' }),
+  },
   configure_autotag_targets: {
     method: 'POST',
     path: '/api/tags/configure-autotag-targets',
@@ -160,6 +183,12 @@ export const COMMAND_MAP: Record<string, CommandSpec> = {
     argsMode: 'body',
     transformArgs: (a) => ({ query: a.query, mode: 'hybrid', limit: a.limit, threshold: a.threshold }),
   },
+  search_global_keyword: {
+    method: 'POST',
+    path: '/api/search/global',
+    argsMode: 'body',
+    transformArgs: (a) => ({ query: a.query, section_limit: a.sectionLimit }),
+  },
   find_similar_atoms: {
     method: 'GET',
     path: (a) => `/api/atoms/${encodeURIComponent(a.atomId as string)}/similar?limit=${a.limit ?? 10}&threshold=${a.threshold ?? 0.7}`,
@@ -184,9 +213,24 @@ export const COMMAND_MAP: Record<string, CommandSpec> = {
     method: 'POST',
     path: (a) => `/api/tagging/retry/${encodeURIComponent(a.atomId as string)}`,
   },
+  retry_failed_embeddings: {
+    method: 'POST',
+    path: (a) => `/api/embeddings/retry-failed${a.dbId ? `?db=${encodeURIComponent(a.dbId as string)}` : ''}`,
+    transformResponse: (d: any) => d.count as number,
+  },
+  retry_failed_tagging: {
+    method: 'POST',
+    path: (a) => `/api/tagging/retry-failed${a.dbId ? `?db=${encodeURIComponent(a.dbId as string)}` : ''}`,
+    transformResponse: (d: any) => d.count as number,
+  },
   reembed_all_atoms: {
     method: 'POST',
-    path: '/api/embeddings/reembed-all',
+    path: (a) => `/api/embeddings/reembed-all${a.dbId ? `?db=${encodeURIComponent(a.dbId as string)}` : ''}`,
+    transformResponse: (d: any) => d.count as number,
+  },
+  retag_all_atoms: {
+    method: 'POST',
+    path: (a) => `/api/tagging/retag-all${a.dbId ? `?db=${encodeURIComponent(a.dbId as string)}` : ''}`,
     transformResponse: (d: any) => d.count as number,
   },
   reset_stuck_processing: {
@@ -198,6 +242,10 @@ export const COMMAND_MAP: Record<string, CommandSpec> = {
     method: 'GET',
     path: (a) => `/api/atoms/${encodeURIComponent(a.atomId as string)}/embedding-status`,
     transformResponse: (d: any) => d.status as string,
+  },
+  get_all_pipeline_statuses: {
+    method: 'GET',
+    path: '/api/embeddings/status/all',
   },
 
   // ==================== Briefings ====================
@@ -220,6 +268,20 @@ export const COMMAND_MAP: Record<string, CommandSpec> = {
   run_briefing_now: {
     method: 'POST',
     path: '/api/briefings/run',
+  },
+  get_briefing_schedule: {
+    method: 'GET',
+    path: '/api/briefings/schedule',
+  },
+  set_briefing_schedule: {
+    method: 'PUT',
+    path: '/api/briefings/schedule',
+    argsMode: 'body',
+    transformArgs: (a) => ({
+      frequency: a.frequency,
+      time: a.time,
+      weekday: a.weekday ?? null,
+    }),
   },
 
   // ==================== Wiki ====================
@@ -305,6 +367,10 @@ export const COMMAND_MAP: Record<string, CommandSpec> = {
     path: (a) => `/api/settings/${encodeURIComponent(a.key as string)}`,
     argsMode: 'body',
     transformArgs: (a) => ({ value: a.value }),
+  },
+  clear_setting_override: {
+    method: 'DELETE',
+    path: (a) => `/api/settings/${encodeURIComponent(a.key as string)}`,
   },
   test_openrouter_connection: {
     method: 'POST',
@@ -452,6 +518,7 @@ export const COMMAND_MAP: Record<string, CommandSpec> = {
     transformArgs: (a) => ({
       content: a.content,
       ...(a.canvasContext ? { canvas_context: a.canvasContext } : {}),
+      ...(a.pageContext ? { page_context: a.pageContext } : {}),
     }),
   },
 
@@ -490,7 +557,7 @@ export const COMMAND_MAP: Record<string, CommandSpec> = {
     method: 'POST',
     path: '/api/setup/claim',
     argsMode: 'body',
-    transformArgs: (a) => ({ name: a.name }),
+    transformArgs: (a) => ({ name: a.name, setup_token: a.setupToken ?? a.setup_token }),
   },
 
   // ==================== Auth / Tokens ====================
@@ -627,6 +694,18 @@ export const COMMAND_MAP: Record<string, CommandSpec> = {
   get_database_stats: {
     method: 'GET',
     path: (a) => `/api/databases/${encodeURIComponent(a.id as string)}/stats`,
+  },
+  start_markdown_export: {
+    method: 'POST',
+    path: (a) => `/api/databases/${encodeURIComponent(a.id as string)}/exports/markdown`,
+  },
+  get_export_job: {
+    method: 'GET',
+    path: (a) => `/api/exports/${encodeURIComponent(a.id as string)}`,
+  },
+  cancel_export_job: {
+    method: 'DELETE',
+    path: (a) => `/api/exports/${encodeURIComponent(a.id as string)}`,
   },
 
   // ==================== Logs ====================

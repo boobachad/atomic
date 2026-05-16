@@ -170,12 +170,12 @@ export default class AtomicPlugin extends Plugin {
     const { workspace } = this.app;
     const existing = workspace.getLeavesOfType(CANVAS_VIEW_TYPE);
     if (existing.length > 0) {
-      await workspace.revealLeaf(existing[0]);
+      workspace.setActiveLeaf(existing[0], { focus: true });
       return;
     }
     const leaf = workspace.getLeaf("tab");
     await leaf.setViewState({ type: CANVAS_VIEW_TYPE, active: true });
-    await workspace.revealLeaf(leaf);
+    workspace.setActiveLeaf(leaf, { focus: true });
   }
 
   private async activateView(viewType: string): Promise<void> {
@@ -194,7 +194,7 @@ export default class AtomicPlugin extends Plugin {
     }
 
     if (leaf) {
-      await workspace.revealLeaf(leaf);
+      workspace.setActiveLeaf(leaf, { focus: true });
     }
   }
 }

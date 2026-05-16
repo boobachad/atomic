@@ -20,11 +20,15 @@ interface WikiArticleContentProps {
   updatedAt: string;
   sourceCount: number;
   titleActions?: ReactNode;
-  onViewAtom: (atomId: string) => void;
+  /** When present, open the search bar pre-populated with this string so the
+   *  article scrolls to / highlights that match on open. Used by the search
+   *  palette to take a wiki hit straight to its specific occurrence. */
+  highlightText?: string | null;
+  onViewAtom: (atomId: string, highlightText?: string) => void;
   onNavigateToArticle: (tagId: string, tagName: string) => void;
 }
 
-export function WikiArticleContent({ article, citations, wikiLinks, relatedTags, tagName, updatedAt, sourceCount, titleActions, onViewAtom, onNavigateToArticle }: WikiArticleContentProps) {
+export function WikiArticleContent({ article, citations, wikiLinks, relatedTags, tagName, updatedAt, sourceCount, titleActions, highlightText, onViewAtom, onNavigateToArticle }: WikiArticleContentProps) {
   const [activeCitation, setActiveCitation] = useState<WikiCitation | null>(null);
   const [anchorRect, setAnchorRect] = useState<{ top: number; left: number; bottom: number; width: number } | null>(null);
 
@@ -54,6 +58,16 @@ export function WikiArticleContent({ article, citations, wikiLinks, relatedTags,
     document.addEventListener('keydown', handleKeyDown);
     return () => document.removeEventListener('keydown', handleKeyDown);
   }, [openSearch]);
+
+  // When the caller passes a highlight string (e.g. from the search palette
+  // selecting a specific wiki match), open the search bar primed with it.
+  // The content-search hook handles scrolling to the first occurrence.
+  useEffect(() => {
+    if (highlightText && highlightText.trim()) {
+      openSearch();
+      setSearchQuery(highlightText);
+    }
+  }, [highlightText, openSearch, setSearchQuery]);
 
   // Create a map of citation index to citation object
   const citationMap = new Map(citations.map(c => [c.citation_index, c]));

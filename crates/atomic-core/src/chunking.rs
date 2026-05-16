@@ -13,8 +13,8 @@
 //! Exact token counts (via `count_tokens`) are available for callers that
 //! need precision (e.g. LLM context budgets).
 
-use std::sync::LazyLock;
 use pulldown_cmark::{Event, Parser, Tag, TagEnd};
+use std::sync::LazyLock;
 use tiktoken_rs::{cl100k_base, CoreBPE};
 
 /// Approximate characters per token (~4 for English text).
@@ -27,9 +27,8 @@ const MIN_CHUNK_CHARS: usize = 60 * CHARS_PER_TOKEN;
 const MAX_CHUNK_CHARS: usize = 1000 * CHARS_PER_TOKEN;
 
 /// Lazily initialized tokenizer (loaded once, reused for all operations)
-static BPE: LazyLock<CoreBPE> = LazyLock::new(|| {
-    cl100k_base().expect("Failed to load tiktoken encoding")
-});
+static BPE: LazyLock<CoreBPE> =
+    LazyLock::new(|| cl100k_base().expect("Failed to load tiktoken encoding"));
 
 /// Count tokens using tiktoken's cl100k_base encoding (used by OpenAI embedding models).
 /// This is the precise, slower path — used for LLM context budgets, NOT for chunking.
@@ -88,7 +87,10 @@ fn parse_markdown_blocks(content: &str) -> Vec<MarkdownBlock> {
                     if let Some((bt, start, end)) = current_block.take() {
                         let text = content[start..end].trim().to_string();
                         if !text.is_empty() {
-                            blocks.push(MarkdownBlock { block_type: bt, content: text });
+                            blocks.push(MarkdownBlock {
+                                block_type: bt,
+                                content: text,
+                            });
                         }
                     }
                     current_block = Some((BlockType::CodeBlock, range.start, range.end));
@@ -104,7 +106,10 @@ fn parse_markdown_blocks(content: &str) -> Vec<MarkdownBlock> {
                         current_block = None;
                         let text = content[start..range.end].trim().to_string();
                         if !text.is_empty() {
-                            blocks.push(MarkdownBlock { block_type: BlockType::CodeBlock, content: text });
+                            blocks.push(MarkdownBlock {
+                                block_type: BlockType::CodeBlock,
+                                content: text,
+                            });
                         }
                     }
                     _ => {}
@@ -115,7 +120,10 @@ fn parse_markdown_blocks(content: &str) -> Vec<MarkdownBlock> {
                 if let Some((bt, start, end)) = current_block.take() {
                     let text = content[start..end].trim().to_string();
                     if !text.is_empty() {
-                        blocks.push(MarkdownBlock { block_type: bt, content: text });
+                        blocks.push(MarkdownBlock {
+                            block_type: bt,
+                            content: text,
+                        });
                     }
                 }
                 current_block = Some((BlockType::Header, range.start, range.end));
@@ -124,7 +132,10 @@ fn parse_markdown_blocks(content: &str) -> Vec<MarkdownBlock> {
                 if let Some((BlockType::Header, start, _)) = current_block.take() {
                     let text = content[start..range.end].trim().to_string();
                     if !text.is_empty() {
-                        blocks.push(MarkdownBlock { block_type: BlockType::Header, content: text });
+                        blocks.push(MarkdownBlock {
+                            block_type: BlockType::Header,
+                            content: text,
+                        });
                     }
                 }
             }
@@ -133,7 +144,10 @@ fn parse_markdown_blocks(content: &str) -> Vec<MarkdownBlock> {
                 if let Some((bt, start, end)) = current_block.take() {
                     let text = content[start..end].trim().to_string();
                     if !text.is_empty() {
-                        blocks.push(MarkdownBlock { block_type: bt, content: text });
+                        blocks.push(MarkdownBlock {
+                            block_type: bt,
+                            content: text,
+                        });
                     }
                 }
                 current_block = Some((BlockType::List, range.start, range.end));
@@ -142,7 +156,10 @@ fn parse_markdown_blocks(content: &str) -> Vec<MarkdownBlock> {
                 if let Some((BlockType::List, start, _)) = current_block.take() {
                     let text = content[start..range.end].trim().to_string();
                     if !text.is_empty() {
-                        blocks.push(MarkdownBlock { block_type: BlockType::List, content: text });
+                        blocks.push(MarkdownBlock {
+                            block_type: BlockType::List,
+                            content: text,
+                        });
                     }
                 }
             }
@@ -162,7 +179,10 @@ fn parse_markdown_blocks(content: &str) -> Vec<MarkdownBlock> {
                     Some((BlockType::Paragraph, start, _)) => {
                         let text = content[start..range.end].trim().to_string();
                         if !text.is_empty() {
-                            blocks.push(MarkdownBlock { block_type: BlockType::Paragraph, content: text });
+                            blocks.push(MarkdownBlock {
+                                block_type: BlockType::Paragraph,
+                                content: text,
+                            });
                         }
                         current_block = None;
                     }
@@ -189,7 +209,10 @@ fn parse_markdown_blocks(content: &str) -> Vec<MarkdownBlock> {
     if let Some((bt, start, end)) = current_block {
         let text = content[start..end].trim().to_string();
         if !text.is_empty() {
-            blocks.push(MarkdownBlock { block_type: bt, content: text });
+            blocks.push(MarkdownBlock {
+                block_type: bt,
+                content: text,
+            });
         }
     }
 
@@ -502,8 +525,14 @@ Some outro text."#;
         assert!(code_chunk.is_some(), "Code block should be in output");
 
         let code = code_chunk.unwrap();
-        assert!(code.contains("```rust"), "Code block should have opening fence");
-        assert!(code.contains("for i in 0..100"), "Code block should be complete");
+        assert!(
+            code.contains("```rust"),
+            "Code block should have opening fence"
+        );
+        assert!(
+            code.contains("for i in 0..100"),
+            "Code block should be complete"
+        );
     }
 
     #[test]
@@ -518,7 +547,10 @@ This is content under the second section with different information."#;
 
         let blocks = parse_markdown_blocks(content);
 
-        let header_count = blocks.iter().filter(|b| b.block_type == BlockType::Header).count();
+        let header_count = blocks
+            .iter()
+            .filter(|b| b.block_type == BlockType::Header)
+            .count();
         assert_eq!(header_count, 2, "Should identify 2 headers");
     }
 
@@ -618,7 +650,8 @@ print("second")
 ```"#;
 
         let blocks = parse_markdown_blocks(content);
-        let code_blocks: Vec<_> = blocks.iter()
+        let code_blocks: Vec<_> = blocks
+            .iter()
             .filter(|b| b.block_type == BlockType::CodeBlock)
             .collect();
 
@@ -627,7 +660,9 @@ print("second")
 
     #[test]
     fn test_sentence_splitting() {
-        let long_text = "This is sentence one. This is sentence two! Is this sentence three? Yes it is. ".repeat(50);
+        let long_text =
+            "This is sentence one. This is sentence two! Is this sentence three? Yes it is. "
+                .repeat(50);
         let splits = split_block_by_sentences(&long_text, 2000);
 
         assert!(splits.len() > 1);
@@ -666,20 +701,35 @@ print("second")
         let blocks = parse_markdown_blocks(content);
 
         // The list should remain a single List block, not be split by the code block
-        let list_blocks: Vec<_> = blocks.iter()
+        let list_blocks: Vec<_> = blocks
+            .iter()
             .filter(|b| b.block_type == BlockType::List)
             .collect();
         assert_eq!(list_blocks.len(), 1, "Should be a single list block");
 
         let list = &list_blocks[0];
-        assert!(list.content.contains("Item with code"), "List should contain first item");
-        assert!(list.content.contains("code here"), "List should contain code block");
-        assert!(list.content.contains("Next item"), "List should contain item after code");
+        assert!(
+            list.content.contains("Item with code"),
+            "List should contain first item"
+        );
+        assert!(
+            list.content.contains("code here"),
+            "List should contain code block"
+        );
+        assert!(
+            list.content.contains("Next item"),
+            "List should contain item after code"
+        );
 
         // No standalone code blocks should be produced
-        let code_blocks: Vec<_> = blocks.iter()
+        let code_blocks: Vec<_> = blocks
+            .iter()
             .filter(|b| b.block_type == BlockType::CodeBlock)
             .collect();
-        assert_eq!(code_blocks.len(), 0, "Code inside list should not produce standalone CodeBlock");
+        assert_eq!(
+            code_blocks.len(),
+            0,
+            "Code inside list should not produce standalone CodeBlock"
+        );
     }
 }

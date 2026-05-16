@@ -13,10 +13,10 @@ use crate::state::AppState;
 use actix_web::body::EitherBody;
 use actix_web::dev::{Service, ServiceRequest, ServiceResponse, Transform};
 use actix_web::web;
-use std::rc::Rc;
 use actix_web::Error;
 use actix_web::HttpResponse;
 use futures::future::{ok, LocalBoxFuture, Ready};
+use std::rc::Rc;
 use std::task::{Context, Poll};
 
 /// Middleware for the `/mcp` scope that verifies Bearer tokens and returns
@@ -88,11 +88,13 @@ where
             Some(t) => t,
             None => {
                 return Box::pin(async move {
-                    Ok(req.into_response(
-                        HttpResponse::Unauthorized()
-                            .insert_header(("WWW-Authenticate", www_authenticate))
-                            .json(serde_json::json!({"error": "unauthorized"})),
-                    ).map_into_right_body())
+                    Ok(req
+                        .into_response(
+                            HttpResponse::Unauthorized()
+                                .insert_header(("WWW-Authenticate", www_authenticate))
+                                .json(serde_json::json!({"error": "unauthorized"})),
+                        )
+                        .map_into_right_body())
                 });
             }
         };
@@ -103,22 +105,26 @@ where
             let core = match state.manager.active_core().await {
                 Ok(c) => c,
                 _ => {
-                    return Ok(req.into_response(
-                        HttpResponse::Unauthorized()
-                            .insert_header(("WWW-Authenticate", www_authenticate))
-                            .json(serde_json::json!({"error": "server_error"})),
-                    ).map_into_right_body());
+                    return Ok(req
+                        .into_response(
+                            HttpResponse::Unauthorized()
+                                .insert_header(("WWW-Authenticate", www_authenticate))
+                                .json(serde_json::json!({"error": "server_error"})),
+                        )
+                        .map_into_right_body());
                 }
             };
 
             let token_info = match core.verify_api_token(&raw_token).await {
                 Ok(Some(info)) => info,
                 _ => {
-                    return Ok(req.into_response(
-                        HttpResponse::Unauthorized()
-                            .insert_header(("WWW-Authenticate", www_authenticate))
-                            .json(serde_json::json!({"error": "invalid_token"})),
-                    ).map_into_right_body());
+                    return Ok(req
+                        .into_response(
+                            HttpResponse::Unauthorized()
+                                .insert_header(("WWW-Authenticate", www_authenticate))
+                                .json(serde_json::json!({"error": "invalid_token"})),
+                        )
+                        .map_into_right_body());
                 }
             };
 
@@ -148,16 +154,27 @@ mod tests {
 
     async fn test_state(public_url: Option<&str>) -> (web::Data<AppState>, String) {
         let temp = tempfile::TempDir::new().unwrap();
-        let manager = std::sync::Arc::new(
-            atomic_core::DatabaseManager::new(temp.path()).unwrap()
-        );
-        let (_, raw_token) = manager.active_core().await.unwrap().create_api_token("test-token").await.unwrap();
+        let manager = std::sync::Arc::new(atomic_core::DatabaseManager::new(temp.path()).unwrap());
+        let (_, raw_token) = manager
+            .active_core()
+            .await
+            .unwrap()
+            .create_api_token("test-token")
+            .await
+            .unwrap();
         let (event_tx, _) = broadcast::channel::<ServerEvent>(16);
         let state = web::Data::new(AppState {
             manager,
             event_tx,
             public_url: public_url.map(String::from),
             log_buffer: crate::log_buffer::LogBuffer::new(16),
+            export_jobs: crate::export_jobs::ExportJobManager::for_tests(
+                temp.path().join("exports"),
+            ),
+            setup_token: None,
+            dangerously_skip_setup_token: false,
+            setup_claim_lock: tokio::sync::Mutex::new(()),
+            setup_claim_limiter: crate::state::SetupClaimLimiter::new(),
         });
         std::mem::forget(temp);
         (state, raw_token)
@@ -169,7 +186,9 @@ mod tests {
         let app = actix_test::init_service(
             App::new().service(
                 web::scope("/mcp")
-                    .wrap(McpAuth { state: state.clone() })
+                    .wrap(McpAuth {
+                        state: state.clone(),
+                    })
                     .route("/ping", web::get().to(protected_endpoint)),
             ),
         )
@@ -189,15 +208,15 @@ mod tests {
         let app = actix_test::init_service(
             App::new().service(
                 web::scope("/mcp")
-                    .wrap(McpAuth { state: state.clone() })
+                    .wrap(McpAuth {
+                        state: state.clone(),
+                    })
                     .route("/ping", web::get().to(protected_endpoint)),
             ),
         )
         .await;
 
-        let req = actix_test::TestRequest::get()
-            .uri("/mcp/ping")
-            .to_request();
+        let req = actix_test::TestRequest::get().uri("/mcp/ping").to_request();
         let resp = actix_test::call_service(&app, req).await;
         assert_eq!(resp.status(), 401);
 
@@ -218,7 +237,9 @@ mod tests {
         let app = actix_test::init_service(
             App::new().service(
                 web::scope("/mcp")
-                    .wrap(McpAuth { state: state.clone() })
+                    .wrap(McpAuth {
+                        state: state.clone(),
+                    })
                     .route("/ping", web::get().to(protected_endpoint)),
             ),
         )
@@ -245,13 +266,17 @@ mod tests {
         let (state, raw_token) = test_state(Some("https://atomic.example.com")).await;
 
         let core = state.manager.active_core().await.unwrap();
+        core.create_api_token("replacement").await.unwrap();
         let tokens = core.list_api_tokens().await.unwrap();
-        core.revoke_api_token(&tokens[0].id).await.unwrap();
+        let token_to_revoke = tokens.iter().find(|t| t.name == "test-token").unwrap();
+        core.revoke_api_token(&token_to_revoke.id).await.unwrap();
 
         let app = actix_test::init_service(
             App::new().service(
                 web::scope("/mcp")
-                    .wrap(McpAuth { state: state.clone() })
+                    .wrap(McpAuth {
+                        state: state.clone(),
+                    })
                     .route("/ping", web::get().to(protected_endpoint)),
             ),
         )
@@ -271,15 +296,15 @@ mod tests {
         let app = actix_test::init_service(
             App::new().service(
                 web::scope("/mcp")
-                    .wrap(McpAuth { state: state.clone() })
+                    .wrap(McpAuth {
+                        state: state.clone(),
+                    })
                     .route("/ping", web::get().to(protected_endpoint)),
             ),
         )
         .await;
 
-        let req = actix_test::TestRequest::get()
-            .uri("/mcp/ping")
-            .to_request();
+        let req = actix_test::TestRequest::get().uri("/mcp/ping").to_request();
         let resp = actix_test::call_service(&app, req).await;
         assert_eq!(resp.status(), 401);
 
@@ -300,15 +325,15 @@ mod tests {
         let app = actix_test::init_service(
             App::new().service(
                 web::scope("/mcp")
-                    .wrap(McpAuth { state: state.clone() })
+                    .wrap(McpAuth {
+                        state: state.clone(),
+                    })
                     .route("/ping", web::get().to(protected_endpoint)),
             ),
         )
         .await;
 
-        let req = actix_test::TestRequest::get()
-            .uri("/mcp/ping")
-            .to_request();
+        let req = actix_test::TestRequest::get().uri("/mcp/ping").to_request();
         // call_service (not try_call_service) — panics if it gets Err
         // This proves we return Ok(401), not Err
         let resp = actix_test::call_service(&app, req).await;

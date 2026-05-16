@@ -41,15 +41,6 @@ pub struct Instance {
     pub updated_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
-pub struct Event {
-    pub id: Uuid,
-    pub stripe_event_id: String,
-    pub event_type: String,
-    pub payload: serde_json::Value,
-    pub processed_at: DateTime<Utc>,
-}
-
 /// Instance status values
 pub mod status {
     pub const PENDING: &str = "pending";
@@ -58,6 +49,7 @@ pub mod status {
     pub const STOPPED: &str = "stopped";
     pub const DESTROYING: &str = "destroying";
     pub const DESTROYED: &str = "destroyed";
+    pub const FAILED: &str = "failed";
 }
 
 /// Subscription status values
@@ -65,5 +57,4 @@ pub mod subscription_status {
     pub const ACTIVE: &str = "active";
     pub const PAST_DUE: &str = "past_due";
     pub const CANCELED: &str = "canceled";
-    pub const UNPAID: &str = "unpaid";
 }

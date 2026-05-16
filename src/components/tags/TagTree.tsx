@@ -58,7 +58,7 @@ export function TagTree({ onOpenTagSettings }: TagTreeProps = {}) {
   const fetchMoreTagChildren = useTagsStore(s => s.fetchMoreTagChildren);
   const selectedTagId = useUIStore(s => s.selectedTagId);
   const setSelectedTag = useUIStore(s => s.setSelectedTag);
-  const openCommandPalette = useUIStore(s => s.openCommandPalette);
+  const openSearchPalette = useUIStore(s => s.openSearchPalette);
   const expandedTagIds = useUIStore(s => s.expandedTagIds);
   const fetchAtoms = useAtomsStore(s => s.fetchAtoms);
   const fetchAtomsByTag = useAtomsStore(s => s.fetchAtomsByTag);
@@ -78,6 +78,7 @@ export function TagTree({ onOpenTagSettings }: TagTreeProps = {}) {
     return map;
   }, [flatTags]);
 
+  const scrolledSelectedTagIdRef = useRef<string | null>(null);
   const virtualizer = useVirtualizer({
     count: flatTags.length,
     getScrollElement: () => scrollContainerRef.current,
@@ -85,15 +86,29 @@ export function TagTree({ onOpenTagSettings }: TagTreeProps = {}) {
     overscan: 20,
   });
 
-  // Scroll to selected tag
+  // Remeasure virtualizer when tree structure changes (expansion/collapse)
   useEffect(() => {
-    if (selectedTagId) {
-      const index = tagIndexMap.get(selectedTagId);
-      if (index !== undefined) {
-        setTimeout(() => {
-          virtualizer.scrollToIndex(index, { align: 'auto', behavior: 'smooth' });
-        }, 50);
-      }
+    virtualizer.measure();
+  }, [flatTags, virtualizer]);
+
+  // Scroll to selected tag when the selection changes, or when an initially
+  // empty async-loaded tree later receives that selected tag. Once a selection
+  // has been scrolled into view, tree-only changes like expand/collapse should
+  // not pull the scroll position back to the active row.
+  useEffect(() => {
+    if (!selectedTagId) {
+      scrolledSelectedTagIdRef.current = null;
+      return;
+    }
+
+    if (scrolledSelectedTagIdRef.current === selectedTagId) {
+      return;
+    }
+
+    const index = tagIndexMap.get(selectedTagId);
+    if (index !== undefined) {
+      virtualizer.scrollToIndex(index, { align: 'center', behavior: 'smooth' });
+      scrolledSelectedTagIdRef.current = selectedTagId;
     }
   }, [selectedTagId, tagIndexMap, virtualizer]);
 
@@ -228,7 +243,7 @@ export function TagTree({ onOpenTagSettings }: TagTreeProps = {}) {
         <button
           onClick={(e) => {
             e.stopPropagation();
-            openCommandPalette('#');
+            openSearchPalette('#');
           }}
           className="p-1 rounded hover:bg-[var(--color-bg-hover)] text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)] transition-colors"
           title="Search tags"

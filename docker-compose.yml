@@ -3,6 +3,7 @@ services:
     image: ghcr.io/kenforthewin/atomic-server:latest
     environment:
       - PUBLIC_URL=${PUBLIC_URL:-}
+      - ATOMIC_SETUP_TOKEN=${ATOMIC_SETUP_TOKEN:-}
     volumes:
       - atomic-data:/data
     networks:

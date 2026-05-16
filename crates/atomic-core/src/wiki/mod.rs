@@ -11,9 +11,9 @@ pub mod section_ops;
 pub use section_ops::{apply_section_ops, WikiSectionOp, WikiSectionOpWire};
 
 use crate::models::{
-    ChunkWithContext, RelatedTag, SuggestedArticle, WikiArticle, WikiArticleSummary,
-    WikiArticleStatus, WikiArticleVersion, WikiArticleWithCitations, WikiCitation,
-    WikiLink, WikiVersionSummary,
+    ChunkWithContext, RelatedTag, SuggestedArticle, WikiArticle, WikiArticleStatus,
+    WikiArticleSummary, WikiArticleVersion, WikiArticleWithCitations, WikiCitation, WikiLink,
+    WikiVersionSummary,
 };
 use crate::providers::structured::{call_structured, StructuredCall};
 use crate::providers::types::Message;
@@ -80,7 +80,11 @@ impl WikiStrategyContext {
     /// it is prepended to the structural instructions so user tone/style preferences
     /// are respected while preserving the JSON schema contract.
     pub fn section_ops_prompt(&self) -> String {
-        match self.custom_update_prompt.as_deref().filter(|s| !s.is_empty()) {
+        match self
+            .custom_update_prompt
+            .as_deref()
+            .filter(|s| !s.is_empty())
+        {
             Some(custom) => format!("{}\n\n{}", custom, WIKI_UPDATE_SECTION_OPS_PROMPT),
             None => WIKI_UPDATE_SECTION_OPS_PROMPT.to_string(),
         }
@@ -90,7 +94,10 @@ impl WikiStrategyContext {
     /// For providers with a known context length, budgets ~60% for source material.
     /// Falls back to MAX_WIKI_SOURCE_TOKENS for providers with large/unknown context.
     pub fn max_source_tokens(&self) -> usize {
-        match self.provider_config.context_length_for_model(&self.wiki_model) {
+        match self
+            .provider_config
+            .context_length_for_model(&self.wiki_model)
+        {
             Some(ctx_len) => {
                 // Reserve ~40% for system prompt, output, and structured output framing
                 let budget = (ctx_len as f64 * 0.6) as usize;
@@ -136,6 +143,30 @@ pub struct WikiProposalDraft {
     pub new_atom_count: i32,
 }
 
+/// Result of attempting to build a wiki update proposal.
+pub enum WikiProposalOutcome {
+    Draft(WikiProposalDraft),
+    /// The selector found no chunks to send to the LLM.
+    NoUpdateChunks,
+    /// The LLM reviewed update chunks and explicitly found no useful change.
+    NoChange,
+}
+
+/// Propose an update to an existing wiki article using the given strategy.
+///
+/// Returns `None` if no update is warranted (no new atoms, empty ops, or the
+/// LLM returns `NoChange`).
+pub async fn strategy_propose(
+    strategy: &WikiStrategy,
+    ctx: &WikiStrategyContext,
+    existing: &WikiArticleWithCitations,
+) -> Result<Option<WikiProposalDraft>, String> {
+    match strategy_propose_outcome(strategy, ctx, existing).await? {
+        WikiProposalOutcome::Draft(draft) => Ok(Some(draft)),
+        WikiProposalOutcome::NoUpdateChunks | WikiProposalOutcome::NoChange => Ok(None),
+    }
+}
+
 /// Propose an update to an existing wiki article using the given strategy.
 ///
 /// Composes two independent steps:
@@ -148,16 +179,17 @@ pub struct WikiProposalDraft {
 ///    applier merges them into the existing content, and citations are extracted
 ///    from the merged output.
 ///
-/// Returns `None` if no update is warranted (no new atoms, empty ops, or the
-/// LLM returns `NoChange`).
-pub async fn strategy_propose(
+/// Returns a typed no-op outcome so callers can distinguish "nothing was sent
+/// to the LLM" from "the LLM reviewed new chunks and returned `NoChange`".
+pub async fn strategy_propose_outcome(
     strategy: &WikiStrategy,
     ctx: &WikiStrategyContext,
     existing: &WikiArticleWithCitations,
-) -> Result<Option<WikiProposalDraft>, String> {
-    let Some((new_chunks, total_atom_count)) = select_update_chunks(strategy, ctx, existing).await?
+) -> Result<WikiProposalOutcome, String> {
+    let Some((new_chunks, total_atom_count)) =
+        select_update_chunks(strategy, ctx, existing).await?
     else {
-        return Ok(None);
+        return Ok(WikiProposalOutcome::NoUpdateChunks);
     };
 
     // New-atom count is the delta against the baseline the live article was
@@ -166,7 +198,10 @@ pub async fn strategy_propose(
     // since the last accepted version.
     let new_atom_count = (total_atom_count - existing.article.atom_count).max(0);
 
-    generate_section_ops_proposal(ctx, existing, &new_chunks, new_atom_count).await
+    match generate_section_ops_proposal(ctx, existing, &new_chunks, new_atom_count).await? {
+        Some(draft) => Ok(WikiProposalOutcome::Draft(draft)),
+        None => Ok(WikiProposalOutcome::NoChange),
+    }
 }
 
 /// Strategy-specific chunk selection for the propose path.
@@ -248,7 +283,7 @@ pub(crate) fn section_ops_schema() -> serde_json::Value {
                         },
                         "content": {
                             "type": "string",
-                            "description": "New markdown content for the operation. For NoChange: empty string."
+                            "description": "New markdown content for the operation. Only NoChange may use empty content. AppendToSection, ReplaceSection, and InsertSection must provide non-empty markdown content with citations."
                         }
                     },
                     "required": ["op", "heading", "after_heading", "content"],
@@ -332,11 +367,16 @@ async fn generate_section_ops_proposal(
     // Enumerate current section headings for the LLM to reference verbatim.
     let heading_list = extract_current_headings(&existing.article.content);
     let headings_block = if heading_list.is_empty() {
-        "(no ## headings — the article has no sections yet; use InsertSection with after_heading=\"\" to add one at the end)".to_string()
+        "(no section headings — the article has no sections yet; use InsertSection with after_heading=\"\" to add one at the end)".to_string()
     } else {
         heading_list
             .iter()
-            .map(|h| format!("- {}", h))
+            .map(|(level, h)| {
+                // Indent sub-headings so the LLM can see the hierarchy.
+                // Level 2 = no indent; each extra level adds two spaces.
+                let indent = "  ".repeat((*level as usize).saturating_sub(2));
+                format!("{}{}", indent, h)
+            })
             .collect::<Vec<_>>()
             .join("\n")
     };
@@ -490,7 +530,7 @@ async fn generate_section_ops_proposal(
 /// stay embedded in their parent section's body. Surfacing `###` headings to
 /// the LLM would let it target a heading the applier can't resolve, which
 /// discards the entire proposal as a hallucination.
-fn extract_current_headings(content: &str) -> Vec<String> {
+fn extract_current_headings(content: &str) -> Vec<(u8, String)> {
     let mut headings = Vec::new();
     for line in content.lines() {
         let stripped = line.trim_start();
@@ -499,8 +539,8 @@ fn extract_current_headings(content: &str) -> Vec<String> {
         while hashes < bytes.len() && bytes[hashes] == b'#' {
             hashes += 1;
         }
-        if hashes == 2 && hashes < bytes.len() && bytes[hashes] == b' ' {
-            headings.push(stripped[hashes + 1..].trim().to_string());
+        if hashes >= 2 && hashes < bytes.len() && bytes[hashes] == b' ' {
+            headings.push((hashes as u8, stripped[hashes + 1..].trim().to_string()));
         }
     }
     headings
@@ -553,7 +593,8 @@ Operations (value of the `op` field):
 - "InsertSection": add a brand-new section (use only for genuinely new topics not covered elsewhere). Set `heading` to the new section's heading. Set `after_heading` to the exact existing heading you want to insert AFTER, or leave it empty ("") to append the new section at the end of the article. Set `content` to the new section body.
 
 Rules:
-- `heading` and `after_heading` values must EXACTLY match one of the headings listed under CURRENT SECTION HEADINGS when they reference existing sections. Do not paraphrase, reword, or change capitalization. Do not include the ## prefix.
+- `heading` and `after_heading` values must EXACTLY match one of the headings listed under CURRENT SECTION HEADINGS when they reference existing sections. Do not paraphrase, reword, or change capitalization. Sub-headings appear indented under their parent in the list; use the exact heading text without any # prefix characters.
+- Only NoChange may have empty content. AppendToSection, ReplaceSection, and InsertSection MUST have non-empty markdown content with citations. If you have no content to add for a section, do not emit an edit operation for that section. If there are no non-empty edits to make, return exactly one NoChange operation.
 - Prefer AppendToSection over ReplaceSection. Prefer editing an existing section over creating a new one.
 - Every new factual claim MUST have a [N] citation using the next-available citation numbers shown in the user message.
 - Keep tone consistent with the existing article.
@@ -630,13 +671,7 @@ pub(crate) async fn call_llm_for_wiki_typed<T: DeserializeOwned>(
 
     let messages = vec![Message::system(system_prompt), Message::user(user_content)];
 
-    let call = StructuredCall::<T>::new(
-        provider_config,
-        model,
-        &messages,
-        schema_name,
-        schema,
-    );
+    let call = StructuredCall::<T>::new(provider_config, model, &messages, schema_name, schema);
 
     let started = std::time::Instant::now();
     match call_structured::<T>(call).await {
@@ -764,15 +799,26 @@ pub(crate) fn batch_fetch_chunk_details(
             "SELECT id, atom_id, chunk_index, content FROM atom_chunks WHERE id IN ({})",
             placeholders
         );
-        let mut stmt = conn.prepare(&query)
+        let mut stmt = conn
+            .prepare(&query)
             .map_err(|e| format!("Failed to prepare chunk details query: {}", e))?;
-        let mut rows = stmt.query(rusqlite::params_from_iter(batch.iter()))
+        let mut rows = stmt
+            .query(rusqlite::params_from_iter(batch.iter()))
             .map_err(|e| format!("Failed to query chunk details: {}", e))?;
-        while let Some(row) = rows.next().map_err(|e| format!("Failed to read row: {}", e))? {
+        while let Some(row) = rows
+            .next()
+            .map_err(|e| format!("Failed to read row: {}", e))?
+        {
             let id: String = row.get(0).map_err(|e| format!("Failed to get id: {}", e))?;
-            let atom_id: String = row.get(1).map_err(|e| format!("Failed to get atom_id: {}", e))?;
-            let chunk_index: i32 = row.get(2).map_err(|e| format!("Failed to get chunk_index: {}", e))?;
-            let content: String = row.get(3).map_err(|e| format!("Failed to get content: {}", e))?;
+            let atom_id: String = row
+                .get(1)
+                .map_err(|e| format!("Failed to get atom_id: {}", e))?;
+            let chunk_index: i32 = row
+                .get(2)
+                .map_err(|e| format!("Failed to get chunk_index: {}", e))?;
+            let content: String = row
+                .get(3)
+                .map_err(|e| format!("Failed to get content: {}", e))?;
             map.insert(id, (atom_id, chunk_index, content));
         }
     }
@@ -832,9 +878,7 @@ pub(crate) async fn synthesize_article(
         }
     );
 
-    let result =
-        call_llm_for_wiki(provider_config, system_prompt, &user_content, model)
-            .await?;
+    let result = call_llm_for_wiki(provider_config, system_prompt, &user_content, model).await?;
 
     let article_id = Uuid::new_v4().to_string();
     let now = Utc::now().to_rfc3339();
@@ -1086,7 +1130,7 @@ pub fn load_wiki_article(
              FROM wiki_citations c
              LEFT JOIN atoms a ON a.id = c.atom_id
              WHERE c.wiki_article_id = ?1
-             ORDER BY c.citation_index"
+             ORDER BY c.citation_index",
         )
         .map_err(|e| format!("Failed to prepare citations query: {}", e))?;
 
@@ -1384,7 +1428,11 @@ pub fn get_related_tags(
 
         // Batch lookup metadata for new centroid-only candidates
         if !new_candidates.is_empty() {
-            let placeholders = new_candidates.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+            let placeholders = new_candidates
+                .iter()
+                .map(|_| "?")
+                .collect::<Vec<_>>()
+                .join(",");
             let query = format!(
                 "SELECT t.id, t.name, CASE WHEN wa.id IS NOT NULL THEN 1 ELSE 0 END
                  FROM tags t
@@ -1392,7 +1440,8 @@ pub fn get_related_tags(
                  WHERE t.id IN ({}) AND t.parent_id IS NOT NULL",
                 placeholders
             );
-            let mut meta_stmt = conn.prepare(&query)
+            let mut meta_stmt = conn
+                .prepare(&query)
                 .map_err(|e| format!("Failed to prepare centroid metadata query: {}", e))?;
             let param_refs: Vec<&dyn rusqlite::types::ToSql> = new_candidates
                 .iter()
@@ -1437,7 +1486,11 @@ pub fn get_related_tags(
     }
 
     // Sort by score and truncate
-    tags.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    tags.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     tags.truncate(limit);
 
     Ok(tags)
@@ -1507,8 +1560,8 @@ fn find_tags_mentioned_in_article(
         .filter(|(_, name, _)| {
             let name_lower = name.to_lowercase();
             if let Some(pos) = content_lower.find(&name_lower) {
-                let before_ok = pos == 0
-                    || !content_lower.as_bytes()[pos - 1].is_ascii_alphanumeric();
+                let before_ok =
+                    pos == 0 || !content_lower.as_bytes()[pos - 1].is_ascii_alphanumeric();
                 let end = pos + name_lower.len();
                 let after_ok = end >= content_lower.len()
                     || !content_lower.as_bytes()[end].is_ascii_alphanumeric();
@@ -1524,7 +1577,11 @@ fn find_tags_mentioned_in_article(
     }
 
     // Step 2: Batch-fetch atom counts only for matched tags (typically a handful).
-    let count_placeholders = matched_tags.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+    let count_placeholders = matched_tags
+        .iter()
+        .map(|_| "?")
+        .collect::<Vec<_>>()
+        .join(",");
     let count_query = format!(
         "SELECT tag_id, COUNT(*) FROM atom_tags WHERE tag_id IN ({}) GROUP BY tag_id",
         count_placeholders
@@ -1559,7 +1616,11 @@ fn find_tags_mentioned_in_article(
         })
         .collect();
 
-    mentioned.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    mentioned.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     mentioned.truncate(limit);
 
     Ok(mentioned)

@@ -1,11 +1,11 @@
 //! Daily briefing scheduled task.
 //!
 //! Wraps [`super::run_briefing`] in the [`ScheduledTask`] trait so the
-//! scheduler loop can drive it on a timer. State (`last_run`, `enabled`,
-//! `interval_hours`) lives in the per-database settings table keyed under
-//! `task.daily_briefing.*`.
+//! scheduler loop can drive it on a calendar schedule. State lives in the
+//! per-database settings table keyed under `task.daily_briefing.*`.
 
-use crate::scheduler::{state as task_state, ScheduledTask, TaskContext, TaskError, TaskEvent};
+use super::schedule;
+use crate::scheduler::{ScheduledTask, TaskContext, TaskError, TaskEvent};
 use crate::AtomicCore;
 use async_trait::async_trait;
 use std::time::Duration;
@@ -15,7 +15,6 @@ pub struct DailyBriefingTask;
 
 const TASK_ID: &str = "daily_briefing";
 const DEFAULT_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
-const DEFAULT_ENABLED: bool = true;
 
 #[async_trait]
 impl ScheduledTask for DailyBriefingTask {
@@ -32,10 +31,7 @@ impl ScheduledTask for DailyBriefingTask {
     }
 
     async fn run(&self, core: &AtomicCore, ctx: &TaskContext) -> Result<(), TaskError> {
-        if !task_state::is_enabled(core, TASK_ID, DEFAULT_ENABLED).await {
-            return Err(TaskError::Disabled);
-        }
-        if !task_state::is_due(core, TASK_ID, DEFAULT_INTERVAL, DEFAULT_ENABLED).await {
+        if !schedule::is_due(core).await? {
             return Err(TaskError::NotDue);
         }
 

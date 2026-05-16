@@ -43,7 +43,6 @@ pub struct CreateAtomParams {
     /// Optional source URL where this content originated
     #[serde(default)]
     pub source_url: Option<String>,
-
 }
 
 /// Input parameters for update_atom tool
@@ -52,12 +51,78 @@ pub struct UpdateAtomParams {
     /// The UUID of the atom to update
     pub atom_id: String,
 
-    /// The new markdown content for the atom
-    pub content: String,
+    /// Optional replacement markdown content for the atom. Omit to preserve current content.
+    #[serde(default)]
+    pub content: Option<String>,
 
-    /// Optional source URL where this content originated
+    /// Optional replacement source URL. Omit to preserve current source URL.
     #[serde(default)]
     pub source_url: Option<String>,
+
+    /// Optional replacement publication date. Omit to preserve current publication date.
+    #[serde(default)]
+    pub published_at: Option<String>,
+
+    /// Optional replacement tag IDs. Omit to preserve current tags; pass [] to clear tags.
+    #[serde(default)]
+    pub tag_ids: Option<Vec<String>>,
+}
+
+/// A single edit operation for edit_atom.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct EditOperation {
+    /// Operation type: replace, insert_after, append, or replace_all.
+    pub operation: String,
+
+    /// Exact text to replace. Required for replace and must occur exactly once.
+    #[serde(default)]
+    pub old_text: Option<String>,
+
+    /// Replacement text for replace.
+    #[serde(default)]
+    pub new_text: Option<String>,
+
+    /// Exact text to insert after. Required for insert_after and must occur exactly once.
+    #[serde(default)]
+    pub anchor_text: Option<String>,
+
+    /// Text to insert for insert_after or append.
+    #[serde(default)]
+    pub text: Option<String>,
+
+    /// Full replacement markdown content. Required for replace_all.
+    #[serde(default)]
+    pub content: Option<String>,
+}
+
+impl From<&EditOperation> for atomic_core::AtomEditOperation {
+    fn from(value: &EditOperation) -> Self {
+        Self {
+            operation: value.operation.clone(),
+            old_text: value.old_text.clone(),
+            new_text: value.new_text.clone(),
+            anchor_text: value.anchor_text.clone(),
+            text: value.text.clone(),
+            content: value.content.clone(),
+        }
+    }
+}
+
+/// Input parameters for edit_atom tool
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct EditAtomParams {
+    /// The UUID of the atom to edit
+    pub atom_id: String,
+
+    /// Edits to apply in order. The whole operation fails if any edit is invalid.
+    pub edits: Vec<EditOperation>,
+}
+
+/// Input parameters for ingest_url tool
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct IngestUrlParams {
+    /// URL to fetch, extract, and save as an atom. Exact source_url matches return the existing atom.
+    pub url: String,
 }
 
 // ==================== Tool Output Types ====================
@@ -91,4 +156,14 @@ pub struct AtomResponse {
     pub content_preview: String,
     pub tags: Vec<String>,
     pub embedding_status: String,
+}
+
+/// Ingested URL response
+#[derive(Debug, Serialize)]
+pub struct IngestUrlResponse {
+    pub atom_id: String,
+    pub url: String,
+    pub title: String,
+    pub content_length: usize,
+    pub already_exists: bool,
 }

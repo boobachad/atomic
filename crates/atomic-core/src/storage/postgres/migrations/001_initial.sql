@@ -16,7 +16,8 @@ CREATE TABLE IF NOT EXISTS atoms (
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     embedding_status TEXT NOT NULL DEFAULT 'pending',
-    tagging_status TEXT NOT NULL DEFAULT 'pending'
+    tagging_status TEXT NOT NULL DEFAULT 'pending',
+    edges_status TEXT NOT NULL DEFAULT 'pending'
 );
 
 CREATE TABLE IF NOT EXISTS tags (
@@ -228,6 +229,7 @@ CREATE INDEX IF NOT EXISTS idx_atoms_source_url ON atoms(source_url) WHERE sourc
 CREATE INDEX IF NOT EXISTS idx_atoms_source ON atoms(source) WHERE source IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_atoms_embedding_status ON atoms(embedding_status);
 CREATE INDEX IF NOT EXISTS idx_atoms_tagging_status ON atoms(tagging_status);
+CREATE INDEX IF NOT EXISTS idx_atoms_edges_status ON atoms(edges_status);
 
 -- Atom-tag links
 CREATE INDEX IF NOT EXISTS idx_atom_tags_tag_atom ON atom_tags(tag_id, atom_id);

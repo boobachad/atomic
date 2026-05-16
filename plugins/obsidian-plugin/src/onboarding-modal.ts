@@ -299,7 +299,7 @@ export class OnboardingModal extends Modal {
 
       if (atomIds.length === 0) {
         // Nothing to process — advance after a brief pause
-        setTimeout(() => {
+        activeWindow.setTimeout(() => {
           if (!this._modalClosed) { this.currentStep = 3; this.render(); }
         }, 1000);
         return;
@@ -337,7 +337,7 @@ export class OnboardingModal extends Modal {
         embedCount.textContent = `${doneEmbed} / ${total}`;
         tagCount.textContent = `${doneTag} / ${total}`;
         if (pendingEmbed.size === 0 && pendingTag.size === 0) {
-          setTimeout(advance, 800);
+          activeWindow.setTimeout(advance, 800);
         }
       };
 

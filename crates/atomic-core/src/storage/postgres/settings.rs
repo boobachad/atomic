@@ -17,24 +17,20 @@ use sha2::{Digest, Sha256};
 #[async_trait]
 impl SettingsStore for PostgresStorage {
     async fn get_all_settings(&self) -> StorageResult<HashMap<String, String>> {
-        let rows = sqlx::query_as::<_, (String, String)>(
-            "SELECT key, value FROM settings",
-        )
-        .fetch_all(&self.pool)
-        .await
-        .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+        let rows = sqlx::query_as::<_, (String, String)>("SELECT key, value FROM settings")
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
 
         Ok(rows.into_iter().collect())
     }
 
     async fn get_setting(&self, key: &str) -> StorageResult<Option<String>> {
-        let value: Option<String> = sqlx::query_scalar(
-            "SELECT value FROM settings WHERE key = $1",
-        )
-        .bind(key)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+        let value: Option<String> = sqlx::query_scalar("SELECT value FROM settings WHERE key = $1")
+            .bind(key)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
 
         Ok(value)
     }
@@ -49,6 +45,16 @@ impl SettingsStore for PostgresStorage {
         .execute(&self.pool)
         .await
         .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+
+        Ok(())
+    }
+
+    async fn delete_setting(&self, key: &str) -> StorageResult<()> {
+        sqlx::query("DELETE FROM settings WHERE key = $1")
+            .bind(key)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
 
         Ok(())
     }
@@ -77,10 +83,7 @@ fn token_prefix(raw: &str) -> String {
 
 #[async_trait]
 impl TokenStore for PostgresStorage {
-    async fn create_api_token(
-        &self,
-        name: &str,
-    ) -> StorageResult<(ApiTokenInfo, String)> {
+    async fn create_api_token(&self, name: &str) -> StorageResult<(ApiTokenInfo, String)> {
         let id = uuid::Uuid::new_v4().to_string();
         let raw = generate_raw_token();
         let hash = hash_token(&raw);
@@ -123,23 +126,20 @@ impl TokenStore for PostgresStorage {
 
         Ok(rows
             .into_iter()
-            .map(|(id, name, token_prefix, created_at, last_used_at, is_revoked)| {
-                ApiTokenInfo {
+            .map(
+                |(id, name, token_prefix, created_at, last_used_at, is_revoked)| ApiTokenInfo {
                     id,
                     name,
                     token_prefix,
                     created_at,
                     last_used_at,
                     is_revoked,
-                }
-            })
+                },
+            )
             .collect())
     }
 
-    async fn verify_api_token(
-        &self,
-        raw_token: &str,
-    ) -> StorageResult<Option<ApiTokenInfo>> {
+    async fn verify_api_token(&self, raw_token: &str) -> StorageResult<Option<ApiTokenInfo>> {
         let hash = hash_token(raw_token);
 
         let row = sqlx::query_as::<_, (String, String, String, String, Option<String>, bool)>(
@@ -151,31 +151,63 @@ impl TokenStore for PostgresStorage {
         .await
         .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
 
-        Ok(row.map(|(id, name, token_prefix, created_at, last_used_at, is_revoked)| {
-            ApiTokenInfo {
+        Ok(row.map(
+            |(id, name, token_prefix, created_at, last_used_at, is_revoked)| ApiTokenInfo {
                 id,
                 name,
                 token_prefix,
                 created_at,
                 last_used_at,
                 is_revoked,
-            }
-        }))
+            },
+        ))
     }
 
     async fn revoke_api_token(&self, id: &str) -> StorageResult<()> {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+
+        let is_revoked: Option<bool> =
+            sqlx::query_scalar("SELECT (is_revoked != 0) FROM api_tokens WHERE id = $1")
+                .bind(id)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+
+        let Some(is_revoked) = is_revoked else {
+            return Err(AtomicCoreError::NotFound(format!("API token '{}'", id)));
+        };
+
+        if !is_revoked {
+            let active_count: i64 =
+                sqlx::query_scalar("SELECT COUNT(*) FROM api_tokens WHERE is_revoked = 0")
+                    .fetch_one(&mut *tx)
+                    .await
+                    .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+            if active_count <= 1 {
+                return Err(AtomicCoreError::Conflict(
+                    "Cannot revoke the last active API token. Create a replacement token first."
+                        .to_string(),
+                ));
+            }
+        }
+
         let result = sqlx::query("UPDATE api_tokens SET is_revoked = 1 WHERE id = $1")
             .bind(id)
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await
             .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
 
         if result.rows_affected() == 0 {
-            return Err(AtomicCoreError::NotFound(format!(
-                "API token '{}'",
-                id
-            )));
+            return Err(AtomicCoreError::NotFound(format!("API token '{}'", id)));
         }
+
+        tx.commit()
+            .await
+            .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
 
         Ok(())
     }
@@ -195,12 +227,11 @@ impl TokenStore for PostgresStorage {
 
     async fn migrate_legacy_token(&self) -> StorageResult<bool> {
         // Check if legacy token exists in settings
-        let legacy_token: Option<String> = sqlx::query_scalar(
-            "SELECT value FROM settings WHERE key = 'server_auth_token'",
-        )
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+        let legacy_token: Option<String> =
+            sqlx::query_scalar("SELECT value FROM settings WHERE key = 'server_auth_token'")
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
 
         let legacy_token = match legacy_token {
             Some(t) if !t.is_empty() => t,
@@ -275,13 +306,15 @@ impl DatabaseStore for PostgresStorage {
 
         Ok(rows
             .into_iter()
-            .map(|(id, name, is_default, created_at, last_opened_at)| DatabaseInfo {
-                id,
-                name,
-                is_default: is_default != 0,
-                created_at,
-                last_opened_at,
-            })
+            .map(
+                |(id, name, is_default, created_at, last_opened_at)| DatabaseInfo {
+                    id,
+                    name,
+                    is_default: is_default != 0,
+                    created_at,
+                    last_opened_at,
+                },
+            )
             .collect())
     }
 
@@ -325,13 +358,12 @@ impl DatabaseStore for PostgresStorage {
 
     async fn delete_database(&self, id: &str) -> StorageResult<()> {
         // Check if it's the default database
-        let is_default: Option<i32> = sqlx::query_scalar(
-            "SELECT is_default FROM databases WHERE id = $1",
-        )
-        .bind(id)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+        let is_default: Option<i32> =
+            sqlx::query_scalar("SELECT is_default FROM databases WHERE id = $1")
+                .bind(id)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
 
         match is_default {
             None => {
@@ -355,12 +387,11 @@ impl DatabaseStore for PostgresStorage {
     }
 
     async fn get_default_database_id(&self) -> StorageResult<String> {
-        let id: Option<String> = sqlx::query_scalar(
-            "SELECT id FROM databases WHERE is_default = 1",
-        )
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+        let id: Option<String> =
+            sqlx::query_scalar("SELECT id FROM databases WHERE is_default = 1")
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
 
         id.ok_or_else(|| {
             AtomicCoreError::Configuration("No default database configured".to_string())
@@ -368,17 +399,18 @@ impl DatabaseStore for PostgresStorage {
     }
 
     async fn set_default_database(&self, id: &str) -> StorageResult<()> {
-        let mut tx = self.pool.begin().await
+        let mut tx = self
+            .pool
+            .begin()
+            .await
             .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
 
         // Verify the database exists
-        let exists: Option<i32> = sqlx::query_scalar(
-            "SELECT 1 FROM databases WHERE id = $1",
-        )
-        .bind(id)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+        let exists: Option<i32> = sqlx::query_scalar("SELECT 1 FROM databases WHERE id = $1")
+            .bind(id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
 
         if exists.is_none() {
             return Err(AtomicCoreError::NotFound(format!("Database '{}'", id)));
@@ -395,7 +427,8 @@ impl DatabaseStore for PostgresStorage {
             .await
             .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
 
-        tx.commit().await
+        tx.commit()
+            .await
             .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
 
         Ok(())
@@ -435,9 +468,12 @@ impl DatabaseStore for PostgresStorage {
                 .bind(db_id)
                 .execute(&self.pool)
                 .await
-                .map_err(|e| AtomicCoreError::DatabaseOperation(
-                    format!("Failed to purge {} for db_id {}: {}", table, db_id, e)
-                ))?;
+                .map_err(|e| {
+                    AtomicCoreError::DatabaseOperation(format!(
+                        "Failed to purge {} for db_id {}: {}",
+                        table, db_id, e
+                    ))
+                })?;
         }
 
         Ok(())

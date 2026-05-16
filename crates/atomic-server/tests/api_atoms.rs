@@ -3,7 +3,7 @@
 //! Each test spins up a real actix-web test server backed by a temporary SQLite
 //! database and exercises the endpoints with actual HTTP requests.
 
-use actix_web::{test as actix_test, web, App, ResponseError};
+use actix_web::{test as actix_test, web, App};
 use serde_json::{json, Value};
 use std::sync::Arc;
 use tokio::sync::broadcast;
@@ -23,16 +23,27 @@ struct TestCtx {
 impl TestCtx {
     async fn new() -> Self {
         let temp = tempfile::TempDir::new().unwrap();
-        let manager = Arc::new(
-            atomic_core::DatabaseManager::new(temp.path()).unwrap(),
-        );
-        let (_info, raw_token) = manager.active_core().await.unwrap().create_api_token("test").await.unwrap();
+        let manager = Arc::new(atomic_core::DatabaseManager::new(temp.path()).unwrap());
+        let (_info, raw_token) = manager
+            .active_core()
+            .await
+            .unwrap()
+            .create_api_token("test")
+            .await
+            .unwrap();
         let (event_tx, _) = broadcast::channel(16);
         let state = web::Data::new(atomic_server::state::AppState {
             manager,
             event_tx,
             public_url: None,
             log_buffer: atomic_server::log_buffer::LogBuffer::new(16),
+            export_jobs: atomic_server::export_jobs::ExportJobManager::for_tests(
+                temp.path().join("exports"),
+            ),
+            setup_token: None,
+            dangerously_skip_setup_token: false,
+            setup_claim_lock: tokio::sync::Mutex::new(()),
+            setup_claim_limiter: atomic_server::state::SetupClaimLimiter::new(),
         });
         TestCtx {
             _temp: temp,
@@ -60,6 +71,10 @@ fn test_app(
 > {
     App::new()
         .app_data(ctx.state.clone())
+        .route(
+            "/api/exports/{id}/download",
+            web::get().to(atomic_server::routes::exports::download_export),
+        )
         .service(
             web::scope("/api")
                 .wrap(atomic_server::auth::BearerAuth {
@@ -419,14 +434,10 @@ async fn test_unauthenticated_request_rejected() {
 #[actix_web::test]
 async fn test_openapi_spec_is_valid() {
     let ctx = TestCtx::new().await;
-    let app = actix_test::init_service(
-        App::new()
-            .app_data(ctx.state.clone())
-            .route(
-                "/api/docs/openapi.json",
-                web::get().to(atomic_server::openapi_spec),
-            ),
-    )
+    let app = actix_test::init_service(App::new().app_data(ctx.state.clone()).route(
+        "/api/docs/openapi.json",
+        web::get().to(atomic_server::openapi_spec),
+    ))
     .await;
 
     let req = actix_test::TestRequest::get()
@@ -442,4 +453,57 @@ async fn test_openapi_spec_is_valid() {
     assert!(body["paths"]["/api/tags"].is_object());
     assert!(body["components"]["schemas"]["Atom"].is_object());
     assert!(body["components"]["schemas"]["AtomWithTags"].is_object());
+}
+
+#[actix_web::test]
+async fn test_database_markdown_export_job_downloads_zip() {
+    let ctx = TestCtx::new().await;
+    let app = actix_test::init_service(test_app(&ctx)).await;
+
+    let req = actix_test::TestRequest::post()
+        .uri("/api/atoms")
+        .insert_header(ctx.auth_header())
+        .set_json(json!({
+            "content": "# Exported Note\n\nThis should land in a ZIP.",
+            "tag_ids": [],
+        }))
+        .to_request();
+    let resp = actix_test::call_service(&app, req).await;
+    assert_eq!(resp.status(), 201);
+
+    let db_id = ctx.state.manager.active_id().unwrap();
+    let req = actix_test::TestRequest::post()
+        .uri(&format!("/api/databases/{}/exports/markdown", db_id))
+        .insert_header(ctx.auth_header())
+        .to_request();
+    let resp = actix_test::call_service(&app, req).await;
+    assert_eq!(resp.status(), 202);
+    let mut job: Value = actix_test::read_body_json(resp).await;
+    let job_id = job["id"].as_str().unwrap().to_string();
+
+    for _ in 0..50 {
+        if job["status"] == "complete" {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let req = actix_test::TestRequest::get()
+            .uri(&format!("/api/exports/{}", job_id))
+            .insert_header(ctx.auth_header())
+            .to_request();
+        let resp = actix_test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 200);
+        job = actix_test::read_body_json(resp).await;
+    }
+
+    assert_eq!(job["status"], "complete");
+    assert_eq!(job["total_atoms"], 1);
+    let download_path = job["download_path"].as_str().unwrap();
+
+    let req = actix_test::TestRequest::get()
+        .uri(download_path)
+        .to_request();
+    let resp = actix_test::call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let body = actix_test::read_body(resp).await;
+    assert!(body.starts_with(b"PK"));
 }

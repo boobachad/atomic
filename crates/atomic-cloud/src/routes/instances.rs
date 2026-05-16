@@ -1,6 +1,7 @@
 //! Instance control routes — start, stop, restart, status
 
 use crate::error::CloudError;
+use crate::models::status;
 use crate::state::CloudState;
 use actix_web::{web, HttpRequest, HttpResponse};
 
@@ -42,7 +43,10 @@ pub async fn get_status(state: web::Data<CloudState>, req: HttpRequest) -> HttpR
         None
     };
 
-    let subdomain_url = format!("https://{}.fly.dev", instance.fly_app_name);
+    let subdomain_url = format!(
+        "https://{}.{}",
+        instance.subdomain, state.config.base_domain
+    );
     let mcp_url = format!("{}/mcp", subdomain_url);
 
     HttpResponse::Ok().json(serde_json::json!({
@@ -65,9 +69,7 @@ pub async fn start(state: web::Data<CloudState>, req: HttpRequest) -> HttpRespon
 
     let machine_id = match &instance.fly_machine_id {
         Some(id) => id.clone(),
-        None => {
-            return CloudError::BadRequest("Instance not yet provisioned".into()).to_response()
-        }
+        None => return CloudError::BadRequest("Instance not yet provisioned".into()).to_response(),
     };
 
     match state
@@ -77,7 +79,7 @@ pub async fn start(state: web::Data<CloudState>, req: HttpRequest) -> HttpRespon
     {
         Ok(()) => {
             let _ =
-                crate::db::update_instance_status(&state.db, instance.id, "running").await;
+                crate::db::update_instance_status(&state.db, instance.id, status::RUNNING).await;
             HttpResponse::Ok().json(serde_json::json!({ "status": "starting" }))
         }
         Err(e) => e.to_response(),
@@ -93,9 +95,7 @@ pub async fn stop(state: web::Data<CloudState>, req: HttpRequest) -> HttpRespons
 
     let machine_id = match &instance.fly_machine_id {
         Some(id) => id.clone(),
-        None => {
-            return CloudError::BadRequest("Instance not yet provisioned".into()).to_response()
-        }
+        None => return CloudError::BadRequest("Instance not yet provisioned".into()).to_response(),
     };
 
     match state
@@ -105,8 +105,8 @@ pub async fn stop(state: web::Data<CloudState>, req: HttpRequest) -> HttpRespons
     {
         Ok(()) => {
             let _ =
-                crate::db::update_instance_status(&state.db, instance.id, "stopped").await;
-            HttpResponse::Ok().json(serde_json::json!({ "status": "stopped" }))
+                crate::db::update_instance_status(&state.db, instance.id, status::STOPPED).await;
+            HttpResponse::Ok().json(serde_json::json!({ "status": status::STOPPED }))
         }
         Err(e) => e.to_response(),
     }
@@ -121,9 +121,7 @@ pub async fn restart(state: web::Data<CloudState>, req: HttpRequest) -> HttpResp
 
     let machine_id = match &instance.fly_machine_id {
         Some(id) => id.clone(),
-        None => {
-            return CloudError::BadRequest("Instance not yet provisioned".into()).to_response()
-        }
+        None => return CloudError::BadRequest("Instance not yet provisioned".into()).to_response(),
     };
 
     // Stop then start
@@ -142,7 +140,7 @@ pub async fn restart(state: web::Data<CloudState>, req: HttpRequest) -> HttpResp
     {
         Ok(()) => {
             let _ =
-                crate::db::update_instance_status(&state.db, instance.id, "running").await;
+                crate::db::update_instance_status(&state.db, instance.id, status::RUNNING).await;
             HttpResponse::Ok().json(serde_json::json!({ "status": "restarting" }))
         }
         Err(e) => e.to_response(),

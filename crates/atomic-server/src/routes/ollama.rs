@@ -16,8 +16,7 @@ pub async fn test_ollama(body: web::Json<TestOllamaBody>) -> HttpResponse {
     match atomic_core::providers::models::test_ollama_connection(&body.host).await {
         Ok(true) => HttpResponse::Ok().json(serde_json::json!({"success": true})),
         Ok(false) => HttpResponse::Ok().json(serde_json::json!({"success": false})),
-        Err(e) => HttpResponse::BadGateway()
-            .json(serde_json::json!({"error": e})),
+        Err(e) => HttpResponse::BadGateway().json(serde_json::json!({"error": e})),
     }
 }
 
@@ -33,8 +32,7 @@ pub async fn get_ollama_models(query: web::Query<OllamaHostQuery>) -> HttpRespon
     let host = query.host.as_deref().unwrap_or("http://127.0.0.1:11434");
     match atomic_core::providers::models::fetch_ollama_models(host).await {
         Ok(models) => HttpResponse::Ok().json(models),
-        Err(e) => HttpResponse::BadGateway()
-            .json(serde_json::json!({"error": e})),
+        Err(e) => HttpResponse::BadGateway().json(serde_json::json!({"error": e})),
     }
 }
 
@@ -43,8 +41,7 @@ pub async fn get_ollama_embedding_models(query: web::Query<OllamaHostQuery>) -> 
     let host = query.host.as_deref().unwrap_or("http://127.0.0.1:11434");
     match atomic_core::providers::models::get_ollama_embedding_models(host).await {
         Ok(models) => HttpResponse::Ok().json(models),
-        Err(e) => HttpResponse::BadGateway()
-            .json(serde_json::json!({"error": e})),
+        Err(e) => HttpResponse::BadGateway().json(serde_json::json!({"error": e})),
     }
 }
 
@@ -53,8 +50,7 @@ pub async fn get_ollama_llm_models(query: web::Query<OllamaHostQuery>) -> HttpRe
     let host = query.host.as_deref().unwrap_or("http://127.0.0.1:11434");
     match atomic_core::providers::models::get_ollama_llm_models(host).await {
         Ok(models) => HttpResponse::Ok().json(models),
-        Err(e) => HttpResponse::BadGateway()
-            .json(serde_json::json!({"error": e})),
+        Err(e) => HttpResponse::BadGateway().json(serde_json::json!({"error": e})),
     }
 }
 

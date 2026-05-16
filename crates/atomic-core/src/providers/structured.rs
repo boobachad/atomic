@@ -144,7 +144,11 @@ impl StructuredCallError {
     /// `String` error (most of our call sites return `Result<T, String>`).
     pub fn to_compact_string(&self) -> String {
         match self {
-            StructuredCallError::ParseFailed { parse_error, preview, attempts } => {
+            StructuredCallError::ParseFailed {
+                parse_error,
+                preview,
+                attempts,
+            } => {
                 format!(
                     "parse failed after {} attempt(s): {} (preview: {})",
                     attempts,
@@ -272,8 +276,7 @@ pub async fn call_structured_with_provider<T: DeserializeOwned>(
     // case where the provider silently ignored `response_format` (some weaker
     // OpenRouter-routed models, some Ollama models) and returned prose or
     // fenced JSON that the primary attempt couldn't cleanly parse.
-    let schema_str = serde_json::to_string_pretty(&schema)
-        .unwrap_or_else(|_| schema.to_string());
+    let schema_str = serde_json::to_string_pretty(&schema).unwrap_or_else(|_| schema.to_string());
     let nudge = format!(
         "Your previous response could not be parsed. Reply with ONLY a single JSON \
          object matching this schema. No markdown, no prose, no code fences, no \
@@ -285,20 +288,21 @@ pub async fn call_structured_with_provider<T: DeserializeOwned>(
     fallback_messages.push(Message::user(nudge));
     let fallback_config = LlmConfig::new(model.to_string()).with_params(params);
 
-    match provider.complete(&fallback_messages, &fallback_config).await {
-        Ok(response) => {
-            match parse_tolerant::<T>(&response.content) {
-                Ok(value) => {
-                    tracing::info!(schema_name, "[structured] Fallback parse succeeded");
-                    Ok(value)
-                }
-                Err(parse_err) => Err(StructuredCallError::ParseFailed {
-                    parse_error: parse_err.to_string(),
-                    preview: preview_of(&response.content),
-                    attempts: 2,
-                }),
+    match provider
+        .complete(&fallback_messages, &fallback_config)
+        .await
+    {
+        Ok(response) => match parse_tolerant::<T>(&response.content) {
+            Ok(value) => {
+                tracing::info!(schema_name, "[structured] Fallback parse succeeded");
+                Ok(value)
             }
-        }
+            Err(parse_err) => Err(StructuredCallError::ParseFailed {
+                parse_error: parse_err.to_string(),
+                preview: preview_of(&response.content),
+                attempts: 2,
+            }),
+        },
         Err(e) => {
             // Fallback couldn't even reach the provider. Surface the ORIGINAL
             // parse failure as the primary diagnostic (it's the more actionable
@@ -344,10 +348,16 @@ fn collect_lint_errors(node: &Value, path: &str) -> Vec<String> {
     let here = if path.is_empty() { "<root>" } else { path };
 
     if obj.contains_key("oneOf") {
-        errors.push(format!("{}: oneOf is not portable — use a flat schema with a discriminator field", here));
+        errors.push(format!(
+            "{}: oneOf is not portable — use a flat schema with a discriminator field",
+            here
+        ));
     }
     if obj.contains_key("anyOf") {
-        errors.push(format!("{}: anyOf is not portable — use a flat schema with a discriminator field", here));
+        errors.push(format!(
+            "{}: anyOf is not portable — use a flat schema with a discriminator field",
+            here
+        ));
     }
 
     if let Some(type_val) = obj.get("type") {
@@ -554,11 +564,13 @@ mod tests {
                 .lock()
                 .unwrap()
                 .iter()
-                .map(|s| s.as_ref().map(|schema| StructuredOutputSchema {
-                    name: schema.name.clone(),
-                    schema: schema.schema.clone(),
-                    strict: schema.strict,
-                }))
+                .map(|s| {
+                    s.as_ref().map(|schema| StructuredOutputSchema {
+                        name: schema.name.clone(),
+                        schema: schema.schema.clone(),
+                        strict: schema.strict,
+                    })
+                })
                 .collect()
         }
     }
@@ -570,17 +582,21 @@ mod tests {
             messages: &[Message],
             config: &LlmConfig,
         ) -> Result<CompletionResponse, ProviderError> {
-            self.captured_messages.lock().unwrap().push(messages.to_vec());
-            self.captured_schemas
+            self.captured_messages
                 .lock()
                 .unwrap()
-                .push(config.params.structured_output.as_ref().map(|s| {
-                    StructuredOutputSchema {
+                .push(messages.to_vec());
+            self.captured_schemas.lock().unwrap().push(
+                config
+                    .params
+                    .structured_output
+                    .as_ref()
+                    .map(|s| StructuredOutputSchema {
                         name: s.name.clone(),
                         schema: s.schema.clone(),
                         strict: s.strict,
-                    }
-                }));
+                    }),
+            );
             self.call_count.fetch_add(1, Ordering::SeqCst);
             match self.responses.lock().unwrap().pop_front() {
                 Some(MockResponse::Ok(content)) => Ok(CompletionResponse {
@@ -650,7 +666,13 @@ mod tests {
         let messages = vec![Message::system("s"), Message::user("u")];
         let result = run_sample(provider.clone(), messages).await.unwrap();
 
-        assert_eq!(result, Sample { value: "hello".into(), count: 7 });
+        assert_eq!(
+            result,
+            Sample {
+                value: "hello".into(),
+                count: 7
+            }
+        );
         assert_eq!(provider.call_count(), 1, "should not have fired fallback");
     }
 
@@ -700,7 +722,10 @@ mod tests {
         // Fallback message count = original messages + nudge
         assert_eq!(fallback_msgs.len(), 3);
         let last = &fallback_msgs[fallback_msgs.len() - 1];
-        assert!(matches!(last.role, crate::providers::types::MessageRole::User));
+        assert!(matches!(
+            last.role,
+            crate::providers::types::MessageRole::User
+        ));
         let nudge = last.content.as_deref().unwrap_or("");
         assert!(
             nudge.contains("could not be parsed") && nudge.contains("Schema:"),
@@ -719,9 +744,14 @@ mod tests {
 
         assert_eq!(provider.call_count(), 2);
         match err {
-            StructuredCallError::ParseFailed { attempts, preview, .. } => {
+            StructuredCallError::ParseFailed {
+                attempts, preview, ..
+            } => {
                 assert_eq!(attempts, 2);
-                assert!(preview.contains("still prose"), "preview should be the fallback response");
+                assert!(
+                    preview.contains("still prose"),
+                    "preview should be the fallback response"
+                );
             }
             other => panic!("expected ParseFailed, got {:?}", other),
         }
@@ -730,7 +760,9 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn pipeline_transient_error_retries_then_succeeds() {
         let provider = Arc::new(MockLlmProvider::new());
-        provider.queue_error(ProviderError::RateLimited { retry_after_secs: None });
+        provider.queue_error(ProviderError::RateLimited {
+            retry_after_secs: None,
+        });
         provider.queue_response(OK_JSON);
 
         let messages = vec![Message::system("s"), Message::user("u")];
@@ -753,7 +785,10 @@ mod tests {
         let err = run_sample(provider.clone(), messages).await.unwrap_err();
 
         assert_eq!(provider.call_count(), 3);
-        assert!(matches!(err, StructuredCallError::Provider(ProviderError::Network(_))));
+        assert!(matches!(
+            err,
+            StructuredCallError::Provider(ProviderError::Network(_))
+        ));
     }
 
     #[tokio::test]
@@ -930,7 +965,11 @@ mod tests {
             .await
             .unwrap_err();
 
-        assert_eq!(provider.call_count(), 0, "should not call provider on lint failure");
+        assert_eq!(
+            provider.call_count(),
+            0,
+            "should not call provider on lint failure"
+        );
         assert!(matches!(err, StructuredCallError::SchemaLint(_)));
     }
 
@@ -955,10 +994,7 @@ mod tests {
             "wiki_generation_result",
             crate::wiki::wiki_generation_schema(),
         );
-        out.insert(
-            "wiki_update_section_ops",
-            crate::wiki::section_ops_schema(),
-        );
+        out.insert("wiki_update_section_ops", crate::wiki::section_ops_schema());
         out.insert(
             "briefing_generation_result",
             crate::briefing::agentic::briefing_schema(),
@@ -1003,15 +1039,14 @@ mod tests {
         let live = collect_live_schemas();
         let canonical: std::collections::BTreeMap<&'static str, Value> =
             live.iter().map(|(k, v)| (*k, canonicalize(v))).collect();
-        let current = serde_json::to_string_pretty(&canonical)
-            .expect("schema snapshot should serialize");
+        let current =
+            serde_json::to_string_pretty(&canonical).expect("schema snapshot should serialize");
 
         let path = snapshot_path();
 
         if std::env::var("UPDATE_SNAPSHOTS").is_ok() {
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-            std::fs::write(&path, format!("{}\n", current))
-                .expect("failed to write snapshot");
+            std::fs::write(&path, format!("{}\n", current)).expect("failed to write snapshot");
             eprintln!("[snapshot] wrote {}", path.display());
             return;
         }
@@ -1067,9 +1102,7 @@ mod tests {
         // newly-added schema is automatically included the moment the
         // author registers it in `collect_live_schemas`.
         for (name, schema) in collect_live_schemas() {
-            lint_schema(&schema).unwrap_or_else(|e| {
-                panic!("schema '{}' failed lint: {}", name, e)
-            });
+            lint_schema(&schema).unwrap_or_else(|e| panic!("schema '{}' failed lint: {}", name, e));
         }
     }
 
@@ -1079,35 +1112,65 @@ mod tests {
     fn parse_raw_json() {
         let input = r#"{"value":"hello","count":3}"#;
         let parsed: Sample = parse_tolerant(input).unwrap();
-        assert_eq!(parsed, Sample { value: "hello".into(), count: 3 });
+        assert_eq!(
+            parsed,
+            Sample {
+                value: "hello".into(),
+                count: 3
+            }
+        );
     }
 
     #[test]
     fn parse_fenced_json_block() {
         let input = "```json\n{\"value\":\"hi\",\"count\":1}\n```";
         let parsed: Sample = parse_tolerant(input).unwrap();
-        assert_eq!(parsed, Sample { value: "hi".into(), count: 1 });
+        assert_eq!(
+            parsed,
+            Sample {
+                value: "hi".into(),
+                count: 1
+            }
+        );
     }
 
     #[test]
     fn parse_fenced_generic_block() {
         let input = "```\n{\"value\":\"hi\",\"count\":2}\n```";
         let parsed: Sample = parse_tolerant(input).unwrap();
-        assert_eq!(parsed, Sample { value: "hi".into(), count: 2 });
+        assert_eq!(
+            parsed,
+            Sample {
+                value: "hi".into(),
+                count: 2
+            }
+        );
     }
 
     #[test]
     fn parse_json_with_prose_prefix() {
         let input = "Sure! Here is the JSON you asked for: {\"value\":\"ok\",\"count\":7}";
         let parsed: Sample = parse_tolerant(input).unwrap();
-        assert_eq!(parsed, Sample { value: "ok".into(), count: 7 });
+        assert_eq!(
+            parsed,
+            Sample {
+                value: "ok".into(),
+                count: 7
+            }
+        );
     }
 
     #[test]
     fn parse_json_with_trailing_prose() {
         let input = "{\"value\":\"x\",\"count\":0}\n\nLet me know if you need anything else!";
         let parsed: Sample = parse_tolerant(input).unwrap();
-        assert_eq!(parsed, Sample { value: "x".into(), count: 0 });
+        assert_eq!(
+            parsed,
+            Sample {
+                value: "x".into(),
+                count: 0
+            }
+        );
     }
 
     #[test]
@@ -1152,7 +1215,11 @@ mod tests {
         });
         let err = lint_schema(&schema).unwrap_err();
         let msg = err.to_string();
-        assert!(msg.contains("oneOf"), "expected oneOf violation, got: {}", msg);
+        assert!(
+            msg.contains("oneOf"),
+            "expected oneOf violation, got: {}",
+            msg
+        );
     }
 
     #[test]

@@ -3,7 +3,9 @@
 use crate::db_extractor::Db;
 use crate::error::ok_or_error;
 use actix_web::{web, HttpResponse};
-use atomic_core::{AtomPosition, CanvasAtomPosition, CanvasClusterLabel, CanvasEdgeData, GlobalCanvasData};
+use atomic_core::{
+    AtomPosition, CanvasAtomPosition, CanvasClusterLabel, CanvasEdgeData, GlobalCanvasData,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use utoipa::{IntoParams, ToSchema};
@@ -14,10 +16,7 @@ pub async fn get_positions(db: Db) -> HttpResponse {
 }
 
 #[utoipa::path(put, path = "/api/canvas/positions", request_body = Vec<AtomPosition>, responses((status = 200, description = "Positions saved")), tag = "canvas")]
-pub async fn save_positions(
-    db: Db,
-    body: web::Json<Vec<AtomPosition>>,
-) -> HttpResponse {
+pub async fn save_positions(db: Db, body: web::Json<Vec<AtomPosition>>) -> HttpResponse {
     let positions = body.into_inner();
     match db.0.save_atom_positions(&positions).await {
         Ok(()) => HttpResponse::Ok().json(serde_json::json!({"status": "ok"})),
@@ -51,7 +50,10 @@ pub async fn get_canvas_level(
 ) -> HttpResponse {
     let parent_id = query.parent_id.clone();
     let children_hint = body.and_then(|b| b.into_inner().children_hint);
-    ok_or_error(db.0.get_canvas_level(parent_id.as_deref(), children_hint).await)
+    ok_or_error(
+        db.0.get_canvas_level(parent_id.as_deref(), children_hint)
+            .await,
+    )
 }
 
 /// Compute PCA 2D projection and return all atoms with positions, edges, and cluster labels
@@ -123,5 +125,9 @@ fn filter_canvas_by_source_prefix(data: &GlobalCanvasData, prefix: &str) -> Glob
         })
         .collect();
 
-    GlobalCanvasData { atoms, edges, clusters }
+    GlobalCanvasData {
+        atoms,
+        edges,
+        clusters,
+    }
 }

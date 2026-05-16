@@ -1,4 +1,4 @@
-import { useState, SyntheticEvent } from 'react';
+import { useState, useRef, SyntheticEvent } from 'react';
 import { Image as ImageIcon, AlertTriangle } from 'lucide-react';
 
 interface MarkdownImageProps {
@@ -8,8 +8,12 @@ interface MarkdownImageProps {
 
 export function MarkdownImage({ src, alt }: MarkdownImageProps) {
   const [status, setStatus] = useState<'loading' | 'loaded' | 'error'>('loading');
+  const imgRef = useRef<HTMLImageElement | null>(null);
 
-  const handleLoad = () => setStatus('loaded');
+  const handleLoad = (_e: SyntheticEvent<HTMLImageElement>) => {
+    setStatus('loaded');
+  };
+
   const handleError = (e: SyntheticEvent<HTMLImageElement>) => {
     setStatus('error');
     e.currentTarget.style.display = 'none';
@@ -29,9 +33,10 @@ export function MarkdownImage({ src, alt }: MarkdownImageProps) {
         </span>
       )}
       <img
+        ref={imgRef}
         src={src}
         alt={alt || ''}
-        loading="lazy"
+        loading="eager"
         decoding="async"
         onLoad={handleLoad}
         onError={handleError}

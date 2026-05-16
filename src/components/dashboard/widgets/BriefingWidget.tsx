@@ -68,7 +68,30 @@ export function BriefingWidget() {
     return () => unsub();
   }, [fetchLatest]);
 
-  const handleOpenCanvas = () => setViewMode('canvas');
+  // The mini-canvas now renders only this briefing's referenced atoms (plus
+  // their 1-hop neighbors), so deduplicate citation atom IDs into a stable
+  // array we hand to SigmaCanvas.
+  const briefingAtomIds = useMemo(() => {
+    if (!active) return undefined;
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const c of active.citations) {
+      if (seen.has(c.atom_id)) continue;
+      seen.add(c.atom_id);
+      out.push(c.atom_id);
+    }
+    return out;
+  }, [active]);
+
+  const handleMiniNodeClick = (atomId: string) => {
+    // Open the main canvas focused on the clicked atom. SigmaCanvas consumes
+    // pendingFocusAtomId on mount and animates the camera + opens the popover,
+    // so by the time the user sees the canvas it's already on that atom.
+    const store = useCanvasStore.getState();
+    store.setPendingCamera(null);
+    store.setPendingFocusAtomId(atomId);
+    setViewMode('canvas');
+  };
 
   // Citation popover state
   const [activeCitation, setActiveCitation] = useState<BriefingCitation | null>(null);
@@ -158,8 +181,12 @@ export function BriefingWidget() {
           Rendered only on desktop to avoid mounting Sigma twice. Skipped in the
           no-briefing state — a near-empty graph reads as a broken widget. */}
       {!isMobile && hasBriefing && (
-        <div className="float-right ml-8 mb-2 w-80 aspect-[4/3]">
-          <SigmaCanvas mode="preview" onPreviewClick={handleOpenCanvas} />
+        <div className="float-right ml-2 mb-2 w-96 aspect-[4/3]">
+          <SigmaCanvas
+            mode="preview"
+            filterAtomIds={briefingAtomIds}
+            onPreviewNodeClick={handleMiniNodeClick}
+          />
         </div>
       )}
 
@@ -171,7 +198,11 @@ export function BriefingWidget() {
           never appears above the title. */}
       {isMobile && hasBriefing && (
         <div className="my-4 w-full aspect-[16/10]">
-          <SigmaCanvas mode="preview" onPreviewClick={handleOpenCanvas} />
+          <SigmaCanvas
+            mode="preview"
+            filterAtomIds={briefingAtomIds}
+            onPreviewNodeClick={handleMiniNodeClick}
+          />
         </div>
       )}
 
@@ -218,9 +249,9 @@ export function BriefingWidget() {
           citation={activeCitation}
           anchorRect={anchorRect}
           onClose={closePopover}
-          onViewAtom={(atomId) => {
+          onViewAtom={(atomId, highlightText) => {
             closePopover();
-            openReader(atomId);
+            openReader(atomId, highlightText);
           }}
         />
       )}

@@ -15,14 +15,14 @@ pub struct ComputeClustersBody {
 }
 
 #[utoipa::path(post, path = "/api/clustering/compute", request_body = ComputeClustersBody, responses((status = 200, description = "Computed clusters", body = Vec<atomic_core::AtomCluster>)), tag = "clustering")]
-pub async fn compute_clusters(
-    db: Db,
-    body: web::Json<ComputeClustersBody>,
-) -> HttpResponse {
+pub async fn compute_clusters(db: Db, body: web::Json<ComputeClustersBody>) -> HttpResponse {
     let min_similarity = body.min_similarity.unwrap_or(0.6);
     let min_cluster_size = body.min_cluster_size.unwrap_or(2);
     let core = &db.0;
-    let clusters = match core.compute_clusters(min_similarity, min_cluster_size).await {
+    let clusters = match core
+        .compute_clusters(min_similarity, min_cluster_size)
+        .await
+    {
         Ok(c) => c,
         Err(e) => return crate::error::error_response(e),
     };

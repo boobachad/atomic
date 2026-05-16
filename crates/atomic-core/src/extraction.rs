@@ -72,7 +72,8 @@ pub fn get_tag_tree_cached(conn: &Connection, db_path: &str) -> Result<String, S
     // Check cache — must match both TTL and database path
     if let Ok(cache) = TAG_TREE_CACHE.lock() {
         if let Some(ref entry) = *cache {
-            if entry.db_path == db_path && now.duration_since(entry.fetched_at) < TAG_TREE_CACHE_TTL {
+            if entry.db_path == db_path && now.duration_since(entry.fetched_at) < TAG_TREE_CACHE_TTL
+            {
                 return Ok(entry.tree_json.clone());
             }
         }
@@ -142,6 +143,41 @@ Guidelines:
 - Prefer broad tags rather than overly specific ones (e.g., "John Smith" instead of "Early Life of John Smith")
 - Every tag must have a valid parent_name from the top-level categories listed below
 - If none of the categories below feel like a natural fit for the content, return an empty tag list rather than forcing a poor match"#;
+
+const SYSTEM_PROMPT_WITH_GUIDANCE: &str = r#"You are a knowledge management assistant that categorizes text with tags.
+
+PURPOSE OF TAGS:
+Tags help users navigate and filter their content. Users can browse by tag and generate wiki articles that synthesize all content under a tag. Only add a tag if you believe strongly that the user would want this content categorized and filterable by that tag.
+
+IMPORTANT:
+- Each tag MUST have a parent_name set to one of the existing top-level categories shown below
+- DO NOT create new top-level categories - only use the ones the user has provided below
+- Tag names are case-insensitive and globally unique
+
+The user has chosen which top-level categories the auto-tagger may extend. They are listed below with optional guidance and a sample of existing sub-tags under each, as a point of reference for the kinds of tags in this system.
+
+HIERARCHY STRUCTURE:
+- Level 1: Categories (shown below) - use ONLY these existing categories as parent_name
+- Level 2: Specific tags you create under those categories
+- Maximum 2 levels - no deeper nesting
+
+RESPONSE FORMAT:
+Return a JSON object with a "tags" array. Each tag is an object with "name" and "parent_name", where parent_name is one of the categories shown below:
+{"tags": [{"name": "<specific tag>", "parent_name": "<category from the list below>"}]}
+
+Guidelines:
+- Create new Level 2 tags under the user's existing categories when needed
+- Prefer broad tags rather than overly specific ones (e.g., "John Smith" instead of "Early Life of John Smith")
+- Every tag must have a valid parent_name from the top-level categories listed below
+- If none of the categories below feel like a natural fit for the content, return an empty tag list rather than forcing a poor match"#;
+
+fn default_system_prompt_for_tag_tree(tag_tree_json: &str) -> &'static str {
+    if tag_tree_json.contains("\nDescription: ") {
+        SYSTEM_PROMPT_WITH_GUIDANCE
+    } else {
+        SYSTEM_PROMPT
+    }
+}
 
 /// JSON schema for tag extraction calls. Shared by `extract_tags_from_content`
 /// and `extract_tags_from_chunk`. Kept portable: all properties required,
@@ -241,7 +277,8 @@ fn max_tagging_chars(provider_config: &ProviderConfig, tag_tree_json: &str, mode
         Some(ctx_len) => {
             // Reserve tokens for: system prompt (~500), tag tree, response (~500)
             let tag_tree_tokens = tag_tree_json.len() / CHARS_PER_TOKEN;
-            let available_tokens = ctx_len.saturating_sub(TAGGING_OVERHEAD_TOKENS + tag_tree_tokens);
+            let available_tokens =
+                ctx_len.saturating_sub(TAGGING_OVERHEAD_TOKENS + tag_tree_tokens);
             // Convert to chars, with a minimum floor
             (available_tokens * CHARS_PER_TOKEN).max(500)
         }
@@ -259,8 +296,8 @@ pub async fn extract_tags_from_content(
     tag_tree_json: &str,
     model: &str,
     supported_params: Option<Vec<String>>,
+    custom_system_prompt: Option<&str>,
 ) -> Result<Vec<TagApplication>, String> {
-    // Truncate based on provider's context length
     let max_chars = max_tagging_chars(provider_config, tag_tree_json, model);
     let text = if content.len() > max_chars {
         // Find the nearest char boundary at or before max_chars
@@ -278,7 +315,10 @@ pub async fn extract_tags_from_content(
         tag_tree_json, text
     );
 
-    let messages = vec![Message::system(SYSTEM_PROMPT), Message::user(user_content)];
+    let system = custom_system_prompt
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| default_system_prompt_for_tag_tree(tag_tree_json));
+    let messages = vec![Message::system(system), Message::user(user_content)];
 
     let call = StructuredCall::<ExtractionResult>::new(
         provider_config,
@@ -312,7 +352,10 @@ pub async fn extract_tags_from_chunk(
         tag_tree_json, chunk_content
     );
 
-    let messages = vec![Message::system(SYSTEM_PROMPT), Message::user(user_content)];
+    let messages = vec![
+        Message::system(default_system_prompt_for_tag_tree(tag_tree_json)),
+        Message::user(user_content),
+    ];
 
     let call = StructuredCall::<ExtractionResult>::new(
         provider_config,
@@ -345,11 +388,16 @@ pub fn get_tag_tree_for_llm(conn: &Connection) -> Result<String, String> {
     // Tags without is_autotag_target = 1 are intentionally excluded so the
     // auto-tagger only extends categories the user has opted into.
     let mut top_level_stmt = conn
-        .prepare("SELECT id, name FROM tags WHERE parent_id IS NULL AND is_autotag_target = 1 ORDER BY name")
+        .prepare(
+            "SELECT id, name, autotag_description
+             FROM tags
+             WHERE parent_id IS NULL AND is_autotag_target = 1
+             ORDER BY name",
+        )
         .map_err(|e| format!("Failed to prepare top-level tag query: {}", e))?;
 
-    let top_level_tags: Vec<(String, String)> = top_level_stmt
-        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+    let top_level_tags: Vec<(String, String, String)> = top_level_stmt
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
         .map_err(|e| format!("Failed to query top-level tags: {}", e))?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| format!("Failed to collect top-level tags: {}", e))?;
@@ -361,10 +409,16 @@ pub fn get_tag_tree_for_llm(conn: &Connection) -> Result<String, String> {
     // Step 2: For each top-level tag, get top 10 most-used child tags by atom count
     let mut result = String::new();
 
-    for (i, (parent_id, parent_name)) in top_level_tags.iter().enumerate() {
+    for (i, (parent_id, parent_name, description)) in top_level_tags.iter().enumerate() {
         // Add the top-level category
         result.push_str(parent_name);
         result.push('\n');
+        let description = description.trim();
+        if !description.is_empty() {
+            result.push_str("Description: ");
+            result.push_str(description);
+            result.push('\n');
+        }
 
         // Query top 10 children by atom count
         let mut children_stmt = conn
@@ -388,7 +442,11 @@ pub fn get_tag_tree_for_llm(conn: &Connection) -> Result<String, String> {
         // Add children with tree formatting
         for (j, child_name) in children.iter().enumerate() {
             let is_last_child = j == children.len() - 1;
-            let connector = if is_last_child { "└── " } else { "├── " };
+            let connector = if is_last_child {
+                "└── "
+            } else {
+                "├── "
+            };
             result.push_str(connector);
             result.push_str(child_name);
             result.push('\n');
@@ -404,11 +462,17 @@ pub fn get_tag_tree_for_llm(conn: &Connection) -> Result<String, String> {
 }
 
 /// Link tags to an atom (append to existing tags)
-pub fn link_tags_to_atom(conn: &Connection, atom_id: &str, tag_ids: &[String]) -> Result<(), String> {
+pub fn link_tags_to_atom(
+    conn: &Connection,
+    atom_id: &str,
+    tag_ids: &[String],
+) -> Result<(), String> {
     for tag_id in tag_ids {
-        // Use INSERT OR IGNORE to avoid duplicates
+        // Use INSERT OR IGNORE to avoid duplicates. Existing assignments keep
+        // whatever source they had — if a user previously added this tag
+        // manually, we don't want to silently demote it to 'auto'.
         conn.execute(
-            "INSERT OR IGNORE INTO atom_tags (atom_id, tag_id) VALUES (?1, ?2)",
+            "INSERT OR IGNORE INTO atom_tags (atom_id, tag_id, source) VALUES (?1, ?2, 'auto')",
             rusqlite::params![atom_id, tag_id],
         )
         .map_err(|e| format!("Failed to link tag to atom: {}", e))?;
@@ -738,6 +802,40 @@ mod tests {
         // Should have tree format
         assert!(result.contains("Topics"), "Should contain parent tag");
         assert!(result.contains("AI"), "Should contain child tag");
+        assert!(
+            !result.contains("Description:"),
+            "Should not include description lines when no guidance is configured"
+        );
+    }
+
+    #[test]
+    fn test_get_tag_tree_for_llm_includes_autotag_description_when_present() {
+        let (db, _temp) = create_test_db();
+        let conn = db.conn.lock().unwrap();
+
+        let tag_id = uuid::Uuid::new_v4().to_string();
+        let now = chrono::Utc::now().to_rfc3339();
+        conn.execute(
+            "INSERT INTO tags (id, name, parent_id, created_at, is_autotag_target, autotag_description)
+             VALUES (?1, ?2, NULL, ?3, 1, ?4)",
+            rusqlite::params![
+                &tag_id,
+                "Topics",
+                &now,
+                "Use for subject-matter themes, not people or organizations."
+            ],
+        )
+        .unwrap();
+
+        let result = get_tag_tree_for_llm(&conn).unwrap();
+
+        assert!(result.contains("Topics"));
+        assert!(result
+            .contains("Description: Use for subject-matter themes, not people or organizations."));
+        assert_eq!(
+            default_system_prompt_for_tag_tree(&result),
+            SYSTEM_PROMPT_WITH_GUIDANCE
+        );
     }
 
     #[test]
@@ -949,13 +1047,18 @@ mod tests {
         // Parent should still exist because the function only cleans up ancestors
         // of the passed-in tag, and child no longer has a parent
         let parent_exists: bool = conn
-            .query_row("SELECT 1 FROM tags WHERE id = ?1", [&parent_id], |_| Ok(true))
+            .query_row("SELECT 1 FROM tags WHERE id = ?1", [&parent_id], |_| {
+                Ok(true)
+            })
             .unwrap_or(false);
 
         // Actually, the parent wasn't cleaned up because we moved child to NULL parent
         // before calling cleanup. The function needs child to still reference parent.
         // Let's verify the function handles this gracefully (doesn't crash)
-        assert!(parent_exists, "Parent still exists (cleanup couldn't find parent via child)");
+        assert!(
+            parent_exists,
+            "Parent still exists (cleanup couldn't find parent via child)"
+        );
     }
 
     #[test]
@@ -990,8 +1093,13 @@ mod tests {
         cleanup_orphaned_parents(&conn, &child1_id).unwrap();
 
         let parent_exists: bool = conn
-            .query_row("SELECT 1 FROM tags WHERE id = ?1", [&parent_id], |_| Ok(true))
+            .query_row("SELECT 1 FROM tags WHERE id = ?1", [&parent_id], |_| {
+                Ok(true)
+            })
             .unwrap_or(false);
-        assert!(parent_exists, "Parent should NOT be deleted when it has other children");
+        assert!(
+            parent_exists,
+            "Parent should NOT be deleted when it has other children"
+        );
     }
 }

@@ -4,15 +4,54 @@ use crate::error::AtomicCoreError;
 use crate::models::*;
 use crate::storage::traits::*;
 use async_trait::async_trait;
+use chrono::Utc;
 use rusqlite::{Connection, OptionalExtension};
 use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
-use chrono::Utc;
+
+fn collect_descendant_tag_ids(
+    conn: &Connection,
+    root_tag_id: &str,
+) -> Result<Vec<String>, AtomicCoreError> {
+    let mut stmt = conn.prepare(
+        "WITH RECURSIVE descendants(id) AS (
+            SELECT id FROM tags WHERE id = ?1
+            UNION ALL
+            SELECT t.id FROM tags t JOIN descendants d ON t.parent_id = d.id
+        )
+        SELECT id FROM descendants",
+    )?;
+    let rows = stmt.query_map([root_tag_id], |row| row.get::<_, String>(0))?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(AtomicCoreError::from)
+}
+
+fn delete_wiki_fts_rows_for_tags(
+    conn: &Connection,
+    tag_ids: &[String],
+) -> Result<(), AtomicCoreError> {
+    if tag_ids.is_empty() {
+        return Ok(());
+    }
+
+    let placeholders = tag_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+    let query = format!(
+        "DELETE FROM wiki_articles_fts WHERE tag_id IN ({})",
+        placeholders
+    );
+    conn.execute(&query, rusqlite::params_from_iter(tag_ids.iter()))?;
+    Ok(())
+}
 
 /// Load all tags and their direct (denormalized) atom counts from the database.
-fn load_tags_and_counts(conn: &Connection) -> Result<(Vec<Tag>, HashMap<String, i32>), AtomicCoreError> {
-    let mut stmt = conn
-        .prepare("SELECT id, name, parent_id, created_at, atom_count, is_autotag_target FROM tags ORDER BY name")?;
+fn load_tags_and_counts(
+    conn: &Connection,
+) -> Result<(Vec<Tag>, HashMap<String, i32>), AtomicCoreError> {
+    let mut stmt = conn.prepare(
+        "SELECT id, name, parent_id, created_at, atom_count, is_autotag_target, autotag_description
+         FROM tags
+         ORDER BY name",
+    )?;
 
     let mut direct_counts: HashMap<String, i32> = HashMap::new();
     let all_tags: Vec<Tag> = stmt
@@ -26,6 +65,7 @@ fn load_tags_and_counts(conn: &Connection) -> Result<(Vec<Tag>, HashMap<String, 
                 parent_id: row.get(2)?,
                 created_at: row.get(3)?,
                 is_autotag_target: row.get::<_, i32>(5)? != 0,
+                autotag_description: row.get(6)?,
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;
@@ -38,10 +78,18 @@ impl SqliteStorage {
         self.get_all_tags_filtered_impl(0)
     }
 
-    pub(crate) fn get_all_tags_filtered_impl(&self, min_count: i32) -> StorageResult<Vec<TagWithCount>> {
+    pub(crate) fn get_all_tags_filtered_impl(
+        &self,
+        min_count: i32,
+    ) -> StorageResult<Vec<TagWithCount>> {
         let conn = self.db.read_conn()?;
         let (all_tags, direct_counts) = load_tags_and_counts(&conn)?;
-        Ok(crate::build_tag_tree_with_counts(&all_tags, None, &direct_counts, min_count))
+        Ok(crate::build_tag_tree_with_counts(
+            &all_tags,
+            None,
+            &direct_counts,
+            min_count,
+        ))
     }
 
     pub(crate) fn get_tag_children_impl(
@@ -61,7 +109,10 @@ impl SqliteStorage {
         )?;
 
         if total == 0 {
-            return Ok(PaginatedTagChildren { children: Vec::new(), total: 0 });
+            return Ok(PaginatedTagChildren {
+                children: Vec::new(),
+                total: 0,
+            });
         }
 
         // atom_count is denormalized on the tags table (maintained by triggers),
@@ -69,11 +120,12 @@ impl SqliteStorage {
         let mut stmt = conn.prepare(
             "SELECT t.id, t.name, t.parent_id, t.created_at, t.atom_count,
                 (SELECT COUNT(*) FROM tags c WHERE c.parent_id = t.id) AS children_total,
-                t.is_autotag_target
+                t.is_autotag_target,
+                t.autotag_description
             FROM tags t
             WHERE t.parent_id = ?1
             ORDER BY t.atom_count DESC
-            LIMIT ?2 OFFSET ?3"
+            LIMIT ?2 OFFSET ?3",
         )?;
 
         let mut children: Vec<TagWithCount> = stmt
@@ -85,6 +137,7 @@ impl SqliteStorage {
                         parent_id: row.get(2)?,
                         created_at: row.get(3)?,
                         is_autotag_target: row.get::<_, i32>(6)? != 0,
+                        autotag_description: row.get(7)?,
                     },
                     atom_count: row.get(4)?,
                     children_total: row.get(5)?,
@@ -105,7 +158,11 @@ impl SqliteStorage {
         name: &str,
         parent_id: Option<&str>,
     ) -> StorageResult<Tag> {
-        let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+        let conn = self
+            .db
+            .conn
+            .lock()
+            .map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
 
         let id = Uuid::new_v4().to_string();
         let now = Utc::now().to_rfc3339();
@@ -121,6 +178,7 @@ impl SqliteStorage {
             parent_id: parent_id.map(String::from),
             created_at: now,
             is_autotag_target: false,
+            autotag_description: String::new(),
         })
     }
 
@@ -130,37 +188,50 @@ impl SqliteStorage {
         name: &str,
         parent_id: Option<&str>,
     ) -> StorageResult<Tag> {
-        let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+        let conn = self
+            .db
+            .conn
+            .lock()
+            .map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
 
         conn.execute(
             "UPDATE tags SET name = ?1, parent_id = ?2 WHERE id = ?3",
             (name, &parent_id, id),
         )?;
+        conn.execute("DELETE FROM wiki_articles_fts WHERE tag_id = ?1", [id])?;
+        conn.execute(
+            "INSERT INTO wiki_articles_fts(id, tag_id, tag_name, content)
+             SELECT w.id, w.tag_id, t.name, w.content
+             FROM wiki_articles w
+             JOIN tags t ON t.id = w.tag_id
+             WHERE w.tag_id = ?1",
+            [id],
+        )?;
 
-        let tag = conn
-            .query_row(
-                "SELECT id, name, parent_id, created_at, is_autotag_target FROM tags WHERE id = ?1",
-                [id],
-                |row| {
-                    Ok(Tag {
-                        id: row.get(0)?,
-                        name: row.get(1)?,
-                        parent_id: row.get(2)?,
-                        created_at: row.get(3)?,
-                        is_autotag_target: row.get::<_, i32>(4)? != 0,
-                    })
-                },
-            )?;
+        let tag = conn.query_row(
+            "SELECT id, name, parent_id, created_at, is_autotag_target, autotag_description FROM tags WHERE id = ?1",
+            [id],
+            |row| {
+                Ok(Tag {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    parent_id: row.get(2)?,
+                    created_at: row.get(3)?,
+                    is_autotag_target: row.get::<_, i32>(4)? != 0,
+                    autotag_description: row.get(5)?,
+                })
+            },
+        )?;
 
         Ok(tag)
     }
 
-    pub(crate) fn set_tag_autotag_target_impl(
-        &self,
-        id: &str,
-        value: bool,
-    ) -> StorageResult<()> {
-        let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+    pub(crate) fn set_tag_autotag_target_impl(&self, id: &str, value: bool) -> StorageResult<()> {
+        let conn = self
+            .db
+            .conn
+            .lock()
+            .map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
         let val = if value { 1 } else { 0 };
         let affected = conn.execute(
             "UPDATE tags SET is_autotag_target = ?1 WHERE id = ?2",
@@ -168,6 +239,26 @@ impl SqliteStorage {
         )?;
         if affected == 0 {
             return Err(AtomicCoreError::NotFound(format!("tag {}", id)));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn set_tag_autotag_description_impl(
+        &self,
+        id: &str,
+        description: &str,
+    ) -> StorageResult<()> {
+        let conn = self
+            .db
+            .conn
+            .lock()
+            .map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+        let affected = conn.execute(
+            "UPDATE tags SET autotag_description = ?1 WHERE id = ?2 AND parent_id IS NULL",
+            rusqlite::params![description.trim(), id],
+        )?;
+        if affected == 0 {
+            return Err(AtomicCoreError::NotFound(format!("top-level tag {}", id)));
         }
         Ok(())
     }
@@ -184,9 +275,14 @@ impl SqliteStorage {
         keep_default_names: &[String],
         add_custom_names: &[String],
     ) -> StorageResult<Vec<Tag>> {
-        const DEFAULT_NAMES: &[&str] = &["Topics", "People", "Locations", "Organizations", "Events"];
+        const DEFAULT_NAMES: &[&str] =
+            &["Topics", "People", "Locations", "Organizations", "Events"];
 
-        let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+        let conn = self
+            .db
+            .conn
+            .lock()
+            .map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
         let tx = conn.unchecked_transaction()?;
 
         let keep_lower: HashSet<String> = keep_default_names
@@ -209,16 +305,18 @@ impl SqliteStorage {
             "SELECT t.id, t.name, t.is_autotag_target, t.atom_count,
                     (SELECT COUNT(*) FROM tags c WHERE c.parent_id = t.id) AS children_count
              FROM tags t
-             WHERE t.parent_id IS NULL"
+             WHERE t.parent_id IS NULL",
         )?;
         let top_level: Vec<TopLevel> = stmt
-            .query_map([], |row| Ok(TopLevel {
-                id: row.get(0)?,
-                name: row.get(1)?,
-                is_target: row.get::<_, i32>(2)? != 0,
-                atom_count: row.get(3)?,
-                children_count: row.get(4)?,
-            }))?
+            .query_map([], |row| {
+                Ok(TopLevel {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    is_target: row.get::<_, i32>(2)? != 0,
+                    atom_count: row.get(3)?,
+                    children_count: row.get(4)?,
+                })
+            })?
             .collect::<Result<Vec<_>, _>>()?;
         drop(stmt);
 
@@ -229,7 +327,9 @@ impl SqliteStorage {
             if !keep_lower.contains(&default_name.to_lowercase()) {
                 continue;
             }
-            let existing = top_level.iter().find(|t| t.name.eq_ignore_ascii_case(default_name));
+            let existing = top_level
+                .iter()
+                .find(|t| t.name.eq_ignore_ascii_case(default_name));
             let id = match existing {
                 Some(t) => t.id.clone(),
                 None => {
@@ -250,12 +350,15 @@ impl SqliteStorage {
 
         // Step 2: handle unrequested defaults — delete if empty, otherwise unflag.
         for t in &top_level {
-            let is_default = DEFAULT_NAMES.iter().any(|d| d.eq_ignore_ascii_case(&t.name));
+            let is_default = DEFAULT_NAMES
+                .iter()
+                .any(|d| d.eq_ignore_ascii_case(&t.name));
             let is_kept = keep_lower.contains(&t.name.to_lowercase());
             if !is_default || is_kept {
                 continue;
             }
             if t.atom_count == 0 && t.children_count == 0 {
+                delete_wiki_fts_rows_for_tags(&tx, std::slice::from_ref(&t.id))?;
                 tx.execute("DELETE FROM tags WHERE id = ?1", rusqlite::params![&t.id])?;
             } else if t.is_target {
                 tx.execute(
@@ -297,15 +400,18 @@ impl SqliteStorage {
                 rusqlite::params![&id],
             )?;
             let tag = tx.query_row(
-                "SELECT id, name, parent_id, created_at, is_autotag_target FROM tags WHERE id = ?1",
+                "SELECT id, name, parent_id, created_at, is_autotag_target, autotag_description FROM tags WHERE id = ?1",
                 [&id],
-                |row| Ok(Tag {
-                    id: row.get(0)?,
-                    name: row.get(1)?,
-                    parent_id: row.get(2)?,
-                    created_at: row.get(3)?,
-                    is_autotag_target: row.get::<_, i32>(4)? != 0,
-                }),
+                |row| {
+                    Ok(Tag {
+                        id: row.get(0)?,
+                        name: row.get(1)?,
+                        parent_id: row.get(2)?,
+                        created_at: row.get(3)?,
+                        is_autotag_target: row.get::<_, i32>(4)? != 0,
+                        autotag_description: row.get(5)?,
+                    })
+                },
             )?;
             custom_tags.push(tag);
         }
@@ -315,11 +421,29 @@ impl SqliteStorage {
     }
 
     pub(crate) fn delete_tag_impl(&self, id: &str, recursive: bool) -> StorageResult<()> {
-        let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+        let conn = self
+            .db
+            .conn
+            .lock()
+            .map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+        let tx = conn.unchecked_transaction()?;
+
+        let tag_ids_to_delete = if recursive {
+            collect_descendant_tag_ids(&tx, id)?
+        } else {
+            tx.query_row("SELECT id FROM tags WHERE id = ?1", [id], |row| {
+                row.get::<_, String>(0)
+            })
+            .optional()?
+            .into_iter()
+            .collect()
+        };
+
+        delete_wiki_fts_rows_for_tags(&tx, &tag_ids_to_delete)?;
 
         if recursive {
             // Delete tag and all descendants via recursive CTE
-            conn.execute(
+            tx.execute(
                 "WITH RECURSIVE descendants(id) AS (
                     SELECT id FROM tags WHERE id = ?1
                     UNION ALL
@@ -329,9 +453,10 @@ impl SqliteStorage {
                 [id],
             )?;
         } else {
-            conn.execute("DELETE FROM tags WHERE id = ?1", [id])?;
+            tx.execute("DELETE FROM tags WHERE id = ?1", [id])?;
         }
 
+        tx.commit()?;
         Ok(())
     }
 
@@ -341,14 +466,12 @@ impl SqliteStorage {
         limit: usize,
     ) -> StorageResult<Vec<RelatedTag>> {
         let conn = self.db.read_conn()?;
-        crate::wiki::get_related_tags(&conn, tag_id, limit)
-            .map_err(|e| AtomicCoreError::Wiki(e))
+        crate::wiki::get_related_tags(&conn, tag_id, limit).map_err(|e| AtomicCoreError::Wiki(e))
     }
 
     pub(crate) fn get_tags_for_compaction_impl(&self) -> StorageResult<String> {
         let conn = self.db.read_conn()?;
-        crate::compaction::read_all_tags(&conn)
-            .map_err(|e| AtomicCoreError::Compaction(e))
+        crate::compaction::read_all_tags(&conn).map_err(|e| AtomicCoreError::Compaction(e))
     }
 
     pub(crate) fn get_or_create_tag_impl(
@@ -356,7 +479,11 @@ impl SqliteStorage {
         name: &str,
         parent_name: Option<&str>,
     ) -> StorageResult<String> {
-        let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+        let conn = self
+            .db
+            .conn
+            .lock()
+            .map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
         let parent_name_owned = parent_name.map(String::from);
         crate::extraction::get_or_create_tag(&conn, name, &parent_name_owned)
             .map_err(|e| AtomicCoreError::Validation(e))
@@ -367,59 +494,61 @@ impl SqliteStorage {
         atom_id: &str,
         tag_ids: &[String],
     ) -> StorageResult<()> {
-        let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+        let conn = self
+            .db
+            .conn
+            .lock()
+            .map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
         crate::extraction::link_tags_to_atom(&conn, atom_id, tag_ids)
             .map_err(|e| AtomicCoreError::Validation(e))
     }
 
     pub(crate) fn get_tag_tree_for_llm_impl(&self) -> StorageResult<String> {
         let conn = self.db.read_conn()?;
-        crate::extraction::get_tag_tree_for_llm(&conn)
-            .map_err(|e| AtomicCoreError::Validation(e))
+        crate::extraction::get_tag_tree_for_llm(&conn).map_err(|e| AtomicCoreError::Validation(e))
     }
 
-    pub(crate) fn compute_tag_centroids_batch_impl(
-        &self,
-        tag_ids: &[String],
-    ) -> StorageResult<()> {
-        let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+    pub(crate) fn compute_tag_centroids_batch_impl(&self, tag_ids: &[String]) -> StorageResult<()> {
+        let conn = self
+            .db
+            .conn
+            .lock()
+            .map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
         crate::embedding::compute_tag_embeddings_batch(&conn, tag_ids)
             .map_err(|e| AtomicCoreError::Embedding(e))
     }
 
-    pub(crate) fn cleanup_orphaned_parents_impl(
-        &self,
-        tag_id: &str,
-    ) -> StorageResult<()> {
-        let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+    pub(crate) fn cleanup_orphaned_parents_impl(&self, tag_id: &str) -> StorageResult<()> {
+        let conn = self
+            .db
+            .conn
+            .lock()
+            .map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
         crate::extraction::cleanup_orphaned_parents(&conn, tag_id)
             .map_err(|e| AtomicCoreError::Validation(e))
     }
 
-    pub(crate) fn get_tag_hierarchy_impl(
-        &self,
-        tag_id: &str,
-    ) -> StorageResult<Vec<String>> {
+    pub(crate) fn get_tag_hierarchy_impl(&self, tag_id: &str) -> StorageResult<Vec<String>> {
         let conn = self.db.read_conn()?;
-        crate::wiki::get_tag_hierarchy(&conn, tag_id)
-            .map_err(|e| AtomicCoreError::Wiki(e))
+        crate::wiki::get_tag_hierarchy(&conn, tag_id).map_err(|e| AtomicCoreError::Wiki(e))
     }
 
-    pub(crate) fn count_atoms_with_tags_impl(
-        &self,
-        tag_ids: &[String],
-    ) -> StorageResult<i32> {
+    pub(crate) fn count_atoms_with_tags_impl(&self, tag_ids: &[String]) -> StorageResult<i32> {
         let conn = self.db.read_conn()?;
-        crate::wiki::count_atoms_with_tags(&conn, tag_ids)
-            .map_err(|e| AtomicCoreError::Wiki(e))
+        crate::wiki::count_atoms_with_tags(&conn, tag_ids).map_err(|e| AtomicCoreError::Wiki(e))
     }
 
     pub(crate) fn apply_tag_merges_impl(
         &self,
         merges: &[TagMerge],
     ) -> StorageResult<CompactionResult> {
-        let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
-        let (tags_merged, atoms_retagged, errors) = crate::compaction::apply_merge_operations(&conn, merges);
+        let conn = self
+            .db
+            .conn
+            .lock()
+            .map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+        let (tags_merged, atoms_retagged, errors) =
+            crate::compaction::apply_merge_operations(&conn, merges);
 
         if !errors.is_empty() {
             tracing::error!(errors = ?errors, "Merge errors");
@@ -452,11 +581,7 @@ impl TagStore for SqliteStorage {
         self.get_tag_children_impl(parent_id, min_count, limit, offset)
     }
 
-    async fn create_tag(
-        &self,
-        name: &str,
-        parent_id: Option<&str>,
-    ) -> StorageResult<Tag> {
+    async fn create_tag(&self, name: &str, parent_id: Option<&str>) -> StorageResult<Tag> {
         self.create_tag_impl(name, parent_id)
     }
 
@@ -477,6 +602,10 @@ impl TagStore for SqliteStorage {
         self.set_tag_autotag_target_impl(id, value)
     }
 
+    async fn set_tag_autotag_description(&self, id: &str, description: &str) -> StorageResult<()> {
+        self.set_tag_autotag_description_impl(id, description)
+    }
+
     async fn configure_autotag_targets(
         &self,
         keep_default_names: &[String],
@@ -485,11 +614,7 @@ impl TagStore for SqliteStorage {
         self.configure_autotag_targets_impl(keep_default_names, add_custom_names)
     }
 
-    async fn get_related_tags(
-        &self,
-        tag_id: &str,
-        limit: usize,
-    ) -> StorageResult<Vec<RelatedTag>> {
+    async fn get_related_tags(&self, tag_id: &str, limit: usize) -> StorageResult<Vec<RelatedTag>> {
         self.get_related_tags_impl(tag_id, limit)
     }
 
@@ -497,10 +622,7 @@ impl TagStore for SqliteStorage {
         self.get_tags_for_compaction_impl()
     }
 
-    async fn apply_tag_merges(
-        &self,
-        merges: &[TagMerge],
-    ) -> StorageResult<CompactionResult> {
+    async fn apply_tag_merges(&self, merges: &[TagMerge]) -> StorageResult<CompactionResult> {
         self.apply_tag_merges_impl(merges)
     }
 
@@ -512,11 +634,7 @@ impl TagStore for SqliteStorage {
         self.get_or_create_tag_impl(name, parent_name)
     }
 
-    async fn link_tags_to_atom(
-        &self,
-        atom_id: &str,
-        tag_ids: &[String],
-    ) -> StorageResult<()> {
+    async fn link_tags_to_atom(&self, atom_id: &str, tag_ids: &[String]) -> StorageResult<()> {
         self.link_tags_to_atom_impl(atom_id, tag_ids)
     }
 
@@ -524,31 +642,19 @@ impl TagStore for SqliteStorage {
         self.get_tag_tree_for_llm_impl()
     }
 
-    async fn compute_tag_centroids_batch(
-        &self,
-        tag_ids: &[String],
-    ) -> StorageResult<()> {
+    async fn compute_tag_centroids_batch(&self, tag_ids: &[String]) -> StorageResult<()> {
         self.compute_tag_centroids_batch_impl(tag_ids)
     }
 
-    async fn cleanup_orphaned_parents(
-        &self,
-        tag_id: &str,
-    ) -> StorageResult<()> {
+    async fn cleanup_orphaned_parents(&self, tag_id: &str) -> StorageResult<()> {
         self.cleanup_orphaned_parents_impl(tag_id)
     }
 
-    async fn get_tag_hierarchy(
-        &self,
-        tag_id: &str,
-    ) -> StorageResult<Vec<String>> {
+    async fn get_tag_hierarchy(&self, tag_id: &str) -> StorageResult<Vec<String>> {
         self.get_tag_hierarchy_impl(tag_id)
     }
 
-    async fn count_atoms_with_tags(
-        &self,
-        tag_ids: &[String],
-    ) -> StorageResult<i32> {
+    async fn count_atoms_with_tags(&self, tag_ids: &[String]) -> StorageResult<i32> {
         self.count_atoms_with_tags_impl(tag_ids)
     }
 }

@@ -66,7 +66,8 @@ pub async fn embed_batch(
 
     if !response.status().is_success() {
         let status = response.status().as_u16();
-        let retry_after = response.headers()
+        let retry_after = response
+            .headers()
             .get("retry-after")
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.parse::<u64>().ok());
@@ -92,8 +93,13 @@ pub async fn embed_batch(
     // provider fails after proxying has started. Check for this before
     // trying to parse as a successful embedding response.
     if let Ok(err_resp) = serde_json::from_str::<OpenRouterErrorResponse>(&body) {
-        let message = err_resp.error.message.unwrap_or_else(|| "Unknown upstream error".to_string());
-        let code = err_resp.error.code
+        let message = err_resp
+            .error
+            .message
+            .unwrap_or_else(|| "Unknown upstream error".to_string());
+        let code = err_resp
+            .error
+            .code
             .map(|c| c.to_string())
             .unwrap_or_default();
         tracing::error!(

@@ -4,8 +4,7 @@ use crate::providers::error::ProviderError;
 use crate::providers::openrouter::OpenRouterProvider;
 use crate::providers::traits::{LlmConfig, StreamCallback};
 use crate::providers::types::{
-    CompletionResponse, Message, StreamDelta, ToolCall, ToolCallFunction,
-    ToolDefinition,
+    CompletionResponse, Message, StreamDelta, ToolCall, ToolCallFunction, ToolDefinition,
 };
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
@@ -186,7 +185,10 @@ fn convert_message(msg: &Message) -> ApiMessage {
             tcs.iter()
                 .map(|tc| ApiToolCall {
                     id: tc.id.clone(),
-                    call_type: tc.call_type.clone().unwrap_or_else(|| "function".to_string()),
+                    call_type: tc
+                        .call_type
+                        .clone()
+                        .unwrap_or_else(|| "function".to_string()),
                     function: ApiFunctionCall {
                         name: tc.get_name().unwrap_or_default().to_string(),
                         arguments: tc.get_arguments().unwrap_or_default().to_string(),
@@ -257,16 +259,18 @@ async fn complete_internal(
     };
 
     // Build response format if structured output is requested
-    let response_format = config.params.structured_output.as_ref().map(|schema| {
-        ResponseFormat {
+    let response_format = config
+        .params
+        .structured_output
+        .as_ref()
+        .map(|schema| ResponseFormat {
             format_type: "json_schema".to_string(),
             json_schema: Some(JsonSchemaWrapper {
                 name: schema.name.clone(),
                 strict: schema.strict,
                 schema: schema.schema.clone(),
             }),
-        }
-    });
+        });
 
     let provider_prefs = if config.params.structured_output.is_some() {
         Some(ProviderPreferences {
@@ -290,13 +294,14 @@ async fn complete_internal(
     };
 
     // Only minimize reasoning when explicitly requested (for simple tasks like tag extraction)
-    let reasoning = if config.params.minimize_reasoning && config.params.is_param_supported("reasoning") {
-        Some(ReasoningConfig {
-            effort: "minimal".to_string(),
-        })
-    } else {
-        None
-    };
+    let reasoning =
+        if config.params.minimize_reasoning && config.params.is_param_supported("reasoning") {
+            Some(ReasoningConfig {
+                effort: "minimal".to_string(),
+            })
+        } else {
+            None
+        };
 
     let request = ChatRequest {
         model: config.model.clone(),
@@ -324,7 +329,8 @@ async fn complete_internal(
 
     if !response.status().is_success() {
         let status = response.status().as_u16();
-        let retry_after = response.headers()
+        let retry_after = response
+            .headers()
             .get("retry-after")
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.parse::<u64>().ok());
@@ -395,13 +401,14 @@ async fn complete_streaming_internal(
     };
 
     // Only minimize reasoning when explicitly requested
-    let reasoning = if config.params.minimize_reasoning && config.params.is_param_supported("reasoning") {
-        Some(ReasoningConfig {
-            effort: "minimal".to_string(),
-        })
-    } else {
-        None
-    };
+    let reasoning =
+        if config.params.minimize_reasoning && config.params.is_param_supported("reasoning") {
+            Some(ReasoningConfig {
+                effort: "minimal".to_string(),
+            })
+        } else {
+            None
+        };
 
     let request = ChatRequest {
         model: config.model.clone(),
@@ -429,7 +436,8 @@ async fn complete_streaming_internal(
 
     if !response.status().is_success() {
         let status = response.status().as_u16();
-        let retry_after = response.headers()
+        let retry_after = response
+            .headers()
             .get("retry-after")
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.parse::<u64>().ok());
@@ -483,69 +491,69 @@ async fn complete_streaming_internal(
             // Parse SSE data line
             if let Some(json_str) = line.strip_prefix("data: ") {
                 match serde_json::from_str::<StreamingResponse>(json_str) {
-                Err(e) => {
-                    tracing::debug!(error = %e, chunk_preview = %crate::providers::error::truncate_utf8(json_str, 200), "OpenRouter stream chunk parse error");
-                }
-                Ok(response) => {
-                    if let Some(choice) = response.choices.first() {
-                        // Update finish reason
-                        if choice.finish_reason.is_some() {
-                            finish_reason = choice.finish_reason.clone();
-                        }
+                    Err(e) => {
+                        tracing::debug!(error = %e, chunk_preview = %crate::providers::error::truncate_utf8(json_str, 200), "OpenRouter stream chunk parse error");
+                    }
+                    Ok(response) => {
+                        if let Some(choice) = response.choices.first() {
+                            // Update finish reason
+                            if choice.finish_reason.is_some() {
+                                finish_reason = choice.finish_reason.clone();
+                            }
 
-                        // Handle content delta
-                        if let Some(delta_content) = &choice.delta.content {
-                            content.push_str(delta_content);
-                            on_delta(StreamDelta::Content(delta_content.clone()));
-                        }
+                            // Handle content delta
+                            if let Some(delta_content) = &choice.delta.content {
+                                content.push_str(delta_content);
+                                on_delta(StreamDelta::Content(delta_content.clone()));
+                            }
 
-                        // Handle tool call deltas
-                        if let Some(tool_calls) = &choice.delta.tool_calls {
-                            for tc in tool_calls {
-                                // Ensure accumulator exists for this index
-                                while tool_call_accumulators.len() <= tc.index {
-                                    tool_call_accumulators.push(ToolCallAccumulator::default());
-                                }
+                            // Handle tool call deltas
+                            if let Some(tool_calls) = &choice.delta.tool_calls {
+                                for tc in tool_calls {
+                                    // Ensure accumulator exists for this index
+                                    while tool_call_accumulators.len() <= tc.index {
+                                        tool_call_accumulators.push(ToolCallAccumulator::default());
+                                    }
 
-                                let acc = &mut tool_call_accumulators[tc.index];
-                                let mut name_changed = false;
+                                    let acc = &mut tool_call_accumulators[tc.index];
+                                    let mut name_changed = false;
 
-                                // Accumulate fields
-                                if let Some(id) = &tc.id {
-                                    acc.id = id.clone();
-                                }
-                                if let Some(call_type) = &tc.call_type {
-                                    acc.call_type = call_type.clone();
-                                }
-                                if let Some(func) = &tc.function {
-                                    if let Some(name) = &func.name {
-                                        if acc.name.is_empty() {
-                                            acc.name = name.clone();
-                                            name_changed = true;
+                                    // Accumulate fields
+                                    if let Some(id) = &tc.id {
+                                        acc.id = id.clone();
+                                    }
+                                    if let Some(call_type) = &tc.call_type {
+                                        acc.call_type = call_type.clone();
+                                    }
+                                    if let Some(func) = &tc.function {
+                                        if let Some(name) = &func.name {
+                                            if acc.name.is_empty() {
+                                                acc.name = name.clone();
+                                                name_changed = true;
+                                            }
+                                        }
+                                        if let Some(args) = &func.arguments {
+                                            acc.arguments.push_str(args);
+                                            // Emit argument delta
+                                            on_delta(StreamDelta::ToolCallArguments {
+                                                index: tc.index,
+                                                arguments: args.clone(),
+                                            });
                                         }
                                     }
-                                    if let Some(args) = &func.arguments {
-                                        acc.arguments.push_str(args);
-                                        // Emit argument delta
-                                        on_delta(StreamDelta::ToolCallArguments {
+
+                                    // Emit tool call start when we have both id and name
+                                    if name_changed && !acc.id.is_empty() && !acc.name.is_empty() {
+                                        on_delta(StreamDelta::ToolCallStart {
                                             index: tc.index,
-                                            arguments: args.clone(),
+                                            id: acc.id.clone(),
+                                            name: acc.name.clone(),
                                         });
                                     }
-                                }
-
-                                // Emit tool call start when we have both id and name
-                                if name_changed && !acc.id.is_empty() && !acc.name.is_empty() {
-                                    on_delta(StreamDelta::ToolCallStart {
-                                        index: tc.index,
-                                        id: acc.id.clone(),
-                                        name: acc.name.clone(),
-                                    });
                                 }
                             }
                         }
                     }
-                }
                 }
             }
         }

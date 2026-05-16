@@ -4,4 +4,3 @@
 fn main() {
     atomic_lib::run()
 }
-

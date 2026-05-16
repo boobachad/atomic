@@ -131,6 +131,7 @@ struct Section {
 pub fn apply_section_ops(existing: &str, ops: &[WikiSectionOp]) -> Result<String, String> {
     let (preamble, mut sections) = parse_sections(existing);
 
+    let mut errors: Vec<String> = Vec::new();
     for op in ops {
         match op {
             WikiSectionOp::NoChange => {
@@ -139,55 +140,100 @@ pub fn apply_section_ops(existing: &str, ops: &[WikiSectionOp]) -> Result<String
                 continue;
             }
             WikiSectionOp::AppendToSection { heading, content } => {
-                let idx = find_section_idx(&sections, heading).ok_or_else(|| {
-                    format!(
-                        "AppendToSection: heading '{}' not found. Existing headings: [{}]",
-                        heading,
-                        list_headings(&sections)
-                    )
-                })?;
-                append_to_body(&mut sections[idx].body, content);
+                match find_section_idx(&sections, heading) {
+                    Some(idx) => {
+                        append_to_body(&mut sections[idx].body, content);
+                    }
+                    None => {
+                        let e = format!(
+                            "AppendToSection: heading '{}' not found. Existing headings: [{}]",
+                            heading,
+                            list_headings(&sections)
+                        );
+                        tracing::warn!(error = %e, "[wiki] Skipping op with unmatched heading");
+                        errors.push(e);
+                    }
+                }
             }
             WikiSectionOp::ReplaceSection { heading, content } => {
-                let idx = find_section_idx(&sections, heading).ok_or_else(|| {
-                    format!(
-                        "ReplaceSection: heading '{}' not found. Existing headings: [{}]",
-                        heading,
-                        list_headings(&sections)
-                    )
-                })?;
-                sections[idx].body = ensure_trailing_blank(content);
+                match find_section_idx(&sections, heading) {
+                    Some(idx) => {
+                        sections[idx].body = ensure_trailing_blank(content);
+                    }
+                    None => {
+                        let e = format!(
+                            "ReplaceSection: heading '{}' not found. Existing headings: [{}]",
+                            heading,
+                            list_headings(&sections)
+                        );
+                        tracing::warn!(error = %e, "[wiki] Skipping op with unmatched heading");
+                        errors.push(e);
+                    }
+                }
             }
             WikiSectionOp::InsertSection {
                 after_heading,
                 heading,
                 content,
             } => {
-                let new_section = Section {
-                    level: 2,
-                    heading: heading.clone(),
-                    body: ensure_trailing_blank(content),
-                };
                 match after_heading {
                     Some(h) => {
-                        let idx = find_section_idx(&sections, h).ok_or_else(|| {
-                            format!(
-                                "InsertSection: after_heading '{}' not found. Existing headings: [{}]",
-                                h,
-                                list_headings(&sections)
-                            )
-                        })?;
-                        sections.insert(idx + 1, new_section);
+                        match find_section_idx(&sections, h) {
+                            Some(idx) => {
+                                // Inherit the level of the anchor section so that
+                                // inserting after an H3 produces another H3, not H2.
+                                let level = sections[idx].level;
+                                let insert_idx = after_subtree_idx(&sections, idx);
+                                sections.insert(
+                                    insert_idx,
+                                    Section {
+                                        level,
+                                        heading: heading.clone(),
+                                        body: ensure_trailing_blank(content),
+                                    },
+                                );
+                            }
+                            None => {
+                                let e = format!(
+                                    "InsertSection: after_heading '{}' not found. Existing headings: [{}]",
+                                    h,
+                                    list_headings(&sections)
+                                );
+                                tracing::warn!(error = %e, "[wiki] Skipping op with unmatched heading");
+                                errors.push(e);
+                            }
+                        }
                     }
                     None => {
-                        sections.push(new_section);
+                        sections.push(Section {
+                            level: 2,
+                            heading: heading.clone(),
+                            body: ensure_trailing_blank(content),
+                        });
                     }
                 }
             }
         }
     }
 
+    // A partially applied proposal is not safe to save: accepting it would
+    // advance the wiki baseline for all selected sources even though facts
+    // covered by skipped ops never landed in the article.
+    if !errors.is_empty() {
+        return Err(errors.remove(0));
+    }
+
     Ok(serialize_sections(&preamble, &sections))
+}
+
+fn after_subtree_idx(sections: &[Section], anchor_idx: usize) -> usize {
+    let anchor_level = sections[anchor_idx].level;
+    sections
+        .iter()
+        .enumerate()
+        .skip(anchor_idx + 1)
+        .find_map(|(idx, section)| (section.level <= anchor_level).then_some(idx))
+        .unwrap_or(sections.len())
 }
 
 /// Parse the article into (preamble, sections). The preamble is any content
@@ -200,7 +246,7 @@ fn parse_sections(content: &str) -> (String, Vec<Section>) {
 
     for line in content.split_inclusive('\n') {
         if let Some((level, heading)) = parse_heading(line) {
-            if level == 2 {
+            if level >= 2 {
                 if let Some(sec) = current.take() {
                     sections.push(sec);
                 }
@@ -442,13 +488,21 @@ Status body.
     }
 
     #[test]
-    fn subsection_does_not_split_parent() {
-        // Details has a ### Subsection — parsing must keep it inside Details.
+    fn h3_heading_becomes_its_own_section() {
+        // After the multi-level parse change, ### Subsection is an addressable
+        // section rather than being swallowed into the ## Details body.
         let (_, sections) = parse_sections(SAMPLE);
         let headings: Vec<&str> = sections.iter().map(|s| s.heading.as_str()).collect();
-        assert_eq!(headings, vec!["Overview", "Details", "Status"]);
+        assert_eq!(
+            headings,
+            vec!["Overview", "Details", "Subsection", "Status"]
+        );
+        let sub = sections.iter().find(|s| s.heading == "Subsection").unwrap();
+        assert_eq!(sub.level, 3);
+        assert!(sub.body.contains("Subsection text."));
+        // Details body must NOT include the H3 heading line any more.
         let details = sections.iter().find(|s| s.heading == "Details").unwrap();
-        assert!(details.body.contains("### Subsection"));
+        assert!(!details.body.contains("### Subsection"));
     }
 
     #[test]
@@ -474,13 +528,15 @@ Status body.
         assert!(out.contains("## Status\n\nReplaced status [5]."));
         assert!(!out.contains("Status body."));
 
-        // Verify order: Overview, Details, Notes, Status
+        // Verify order: Overview, Details subtree, Notes, Status.
         let overview_pos = out.find("## Overview").unwrap();
         let details_pos = out.find("## Details").unwrap();
+        let subsection_pos = out.find("### Subsection").unwrap();
         let notes_pos = out.find("## Notes").unwrap();
         let status_pos = out.find("## Status").unwrap();
         assert!(overview_pos < details_pos);
-        assert!(details_pos < notes_pos);
+        assert!(details_pos < subsection_pos);
+        assert!(subsection_pos < notes_pos);
         assert!(notes_pos < status_pos);
     }
 
@@ -579,7 +635,8 @@ Status body.
     #[test]
     fn wire_shape_deserializes_from_flat_json_with_all_fields() {
         // Exactly the shape the LLM structured-output schema asks for.
-        let json = r#"{"op":"AppendToSection","heading":"Details","after_heading":"","content":"x [3]"}"#;
+        let json =
+            r#"{"op":"AppendToSection","heading":"Details","after_heading":"","content":"x [3]"}"#;
         let wire: WikiSectionOpWire = serde_json::from_str(json).unwrap();
         assert_eq!(wire.op, "AppendToSection");
         let op = wire.into_op().unwrap();
@@ -612,5 +669,133 @@ Status body.
         let json = serde_json::to_string(&ops).unwrap();
         let roundtrip: Vec<WikiSectionOp> = serde_json::from_str(&json).unwrap();
         assert_eq!(ops, roundtrip);
+    }
+
+    // ── Multi-level heading tests ────────────────────────────────────────────
+
+    #[test]
+    fn append_to_h3_section() {
+        let ops = vec![WikiSectionOp::AppendToSection {
+            heading: "Subsection".to_string(),
+            content: "New subsection detail [4].".to_string(),
+        }];
+        let out = apply_section_ops(SAMPLE, &ops).unwrap();
+        assert!(out.contains("### Subsection\n\nSubsection text."));
+        assert!(out.contains("New subsection detail [4]."));
+        // Parent H2 section and sibling sections must be byte-identical.
+        assert!(out.contains("## Details\n\nDetails body."));
+        assert!(out.contains("## Overview\n\nOverview body with [1] citation."));
+    }
+
+    #[test]
+    fn replace_h3_section() {
+        let ops = vec![WikiSectionOp::ReplaceSection {
+            heading: "Subsection".to_string(),
+            content: "Replaced subsection [4].".to_string(),
+        }];
+        let out = apply_section_ops(SAMPLE, &ops).unwrap();
+        assert!(out.contains("### Subsection\n\nReplaced subsection [4]."));
+        assert!(!out.contains("Subsection text."));
+    }
+
+    #[test]
+    fn insert_after_h3_inherits_level() {
+        let ops = vec![WikiSectionOp::InsertSection {
+            after_heading: Some("Subsection".to_string()),
+            heading: "Another Sub".to_string(),
+            content: "More sub content [4].".to_string(),
+        }];
+        let out = apply_section_ops(SAMPLE, &ops).unwrap();
+        // Inserted section inherits level 3 from the H3 anchor.
+        assert!(out.contains("### Another Sub\n\nMore sub content [4]."));
+        let sub_pos = out.find("### Subsection").unwrap();
+        let another_pos = out.find("### Another Sub").unwrap();
+        let status_pos = out.find("## Status").unwrap();
+        assert!(sub_pos < another_pos);
+        assert!(another_pos < status_pos);
+    }
+
+    #[test]
+    fn insert_after_h2_still_produces_h2() {
+        let ops = vec![WikiSectionOp::InsertSection {
+            after_heading: Some("Overview".to_string()),
+            heading: "Background".to_string(),
+            content: "Background content [4].".to_string(),
+        }];
+        let out = apply_section_ops(SAMPLE, &ops).unwrap();
+        assert!(out.contains("## Background\n\nBackground content [4]."));
+    }
+
+    #[test]
+    fn insert_after_h2_keeps_child_sections_with_parent() {
+        let ops = vec![WikiSectionOp::InsertSection {
+            after_heading: Some("Details".to_string()),
+            heading: "Follow Up".to_string(),
+            content: "Follow-up content [4].".to_string(),
+        }];
+        let out = apply_section_ops(SAMPLE, &ops).unwrap();
+
+        let details_pos = out.find("## Details").unwrap();
+        let subsection_pos = out.find("### Subsection").unwrap();
+        let follow_up_pos = out.find("## Follow Up").unwrap();
+        let status_pos = out.find("## Status").unwrap();
+
+        assert!(details_pos < subsection_pos);
+        assert!(subsection_pos < follow_up_pos);
+        assert!(follow_up_pos < status_pos);
+    }
+
+    // ── Unmatched heading tests ─────────────────────────────────────────────
+
+    #[test]
+    fn unmatched_heading_rejects_mixed_valid_and_invalid_ops() {
+        // One hallucinated heading + one valid op must reject the whole
+        // proposal. Saving a partial merge would advance the wiki baseline for
+        // sources that were never incorporated.
+        let ops = vec![
+            WikiSectionOp::AppendToSection {
+                heading: "Nonexistent Section".to_string(),
+                content: "should be dropped".to_string(),
+            },
+            WikiSectionOp::AppendToSection {
+                heading: "Overview".to_string(),
+                content: "Valid addition [3].".to_string(),
+            },
+        ];
+        let err = apply_section_ops(SAMPLE, &ops).unwrap_err();
+        assert!(err.contains("Nonexistent Section"));
+    }
+
+    #[test]
+    fn unmatched_heading_rejects_even_when_append_to_end_insert_is_valid() {
+        let ops = vec![
+            WikiSectionOp::InsertSection {
+                after_heading: None,
+                heading: "Appendix".to_string(),
+                content: "Appendix content [3].".to_string(),
+            },
+            WikiSectionOp::AppendToSection {
+                heading: "Nonexistent Section".to_string(),
+                content: "should be dropped".to_string(),
+            },
+        ];
+        let err = apply_section_ops(SAMPLE, &ops).unwrap_err();
+        assert!(err.contains("Nonexistent Section"));
+    }
+
+    #[test]
+    fn all_bad_ops_returns_error() {
+        let ops = vec![
+            WikiSectionOp::AppendToSection {
+                heading: "Ghost Section".to_string(),
+                content: "x".to_string(),
+            },
+            WikiSectionOp::ReplaceSection {
+                heading: "Phantom".to_string(),
+                content: "y".to_string(),
+            },
+        ];
+        let err = apply_section_ops(SAMPLE, &ops).unwrap_err();
+        assert!(err.contains("Ghost Section"));
     }
 }

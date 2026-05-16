@@ -7,6 +7,41 @@ use crate::storage::traits::*;
 use async_trait::async_trait;
 use pgvector::Vector;
 
+impl PostgresStorage {
+    pub async fn global_keyword_search(
+        &self,
+        query: &str,
+        section_limit: i32,
+    ) -> StorageResult<GlobalSearchResponse> {
+        let query_trimmed = query.trim();
+        if query_trimmed.is_empty() {
+            return Ok(GlobalSearchResponse {
+                atoms: Vec::new(),
+                wiki: Vec::new(),
+                chats: Vec::new(),
+                tags: Vec::new(),
+            });
+        }
+
+        let atoms = self
+            .keyword_search(query_trimmed, section_limit, None, None)
+            .await?;
+        let wiki =
+            pg_keyword_search_wiki(&self.pool, query_trimmed, section_limit, &self.db_id).await?;
+        let chats =
+            pg_keyword_search_chats(&self.pool, query_trimmed, section_limit, &self.db_id).await?;
+        let tags =
+            pg_keyword_search_tags(&self.pool, query_trimmed, section_limit, &self.db_id).await?;
+
+        Ok(GlobalSearchResponse {
+            atoms,
+            wiki,
+            chats,
+            tags,
+        })
+    }
+}
+
 #[async_trait]
 impl SearchStore for PostgresStorage {
     async fn vector_search(
@@ -65,10 +100,17 @@ impl SearchStore for PostgresStorage {
 
         // Scope filtering by tag if specified
         let scope_atom_ids: std::collections::HashSet<String> = if let Some(tid) = tag_id {
-            let candidate_atom_ids: Vec<&str> =
-                filtered.iter().map(|(_, aid, _, _, _)| aid.as_str()).collect();
-            pg_batch_atoms_with_scope_tags(&self.pool, &candidate_atom_ids, &[tid.to_string()], &self.db_id)
-                .await?
+            let candidate_atom_ids: Vec<&str> = filtered
+                .iter()
+                .map(|(_, aid, _, _, _)| aid.as_str())
+                .collect();
+            pg_batch_atoms_with_scope_tags(
+                &self.pool,
+                &candidate_atom_ids,
+                &[tid.to_string()],
+                &self.db_id,
+            )
+            .await?
         } else {
             std::collections::HashSet::new()
         };
@@ -117,6 +159,9 @@ impl SearchStore for PostgresStorage {
                     similarity_score: similarity,
                     matching_chunk_content: content,
                     matching_chunk_index: chunk_index,
+                    match_snippet: None,
+                    match_offsets: None,
+                    match_count: None,
                 });
             }
         }
@@ -177,9 +222,13 @@ impl SearchStore for PostgresStorage {
         let filtered = if let Some(tid) = tag_id {
             let candidate_atom_ids: Vec<&str> =
                 rows.iter().map(|(_, aid, _, _, _)| aid.as_str()).collect();
-            let matching =
-                pg_batch_atoms_with_scope_tags(&self.pool, &candidate_atom_ids, &[tid.to_string()], &self.db_id)
-                    .await?;
+            let matching = pg_batch_atoms_with_scope_tags(
+                &self.pool,
+                &candidate_atom_ids,
+                &[tid.to_string()],
+                &self.db_id,
+            )
+            .await?;
             rows.into_iter()
                 .filter(|(_, aid, _, _, _)| matching.contains(aid.as_str()))
                 .collect()
@@ -230,6 +279,9 @@ impl SearchStore for PostgresStorage {
                     similarity_score: score,
                     matching_chunk_content: content,
                     matching_chunk_index: chunk_index,
+                    match_snippet: None,
+                    match_offsets: None,
+                    match_count: None,
                 });
             }
         }
@@ -291,9 +343,13 @@ impl SearchStore for PostgresStorage {
         } else {
             let candidate_atom_ids: Vec<&str> =
                 rows.iter().map(|(_, aid, _, _, _)| aid.as_str()).collect();
-            let matching =
-                pg_batch_atoms_with_scope_tags(&self.pool, &candidate_atom_ids, scope_tag_ids, &self.db_id)
-                    .await?;
+            let matching = pg_batch_atoms_with_scope_tags(
+                &self.pool,
+                &candidate_atom_ids,
+                scope_tag_ids,
+                &self.db_id,
+            )
+            .await?;
             rows.into_iter()
                 .filter(|(_, aid, _, _, _)| matching.contains(aid.as_str()))
                 .collect()
@@ -302,15 +358,15 @@ impl SearchStore for PostgresStorage {
         Ok(filtered
             .into_iter()
             .take(limit as usize)
-            .map(|(chunk_id, atom_id, content, chunk_index, rank)| {
-                ChunkSearchResult {
+            .map(
+                |(chunk_id, atom_id, content, chunk_index, rank)| ChunkSearchResult {
                     chunk_id,
                     atom_id,
                     content,
                     chunk_index,
                     score: rank.clamp(0.0, 1.0),
-                }
-            })
+                },
+            )
             .collect())
     }
 
@@ -362,9 +418,7 @@ impl SearchStore for PostgresStorage {
 
         let filtered: Vec<(String, String, String, i32, f32)> = rows
             .into_iter()
-            .map(|(id, aid, content, idx, distance)| {
-                (id, aid, content, idx, 1.0 - distance as f32)
-            })
+            .map(|(id, aid, content, idx, distance)| (id, aid, content, idx, 1.0 - distance as f32))
             .filter(|(_, _, _, _, similarity)| *similarity >= threshold)
             .collect();
 
@@ -372,11 +426,17 @@ impl SearchStore for PostgresStorage {
         let scoped = if scope_tag_ids.is_empty() {
             filtered
         } else {
-            let candidate_atom_ids: Vec<&str> =
-                filtered.iter().map(|(_, aid, _, _, _)| aid.as_str()).collect();
-            let matching =
-                pg_batch_atoms_with_scope_tags(&self.pool, &candidate_atom_ids, scope_tag_ids, &self.db_id)
-                    .await?;
+            let candidate_atom_ids: Vec<&str> = filtered
+                .iter()
+                .map(|(_, aid, _, _, _)| aid.as_str())
+                .collect();
+            let matching = pg_batch_atoms_with_scope_tags(
+                &self.pool,
+                &candidate_atom_ids,
+                scope_tag_ids,
+                &self.db_id,
+            )
+            .await?;
             filtered
                 .into_iter()
                 .filter(|(_, aid, _, _, _)| matching.contains(aid.as_str()))
@@ -386,15 +446,15 @@ impl SearchStore for PostgresStorage {
         Ok(scoped
             .into_iter()
             .take(limit as usize)
-            .map(|(chunk_id, atom_id, content, chunk_index, score)| {
-                ChunkSearchResult {
+            .map(
+                |(chunk_id, atom_id, content, chunk_index, score)| ChunkSearchResult {
                     chunk_id,
                     atom_id,
                     content,
                     chunk_index,
                     score,
-                }
-            })
+                },
+            )
             .collect())
     }
 
@@ -568,8 +628,8 @@ async fn pg_batch_fetch_tags(
         return Ok(HashMap::new());
     }
 
-    let rows: Vec<(String, String, String, Option<String>, String, bool)> = sqlx::query_as(
-        "SELECT at.atom_id, t.id, t.name, t.parent_id, t.created_at, t.is_autotag_target
+    let rows: Vec<(String, String, String, Option<String>, String, bool, String)> = sqlx::query_as(
+        "SELECT at.atom_id, t.id, t.name, t.parent_id, t.created_at, t.is_autotag_target, t.autotag_description
          FROM atom_tags at
          INNER JOIN tags t ON at.tag_id = t.id
          WHERE at.atom_id = ANY($1) AND at.db_id = $2",
@@ -581,13 +641,16 @@ async fn pg_batch_fetch_tags(
     .map_err(|e| AtomicCoreError::Search(format!("Failed to batch fetch tags: {}", e)))?;
 
     let mut map: HashMap<String, Vec<Tag>> = HashMap::new();
-    for (atom_id, tag_id, name, parent_id, created_at, is_autotag_target) in rows {
+    for (atom_id, tag_id, name, parent_id, created_at, is_autotag_target, autotag_description) in
+        rows
+    {
         map.entry(atom_id).or_default().push(Tag {
             id: tag_id,
             name,
             parent_id,
             created_at,
             is_autotag_target,
+            autotag_description,
         });
     }
     Ok(map)
@@ -623,9 +686,291 @@ async fn pg_batch_atoms_with_scope_tags(
     .bind(db_id)
     .fetch_all(pool)
     .await
-    .map_err(|e| {
-        AtomicCoreError::Search(format!("Failed to check scope tags: {}", e))
-    })?;
+    .map_err(|e| AtomicCoreError::Search(format!("Failed to check scope tags: {}", e)))?;
 
     Ok(rows.into_iter().map(|(id,)| id).collect())
+}
+
+async fn pg_keyword_search_wiki(
+    pool: &sqlx::PgPool,
+    query: &str,
+    limit: i32,
+    db_id: &str,
+) -> Result<Vec<GlobalWikiSearchResult>, AtomicCoreError> {
+    let tag_pattern = format!("%{}%", query.to_lowercase());
+    let rows: Vec<(String, String, String, String, String, i32, f32)> = sqlx::query_as(
+        "SELECT w.id, w.tag_id, t.name, w.content, w.updated_at, w.atom_count,
+                GREATEST(
+                    COALESCE(ts_rank(w.content_tsv, plainto_tsquery('english', $1)), 0),
+                    CASE
+                        WHEN LOWER(t.name) = LOWER($1) THEN 1.0
+                        WHEN LOWER(t.name) LIKE LOWER($3) THEN 0.95
+                        ELSE 0.0
+                    END
+                ) AS score
+         FROM wiki_articles w
+         JOIN tags t ON t.id = w.tag_id AND t.db_id = $2
+         WHERE w.db_id = $2
+           AND (
+                w.content_tsv @@ plainto_tsquery('english', $1)
+                OR LOWER(t.name) LIKE LOWER($3)
+           )
+         ORDER BY score DESC, w.updated_at DESC
+         LIMIT $4",
+    )
+    .bind(query)
+    .bind(db_id)
+    .bind(&tag_pattern)
+    .bind(limit)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| AtomicCoreError::Search(format!("Wiki keyword search failed: {}", e)))?;
+
+    Ok(rows
+        .into_iter()
+        .map(
+            |(id, tag_id, tag_name, content, updated_at, atom_count, score)| {
+                GlobalWikiSearchResult {
+                    id,
+                    tag_id,
+                    tag_name,
+                    content_snippet: pg_snippet(&content, 180),
+                    content,
+                    updated_at,
+                    atom_count,
+                    score: score.clamp(0.0, 1.0),
+                    match_snippet: None,
+                    match_offsets: None,
+                    match_count: None,
+                }
+            },
+        )
+        .collect())
+}
+
+async fn pg_keyword_search_chats(
+    pool: &sqlx::PgPool,
+    query: &str,
+    limit: i32,
+    db_id: &str,
+) -> Result<Vec<GlobalChatSearchResult>, AtomicCoreError> {
+    let title_pattern = format!("%{}%", query.to_lowercase());
+    let rows: Vec<(String, Option<String>, String, i64, String, f32)> = sqlx::query_as(
+        "WITH message_hits AS (
+            SELECT c.id,
+                   c.title,
+                   c.updated_at,
+                   COUNT(m_all.id) AS message_count,
+                   m.content AS matching_message_content,
+                   ts_rank(m.content_tsv, plainto_tsquery('english', $1)) AS score,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY c.id
+                       ORDER BY ts_rank(m.content_tsv, plainto_tsquery('english', $1)) DESC, m.message_index DESC
+                   ) AS rn
+            FROM conversations c
+            JOIN chat_messages m
+              ON m.conversation_id = c.id AND m.db_id = c.db_id
+            LEFT JOIN chat_messages m_all
+              ON m_all.conversation_id = c.id AND m_all.db_id = c.db_id
+            WHERE c.db_id = $2
+              AND c.is_archived = 0
+              AND m.content_tsv @@ plainto_tsquery('english', $1)
+            GROUP BY c.id, c.title, c.updated_at, m.id, m.content, m.content_tsv, m.message_index
+         ),
+         title_hits AS (
+            SELECT c.id,
+                   c.title,
+                   c.updated_at,
+                   COUNT(m_all.id) AS message_count,
+                   COALESCE(c.title, '') AS matching_message_content,
+                   CASE
+                       WHEN LOWER(c.title) = LOWER($1) THEN 1.0
+                       WHEN LOWER(c.title) LIKE LOWER($3) THEN 0.9
+                       ELSE 0.0
+                   END AS score,
+                   1 AS rn
+            FROM conversations c
+            LEFT JOIN chat_messages m_all
+              ON m_all.conversation_id = c.id AND m_all.db_id = c.db_id
+            WHERE c.db_id = $2
+              AND c.is_archived = 0
+              AND c.title IS NOT NULL
+              AND LOWER(c.title) LIKE LOWER($3)
+            GROUP BY c.id, c.title, c.updated_at
+         ),
+         combined AS (
+            SELECT * FROM message_hits WHERE rn = 1
+            UNION ALL
+            SELECT * FROM title_hits
+         ),
+         ranked AS (
+            SELECT *,
+                   ROW_NUMBER() OVER (PARTITION BY id ORDER BY score DESC, updated_at DESC) AS best_rn
+            FROM combined
+         )
+         SELECT id, title, updated_at, message_count, matching_message_content, score
+         FROM ranked
+         WHERE best_rn = 1
+         ORDER BY score DESC, updated_at DESC
+         LIMIT $4",
+    )
+    .bind(query)
+    .bind(db_id)
+    .bind(&title_pattern)
+    .bind(limit)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| AtomicCoreError::Search(format!("Chat keyword search failed: {}", e)))?;
+
+    let conversation_ids: Vec<String> = rows.iter().map(|(id, _, _, _, _, _)| id.clone()).collect();
+    let tag_map = pg_batch_fetch_conversation_tags(pool, &conversation_ids, db_id).await?;
+
+    Ok(rows
+        .into_iter()
+        .map(
+            |(id, title, updated_at, message_count, matching_message_content, score)| {
+                GlobalChatSearchResult {
+                    id: id.clone(),
+                    title,
+                    updated_at,
+                    message_count: message_count as i32,
+                    tags: tag_map.get(&id).cloned().unwrap_or_default(),
+                    matching_message_content: pg_snippet(&matching_message_content, 180),
+                    score: score.clamp(0.0, 1.0),
+                }
+            },
+        )
+        .collect())
+}
+
+async fn pg_keyword_search_tags(
+    pool: &sqlx::PgPool,
+    query: &str,
+    limit: i32,
+    db_id: &str,
+) -> Result<Vec<GlobalTagSearchResult>, AtomicCoreError> {
+    let pattern = format!("%{}%", query.to_lowercase());
+    let prefix_pattern = format!("{}%", query.to_lowercase());
+    let rows: Vec<(String, String, Option<String>, String, i32, f32)> = sqlx::query_as(
+        "SELECT id, name, parent_id, created_at, atom_count,
+                CASE
+                    WHEN LOWER(name) = LOWER($1) THEN 1.0
+                    WHEN LOWER(name) LIKE LOWER($3) THEN 0.95
+                    WHEN LOWER(name) LIKE LOWER($2) THEN 0.8
+                    ELSE 0.0
+                END AS score
+         FROM tags
+         WHERE db_id = $4
+           AND LOWER(name) LIKE LOWER($2)
+         ORDER BY score DESC, atom_count DESC, name ASC
+         LIMIT $5",
+    )
+    .bind(query)
+    .bind(&pattern)
+    .bind(&prefix_pattern)
+    .bind(db_id)
+    .bind(limit * 4)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| AtomicCoreError::Search(format!("Tag keyword search failed: {}", e)))?;
+
+    let query_lower = query.to_lowercase();
+    let mut results: Vec<GlobalTagSearchResult> = rows
+        .into_iter()
+        .filter_map(|(id, name, parent_id, created_at, atom_count, score)| {
+            let lower = name.to_lowercase();
+            let exactish = lower == query_lower
+                || lower.starts_with(&query_lower)
+                || pg_strong_substring_match(&lower, &query_lower);
+            if !exactish {
+                return None;
+            }
+            Some(GlobalTagSearchResult {
+                id,
+                name,
+                parent_id,
+                created_at,
+                atom_count,
+                score: score.clamp(0.0, 1.0),
+            })
+        })
+        .collect();
+
+    results.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(b.atom_count.cmp(&a.atom_count))
+            .then(a.name.cmp(&b.name))
+    });
+    results.truncate(limit as usize);
+    Ok(results)
+}
+
+async fn pg_batch_fetch_conversation_tags(
+    pool: &sqlx::PgPool,
+    conversation_ids: &[String],
+    db_id: &str,
+) -> Result<HashMap<String, Vec<Tag>>, AtomicCoreError> {
+    if conversation_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let rows: Vec<(String, String, String, Option<String>, String, bool, String)> = sqlx::query_as(
+        "SELECT ct.conversation_id, t.id, t.name, t.parent_id, t.created_at, t.is_autotag_target, t.autotag_description
+         FROM conversation_tags ct
+         JOIN tags t ON ct.tag_id = t.id
+         WHERE ct.conversation_id = ANY($1) AND ct.db_id = $2 AND t.db_id = $2
+         ORDER BY t.name",
+    )
+    .bind(conversation_ids)
+    .bind(db_id)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| {
+        AtomicCoreError::Search(format!("Failed to batch fetch conversation tags: {}", e))
+    })?;
+
+    let mut map: HashMap<String, Vec<Tag>> = HashMap::new();
+    for (
+        conversation_id,
+        id,
+        name,
+        parent_id,
+        created_at,
+        is_autotag_target,
+        autotag_description,
+    ) in rows
+    {
+        map.entry(conversation_id).or_default().push(Tag {
+            id,
+            name,
+            parent_id,
+            created_at,
+            is_autotag_target,
+            autotag_description,
+        });
+    }
+    Ok(map)
+}
+
+fn pg_snippet(text: &str, max_chars: usize) -> String {
+    let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut chars = normalized.chars();
+    let snippet: String = chars.by_ref().take(max_chars).collect();
+    if chars.next().is_some() {
+        format!("{}...", snippet)
+    } else {
+        snippet
+    }
+}
+
+fn pg_strong_substring_match(haystack: &str, needle: &str) -> bool {
+    if needle.len() < 2 {
+        return haystack == needle;
+    }
+    haystack
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|segment| !segment.is_empty())
+        .any(|segment| segment.contains(needle))
 }

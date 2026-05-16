@@ -6,8 +6,8 @@
 //!
 //! SQLite tests always run. These use real SQLite files (not mocks).
 
-use atomic_core::{AtomicCore, CreateAtomRequest, UpdateAtomRequest, ListAtomsParams};
 use atomic_core::models::*;
+use atomic_core::{AtomicCore, CreateAtomRequest, ListAtomsParams, UpdateAtomRequest};
 use tempfile::TempDir;
 
 fn create_core() -> (AtomicCore, TempDir) {
@@ -46,16 +46,19 @@ async fn test_atom_create_read_update_delete() {
     assert_eq!(fetched.atom.title, "Hello");
 
     // Update
-    let updated = core.update_atom(
-        &atom.atom.id,
-        UpdateAtomRequest {
-            content: "# Updated\n\nNew content".to_string(),
-            source_url: None,
-            published_at: None,
-            tag_ids: None,
-        },
-        |_| {},
-    ).await.unwrap();
+    let updated = core
+        .update_atom(
+            &atom.atom.id,
+            UpdateAtomRequest {
+                content: "# Updated\n\nNew content".to_string(),
+                source_url: None,
+                published_at: None,
+                tag_ids: None,
+            },
+            |_| {},
+        )
+        .await
+        .unwrap();
     assert_eq!(updated.atom.content, "# Updated\n\nNew content");
     assert_eq!(updated.atom.title, "Updated");
 
@@ -87,7 +90,10 @@ async fn test_bulk_create_with_dedup() {
         },
     ];
 
-    let result = core.create_atoms_bulk(requests.clone(), |_| {}).await.unwrap();
+    let result = core
+        .create_atoms_bulk(requests.clone(), |_| {})
+        .await
+        .unwrap();
     assert_eq!(result.count, 2);
     assert_eq!(result.skipped, 0);
 
@@ -108,14 +114,18 @@ async fn test_tag_hierarchy_and_atom_association() {
     let child = core.create_tag("Physics", Some(&parent.id)).await.unwrap();
 
     // Create atom with child tag
-    let atom = core.create_atom(
-        CreateAtomRequest {
-            content: "Quantum mechanics".to_string(),
-            tag_ids: vec![child.id.clone()],
-            ..Default::default()
-        },
-        |_| {},
-    ).await.unwrap().unwrap();
+    let atom = core
+        .create_atom(
+            CreateAtomRequest {
+                content: "Quantum mechanics".to_string(),
+                tag_ids: vec![child.id.clone()],
+                ..Default::default()
+            },
+            |_| {},
+        )
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(atom.tags.len(), 1);
     assert_eq!(atom.tags[0].name, "Physics");
 
@@ -129,7 +139,10 @@ async fn test_tag_hierarchy_and_atom_association() {
     assert_eq!(by_child.len(), 1);
 
     // Update tag name
-    let updated = core.update_tag(&child.id, "Quantum Physics", Some(&parent.id)).await.unwrap();
+    let updated = core
+        .update_tag(&child.id, "Quantum Physics", Some(&parent.id))
+        .await
+        .unwrap();
     assert_eq!(updated.name, "Quantum Physics");
 
     // Delete child tag shouldn't delete the atom
@@ -151,34 +164,40 @@ async fn test_list_atoms_offset_and_cursor_pagination() {
     }
 
     // Offset pagination: page 1
-    let page1 = core.list_atoms(&ListAtomsParams {
-        tag_id: None,
-        limit: 3,
-        offset: 0,
-        cursor: None,
-        cursor_id: None,
-        source_filter: SourceFilter::All,
-        source_value: None,
-        sort_by: SortField::Updated,
-        sort_order: SortOrder::Desc,
-    }).await.unwrap();
+    let page1 = core
+        .list_atoms(&ListAtomsParams {
+            tag_id: None,
+            limit: 3,
+            offset: 0,
+            cursor: None,
+            cursor_id: None,
+            source_filter: SourceFilter::All,
+            source_value: None,
+            sort_by: SortField::Updated,
+            sort_order: SortOrder::Desc,
+        })
+        .await
+        .unwrap();
     assert_eq!(page1.atoms.len(), 3);
     assert_eq!(page1.total_count, 10);
     assert!(page1.next_cursor.is_some());
     assert!(page1.next_cursor_id.is_some());
 
     // Cursor pagination: page 2 using cursor from page 1
-    let page2 = core.list_atoms(&ListAtomsParams {
-        tag_id: None,
-        limit: 3,
-        offset: 0,
-        cursor: page1.next_cursor,
-        cursor_id: page1.next_cursor_id,
-        source_filter: SourceFilter::All,
-        source_value: None,
-        sort_by: SortField::Updated,
-        sort_order: SortOrder::Desc,
-    }).await.unwrap();
+    let page2 = core
+        .list_atoms(&ListAtomsParams {
+            tag_id: None,
+            limit: 3,
+            offset: 0,
+            cursor: page1.next_cursor,
+            cursor_id: page1.next_cursor_id,
+            source_filter: SourceFilter::All,
+            source_value: None,
+            sort_by: SortField::Updated,
+            sort_order: SortOrder::Desc,
+        })
+        .await
+        .unwrap();
     assert_eq!(page2.atoms.len(), 3);
 
     // Pages should not overlap
@@ -197,17 +216,20 @@ async fn test_list_atoms_sort_fields() {
     create_atom(&core, "# Cherry\n\nContent").await;
 
     // Sort by title ascending
-    let result = core.list_atoms(&ListAtomsParams {
-        tag_id: None,
-        limit: 10,
-        offset: 0,
-        cursor: None,
-        cursor_id: None,
-        source_filter: SourceFilter::All,
-        source_value: None,
-        sort_by: SortField::Title,
-        sort_order: SortOrder::Asc,
-    }).await.unwrap();
+    let result = core
+        .list_atoms(&ListAtomsParams {
+            tag_id: None,
+            limit: 10,
+            offset: 0,
+            cursor: None,
+            cursor_id: None,
+            source_filter: SourceFilter::All,
+            source_value: None,
+            sort_by: SortField::Title,
+            sort_order: SortOrder::Asc,
+        })
+        .await
+        .unwrap();
 
     let titles: Vec<&str> = result.atoms.iter().map(|a| a.title.as_str()).collect();
     assert_eq!(titles, vec!["Apple", "Banana", "Cherry"]);
@@ -222,7 +244,10 @@ async fn test_conversation_lifecycle() {
     let tag = core.create_tag("Chat Topic", None).await.unwrap();
 
     // Create conversation with scope
-    let conv = core.create_conversation(&[tag.id.clone()], Some("Test Chat")).await.unwrap();
+    let conv = core
+        .create_conversation(&[tag.id.clone()], Some("Test Chat"))
+        .await
+        .unwrap();
     assert_eq!(conv.conversation.title.as_deref(), Some("Test Chat"));
     assert_eq!(conv.tags.len(), 1);
 
@@ -231,12 +256,21 @@ async fn test_conversation_lifecycle() {
     assert_eq!(convs.len(), 1);
 
     // Update title
-    let updated = core.update_conversation(&conv.conversation.id, Some("Renamed"), None).await.unwrap();
+    let updated = core
+        .update_conversation(&conv.conversation.id, Some("Renamed"), None)
+        .await
+        .unwrap();
     assert_eq!(updated.title.as_deref(), Some("Renamed"));
 
     // Delete
-    core.delete_conversation(&conv.conversation.id).await.unwrap();
-    assert!(core.get_conversation(&conv.conversation.id).await.unwrap().is_none());
+    core.delete_conversation(&conv.conversation.id)
+        .await
+        .unwrap();
+    assert!(core
+        .get_conversation(&conv.conversation.id)
+        .await
+        .unwrap()
+        .is_none());
 }
 
 // ==================== Wiki ====================
@@ -273,7 +307,9 @@ async fn test_source_url_tracking() {
             ..Default::default()
         },
         |_| {},
-    ).await.unwrap();
+    )
+    .await
+    .unwrap();
 
     create_atom(&core, "Manual note").await;
 
@@ -281,31 +317,37 @@ async fn test_source_url_tracking() {
     assert!(sources.iter().any(|s| s.source == "example.com"));
 
     // Filter to external only
-    let external = core.list_atoms(&ListAtomsParams {
-        tag_id: None,
-        limit: 10,
-        offset: 0,
-        cursor: None,
-        cursor_id: None,
-        source_filter: SourceFilter::External,
-        source_value: None,
-        sort_by: SortField::Updated,
-        sort_order: SortOrder::Desc,
-    }).await.unwrap();
+    let external = core
+        .list_atoms(&ListAtomsParams {
+            tag_id: None,
+            limit: 10,
+            offset: 0,
+            cursor: None,
+            cursor_id: None,
+            source_filter: SourceFilter::External,
+            source_value: None,
+            sort_by: SortField::Updated,
+            sort_order: SortOrder::Desc,
+        })
+        .await
+        .unwrap();
     assert_eq!(external.total_count, 1);
 
     // Filter to manual only
-    let manual = core.list_atoms(&ListAtomsParams {
-        tag_id: None,
-        limit: 10,
-        offset: 0,
-        cursor: None,
-        cursor_id: None,
-        source_filter: SourceFilter::Manual,
-        source_value: None,
-        sort_by: SortField::Updated,
-        sort_order: SortOrder::Desc,
-    }).await.unwrap();
+    let manual = core
+        .list_atoms(&ListAtomsParams {
+            tag_id: None,
+            limit: 10,
+            offset: 0,
+            cursor: None,
+            cursor_id: None,
+            source_filter: SourceFilter::Manual,
+            source_value: None,
+            sort_by: SortField::Updated,
+            sort_order: SortOrder::Desc,
+        })
+        .await
+        .unwrap();
     assert_eq!(manual.total_count, 1);
 }
 
@@ -330,6 +372,7 @@ async fn test_token_lifecycle() {
     let (core, _dir) = create_core();
 
     let (info, raw) = core.create_api_token("integration-test").await.unwrap();
+    core.create_api_token("replacement").await.unwrap();
     assert!(raw.starts_with("at_"));
 
     // Verify
@@ -359,20 +402,27 @@ async fn test_empty_database_queries() {
     let (core, _dir) = create_core();
 
     assert!(core.get_all_atoms().await.unwrap().is_empty());
-    let page = core.list_atoms(&ListAtomsParams {
-        tag_id: None,
-        limit: 10,
-        offset: 0,
-        cursor: None,
-        cursor_id: None,
-        source_filter: SourceFilter::All,
-        source_value: None,
-        sort_by: SortField::Updated,
-        sort_order: SortOrder::Desc,
-    }).await.unwrap();
+    let page = core
+        .list_atoms(&ListAtomsParams {
+            tag_id: None,
+            limit: 10,
+            offset: 0,
+            cursor: None,
+            cursor_id: None,
+            source_filter: SourceFilter::All,
+            source_value: None,
+            sort_by: SortField::Updated,
+            sort_order: SortOrder::Desc,
+        })
+        .await
+        .unwrap();
     assert_eq!(page.total_count, 0);
     assert!(core.get_source_list().await.unwrap().is_empty());
-    assert!(core.get_conversations(None, 10, 0).await.unwrap().is_empty());
+    assert!(core
+        .get_conversations(None, 10, 0)
+        .await
+        .unwrap()
+        .is_empty());
 }
 
 #[tokio::test]
@@ -385,7 +435,9 @@ async fn test_atom_positions_roundtrip() {
         atom_id: atom.atom.id.clone(),
         x: 100.5,
         y: 200.3,
-    }]).await.unwrap();
+    }])
+    .await
+    .unwrap();
 
     let positions = core.get_atom_positions().await.unwrap();
     assert_eq!(positions.len(), 1);

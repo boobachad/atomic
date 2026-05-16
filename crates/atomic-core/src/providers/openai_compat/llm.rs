@@ -4,8 +4,7 @@ use crate::providers::error::ProviderError;
 use crate::providers::openai_compat::OpenAICompatProvider;
 use crate::providers::traits::{LlmConfig, StreamCallback};
 use crate::providers::types::{
-    CompletionResponse, Message, StreamDelta, ToolCall, ToolCallFunction,
-    ToolDefinition,
+    CompletionResponse, Message, StreamDelta, ToolCall, ToolCallFunction, ToolDefinition,
 };
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
@@ -180,7 +179,10 @@ fn convert_message(msg: &Message) -> ApiMessage {
             tcs.iter()
                 .map(|tc| ApiToolCall {
                     id: tc.id.clone(),
-                    call_type: tc.call_type.clone().unwrap_or_else(|| "function".to_string()),
+                    call_type: tc
+                        .call_type
+                        .clone()
+                        .unwrap_or_else(|| "function".to_string()),
                     function: ApiFunctionCall {
                         name: tc.get_name().unwrap_or_default().to_string(),
                         arguments: tc.get_arguments().unwrap_or_default().to_string(),
@@ -249,16 +251,18 @@ async fn complete_internal(
         Some(tools.iter().map(convert_tool).collect())
     };
 
-    let response_format = config.params.structured_output.as_ref().map(|schema| {
-        ResponseFormat {
+    let response_format = config
+        .params
+        .structured_output
+        .as_ref()
+        .map(|schema| ResponseFormat {
             format_type: "json_schema".to_string(),
             json_schema: Some(JsonSchemaWrapper {
                 name: schema.name.clone(),
                 strict: schema.strict,
                 schema: schema.schema.clone(),
             }),
-        }
-    });
+        });
 
     let request = ChatRequest {
         model: config.model.clone(),
@@ -282,7 +286,8 @@ async fn complete_internal(
 
     if !response.status().is_success() {
         let status = response.status().as_u16();
-        let retry_after = response.headers()
+        let retry_after = response
+            .headers()
             .get("retry-after")
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.parse::<u64>().ok());
@@ -366,7 +371,8 @@ pub async fn complete_streaming_with_tools(
 
     if !response.status().is_success() {
         let status = response.status().as_u16();
-        let retry_after = response.headers()
+        let retry_after = response
+            .headers()
             .get("retry-after")
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.parse::<u64>().ok());
@@ -417,65 +423,72 @@ pub async fn complete_streaming_with_tools(
 
             if let Some(json_str) = line.strip_prefix("data: ") {
                 match serde_json::from_str::<StreamingResponse>(json_str) {
-                Err(e) => {
-                    tracing::debug!(error = %e, chunk_preview = %crate::providers::error::truncate_utf8(json_str, 200), "OpenAI-compat stream chunk parse error");
-                }
-                Ok(response) => {
-                    if let Some(choice) = response.choices.first() {
-                        if choice.finish_reason.is_some() {
-                            finish_reason = choice.finish_reason.clone();
-                        }
+                    Err(e) => {
+                        tracing::debug!(error = %e, chunk_preview = %crate::providers::error::truncate_utf8(json_str, 200), "OpenAI-compat stream chunk parse error");
+                    }
+                    Ok(response) => {
+                        if let Some(choice) = response.choices.first() {
+                            if choice.finish_reason.is_some() {
+                                finish_reason = choice.finish_reason.clone();
+                            }
 
-                        let delta_content = choice.delta.content.as_ref()
-                            .filter(|c| !c.is_empty())
-                            .or(choice.delta.reasoning_content.as_ref().filter(|r| !r.is_empty()));
-                        if let Some(delta_content) = delta_content {
-                            content.push_str(delta_content);
-                            on_delta(StreamDelta::Content(delta_content.clone()));
-                        }
+                            let delta_content = choice
+                                .delta
+                                .content
+                                .as_ref()
+                                .filter(|c| !c.is_empty())
+                                .or(choice
+                                    .delta
+                                    .reasoning_content
+                                    .as_ref()
+                                    .filter(|r| !r.is_empty()));
+                            if let Some(delta_content) = delta_content {
+                                content.push_str(delta_content);
+                                on_delta(StreamDelta::Content(delta_content.clone()));
+                            }
 
-                        if let Some(tool_calls) = &choice.delta.tool_calls {
-                            for tc in tool_calls {
-                                while tool_call_accumulators.len() <= tc.index {
-                                    tool_call_accumulators.push(ToolCallAccumulator::default());
-                                }
+                            if let Some(tool_calls) = &choice.delta.tool_calls {
+                                for tc in tool_calls {
+                                    while tool_call_accumulators.len() <= tc.index {
+                                        tool_call_accumulators.push(ToolCallAccumulator::default());
+                                    }
 
-                                let acc = &mut tool_call_accumulators[tc.index];
-                                let mut name_changed = false;
+                                    let acc = &mut tool_call_accumulators[tc.index];
+                                    let mut name_changed = false;
 
-                                if let Some(id) = &tc.id {
-                                    acc.id = id.clone();
-                                }
-                                if let Some(call_type) = &tc.call_type {
-                                    acc.call_type = call_type.clone();
-                                }
-                                if let Some(func) = &tc.function {
-                                    if let Some(name) = &func.name {
-                                        if acc.name.is_empty() {
-                                            acc.name = name.clone();
-                                            name_changed = true;
+                                    if let Some(id) = &tc.id {
+                                        acc.id = id.clone();
+                                    }
+                                    if let Some(call_type) = &tc.call_type {
+                                        acc.call_type = call_type.clone();
+                                    }
+                                    if let Some(func) = &tc.function {
+                                        if let Some(name) = &func.name {
+                                            if acc.name.is_empty() {
+                                                acc.name = name.clone();
+                                                name_changed = true;
+                                            }
+                                        }
+                                        if let Some(args) = &func.arguments {
+                                            acc.arguments.push_str(args);
+                                            on_delta(StreamDelta::ToolCallArguments {
+                                                index: tc.index,
+                                                arguments: args.clone(),
+                                            });
                                         }
                                     }
-                                    if let Some(args) = &func.arguments {
-                                        acc.arguments.push_str(args);
-                                        on_delta(StreamDelta::ToolCallArguments {
+
+                                    if name_changed && !acc.id.is_empty() && !acc.name.is_empty() {
+                                        on_delta(StreamDelta::ToolCallStart {
                                             index: tc.index,
-                                            arguments: args.clone(),
+                                            id: acc.id.clone(),
+                                            name: acc.name.clone(),
                                         });
                                     }
-                                }
-
-                                if name_changed && !acc.id.is_empty() && !acc.name.is_empty() {
-                                    on_delta(StreamDelta::ToolCallStart {
-                                        index: tc.index,
-                                        id: acc.id.clone(),
-                                        name: acc.name.clone(),
-                                    });
                                 }
                             }
                         }
                     }
-                }
                 }
             }
         }

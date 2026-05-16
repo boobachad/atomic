@@ -19,15 +19,8 @@ impl MailgunClient {
         }
     }
 
-    pub async fn send_magic_link(
-        &self,
-        to: &str,
-        link: &str,
-    ) -> Result<(), CloudError> {
-        let url = format!(
-            "https://api.mailgun.net/v3/{}/messages",
-            self.domain
-        );
+    pub async fn send_magic_link(&self, to: &str, link: &str) -> Result<(), CloudError> {
+        let url = format!("https://api.mailgun.net/v3/{}/messages", self.domain);
 
         let resp = self
             .http

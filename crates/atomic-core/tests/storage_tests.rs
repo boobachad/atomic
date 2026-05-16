@@ -11,11 +11,11 @@
 //! Note: Postgres tests must run serially (they share one DB):
 //!   cargo test -p atomic-core --test storage_tests --features postgres -- postgres_tests --test-threads=1
 
-use atomic_core::storage::SqliteStorage;
-use atomic_core::storage::traits::*;
-use atomic_core::{CreateAtomRequest, UpdateAtomRequest, ListAtomsParams};
-use atomic_core::models::*;
 use atomic_core::db::Database;
+use atomic_core::models::*;
+use atomic_core::storage::traits::*;
+use atomic_core::storage::SqliteStorage;
+use atomic_core::{AtomicCoreError, CreateAtomRequest, ListAtomsParams, UpdateAtomRequest};
 use std::sync::Arc;
 use tempfile::TempDir;
 
@@ -34,18 +34,20 @@ async fn postgres_storage() -> Option<atomic_core::storage::PostgresStorage> {
         Ok(url) => url,
         Err(_) => return None,
     };
-    let storage = atomic_core::storage::PostgresStorage::connect(&url, "test").await.unwrap();
+    let storage = atomic_core::storage::PostgresStorage::connect(&url, "test")
+        .await
+        .unwrap();
     storage.initialize().await.unwrap();
 
     // Truncate data tables for a clean test (preserve schema)
     sqlx::raw_sql(
-        "TRUNCATE atoms, tags, atom_tags, atom_chunks, atom_positions, \
+        "TRUNCATE atoms, tags, atom_tags, atom_chunks, atom_positions, atom_pipeline_jobs, \
          semantic_edges, atom_clusters, tag_embeddings, \
-         wiki_articles, wiki_citations, wiki_links, wiki_article_versions, \
+         wiki_articles, wiki_citations, wiki_links, wiki_article_versions, atom_links, \
          conversations, conversation_tags, chat_messages, chat_tool_calls, chat_citations, \
          feeds, feed_tags, feed_items, settings, \
          briefing_citations, briefings, oauth_codes, oauth_clients, api_tokens \
-         CASCADE"
+         CASCADE",
     )
     .execute(storage.pool())
     .await
@@ -128,6 +130,247 @@ async fn test_update_atom(storage: &dyn AtomStore) {
     assert_eq!(fetched.atom.content, "Updated content");
 }
 
+async fn test_update_atom_if_unchanged_rejects_stale_write(storage: &dyn AtomStore) {
+    let id = uuid::Uuid::new_v4().to_string();
+    let created_at = "2024-01-01T00:00:00Z";
+    storage
+        .insert_atom(
+            &id,
+            &CreateAtomRequest {
+                content: "Original content".to_string(),
+                ..Default::default()
+            },
+            created_at,
+        )
+        .await
+        .unwrap();
+
+    let update = UpdateAtomRequest {
+        content: "First edit".to_string(),
+        source_url: None,
+        published_at: None,
+        tag_ids: None,
+    };
+    storage
+        .update_atom_if_unchanged(&id, &update, "2024-01-02T00:00:00Z", created_at)
+        .await
+        .unwrap();
+
+    let stale_update = UpdateAtomRequest {
+        content: "Stale edit".to_string(),
+        source_url: None,
+        published_at: None,
+        tag_ids: None,
+    };
+    let error = storage
+        .update_atom_if_unchanged(&id, &stale_update, "2024-01-03T00:00:00Z", created_at)
+        .await
+        .unwrap_err();
+
+    assert!(matches!(error, AtomicCoreError::Conflict(_)));
+    let fetched = storage.get_atom(&id).await.unwrap().unwrap();
+    assert_eq!(fetched.atom.content, "First edit");
+}
+
+async fn test_atom_links_materialized(storage: &dyn AtomStore) {
+    let target_id = uuid::Uuid::new_v4().to_string();
+    let source_id = uuid::Uuid::new_v4().to_string();
+    let missing_id = uuid::Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().to_rfc3339();
+
+    storage
+        .insert_atom(
+            &target_id,
+            &CreateAtomRequest {
+                content: "# Target Atom\n\nBody".to_string(),
+                ..Default::default()
+            },
+            &now,
+        )
+        .await
+        .unwrap();
+    storage
+        .insert_atom(
+            &source_id,
+            &CreateAtomRequest {
+                content: format!(
+                    "Links: [[{}|Target label]], [[{}]], [[future-slug]]",
+                    target_id, missing_id
+                ),
+                ..Default::default()
+            },
+            &now,
+        )
+        .await
+        .unwrap();
+
+    let links = storage.get_atom_links(&source_id).await.unwrap();
+    assert_eq!(links.len(), 3);
+    assert_eq!(links[0].target_atom_id.as_deref(), Some(target_id.as_str()));
+    assert_eq!(links[0].target_title.as_deref(), Some("Target Atom"));
+    assert_eq!(links[0].label.as_deref(), Some("Target label"));
+    assert_eq!(links[0].target_kind, "atom_id");
+    assert_eq!(links[0].status, "resolved");
+    assert_eq!(links[1].raw_target, missing_id);
+    assert_eq!(links[1].status, "missing");
+    assert_eq!(links[2].raw_target, "future-slug");
+    assert_eq!(links[2].target_kind, "text");
+    assert_eq!(links[2].status, "unresolved");
+}
+
+async fn test_atom_links_replaced_on_update(storage: &dyn AtomStore) {
+    let target_id = uuid::Uuid::new_v4().to_string();
+    let source_id = uuid::Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().to_rfc3339();
+
+    storage
+        .insert_atom(
+            &target_id,
+            &CreateAtomRequest {
+                content: "# Target".to_string(),
+                ..Default::default()
+            },
+            &now,
+        )
+        .await
+        .unwrap();
+    storage
+        .insert_atom(
+            &source_id,
+            &CreateAtomRequest {
+                content: format!("[[{}]]", target_id),
+                ..Default::default()
+            },
+            &now,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(storage.get_atom_links(&source_id).await.unwrap().len(), 1);
+
+    storage
+        .update_atom_content_only(
+            &source_id,
+            &UpdateAtomRequest {
+                content: "No links now".to_string(),
+                source_url: None,
+                published_at: None,
+                tag_ids: None,
+            },
+            &chrono::Utc::now().to_rfc3339(),
+        )
+        .await
+        .unwrap();
+
+    assert!(storage.get_atom_links(&source_id).await.unwrap().is_empty());
+}
+
+async fn test_atom_links_mark_target_missing_on_delete(storage: &dyn AtomStore) {
+    let target_id = uuid::Uuid::new_v4().to_string();
+    let source_id = uuid::Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().to_rfc3339();
+
+    storage
+        .insert_atom(
+            &target_id,
+            &CreateAtomRequest {
+                content: "# Target".to_string(),
+                ..Default::default()
+            },
+            &now,
+        )
+        .await
+        .unwrap();
+    storage
+        .insert_atom(
+            &source_id,
+            &CreateAtomRequest {
+                content: format!("[[{}|Target]]", target_id),
+                ..Default::default()
+            },
+            &now,
+        )
+        .await
+        .unwrap();
+
+    storage.delete_atom(&target_id).await.unwrap();
+
+    let links = storage.get_atom_links(&source_id).await.unwrap();
+    assert_eq!(links.len(), 1);
+    assert_eq!(links[0].raw_target, target_id);
+    assert_eq!(links[0].target_atom_id, None);
+    assert_eq!(links[0].status, "missing");
+}
+
+async fn test_atom_link_suggestions_recent_and_title_ranked(storage: &dyn AtomStore) {
+    let older = "2024-01-01T00:00:00Z";
+    let newer = "2024-01-02T00:00:00Z";
+    let newest = "2024-01-03T00:00:00Z";
+
+    let exact_id = uuid::Uuid::new_v4().to_string();
+    let prefix_id = uuid::Uuid::new_v4().to_string();
+    let contains_id = uuid::Uuid::new_v4().to_string();
+    let body_only_id = uuid::Uuid::new_v4().to_string();
+
+    storage
+        .insert_atom(
+            &prefix_id,
+            &CreateAtomRequest {
+                content: "# Project Atlas Notes\n\nBody".to_string(),
+                ..Default::default()
+            },
+            older,
+        )
+        .await
+        .unwrap();
+    storage
+        .insert_atom(
+            &contains_id,
+            &CreateAtomRequest {
+                content: "# Notes for Project Atlas\n\nBody".to_string(),
+                ..Default::default()
+            },
+            newer,
+        )
+        .await
+        .unwrap();
+    storage
+        .insert_atom(
+            &exact_id,
+            &CreateAtomRequest {
+                content: "# Project Atlas\n\nBody".to_string(),
+                ..Default::default()
+            },
+            older,
+        )
+        .await
+        .unwrap();
+    storage
+        .insert_atom(
+            &body_only_id,
+            &CreateAtomRequest {
+                content: "# Unrelated\n\nProject Atlas only appears in body.".to_string(),
+                ..Default::default()
+            },
+            newest,
+        )
+        .await
+        .unwrap();
+
+    let recent = storage.suggest_atom_links("", 2).await.unwrap();
+    assert_eq!(recent.len(), 2);
+    assert_eq!(recent[0].id, body_only_id);
+    assert_eq!(recent[1].id, contains_id);
+
+    let matches = storage
+        .suggest_atom_links("project atlas", 10)
+        .await
+        .unwrap();
+    let ids: Vec<&str> = matches.iter().map(|s| s.id.as_str()).collect();
+    assert_eq!(ids, vec![exact_id, prefix_id, contains_id]);
+    assert!(!ids.contains(&body_only_id.as_str()));
+}
+
 async fn test_get_all_atoms(storage: &dyn AtomStore) {
     let now = chrono::Utc::now().to_rfc3339();
     for i in 0..3 {
@@ -184,7 +427,10 @@ async fn test_create_and_get_tags(storage: &dyn TagStore) {
     assert_eq!(tag.name, "Test Tag");
     assert!(tag.parent_id.is_none());
 
-    let child = storage.create_tag("Child Tag", Some(&tag.id)).await.unwrap();
+    let child = storage
+        .create_tag("Child Tag", Some(&tag.id))
+        .await
+        .unwrap();
     assert_eq!(child.parent_id.as_deref(), Some(tag.id.as_str()));
 
     // get_all_tags returns a tree — flatten to count
@@ -216,26 +462,45 @@ async fn test_create_conversation(storage: &dyn ChatStore) {
     let conv = storage.create_conversation(&[], None).await.unwrap();
     assert!(!conv.conversation.id.is_empty());
 
-    let fetched = storage.get_conversation(&conv.conversation.id).await.unwrap();
+    let fetched = storage
+        .get_conversation(&conv.conversation.id)
+        .await
+        .unwrap();
     assert!(fetched.is_some());
 }
 
 async fn test_save_and_get_messages(storage: &dyn ChatStore) {
-    let conv = storage.create_conversation(&[], Some("Test Chat")).await.unwrap();
+    let conv = storage
+        .create_conversation(&[], Some("Test Chat"))
+        .await
+        .unwrap();
 
-    let msg = storage.save_message(&conv.conversation.id, "user", "Hello!").await.unwrap();
+    let msg = storage
+        .save_message(&conv.conversation.id, "user", "Hello!")
+        .await
+        .unwrap();
     assert_eq!(msg.role, "user");
     assert_eq!(msg.content, "Hello!");
 
-    let full = storage.get_conversation(&conv.conversation.id).await.unwrap().unwrap();
+    let full = storage
+        .get_conversation(&conv.conversation.id)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(full.messages.len(), 1);
 }
 
 async fn test_delete_conversation(storage: &dyn ChatStore) {
     let conv = storage.create_conversation(&[], None).await.unwrap();
-    storage.delete_conversation(&conv.conversation.id).await.unwrap();
+    storage
+        .delete_conversation(&conv.conversation.id)
+        .await
+        .unwrap();
 
-    let fetched = storage.get_conversation(&conv.conversation.id).await.unwrap();
+    let fetched = storage
+        .get_conversation(&conv.conversation.id)
+        .await
+        .unwrap();
     assert!(fetched.is_none());
 }
 
@@ -252,7 +517,10 @@ async fn test_save_and_get_wiki(tag_store: &dyn TagStore, wiki_store: &dyn WikiS
 
     let fetched = wiki_store.get_wiki(&tag.id).await.unwrap();
     assert!(fetched.is_some());
-    assert_eq!(fetched.unwrap().article.content, "# Wiki Article\n\nContent here.");
+    assert_eq!(
+        fetched.unwrap().article.content,
+        "# Wiki Article\n\nContent here."
+    );
 }
 
 async fn test_delete_wiki(tag_store: &dyn TagStore, wiki_store: &dyn WikiStore) {
@@ -262,6 +530,40 @@ async fn test_delete_wiki(tag_store: &dyn TagStore, wiki_store: &dyn WikiStore) 
 
     let fetched = wiki_store.get_wiki(&tag.id).await.unwrap();
     assert!(fetched.is_none());
+}
+
+async fn test_wiki_update_chunks_pending_atom_errors(
+    atom_store: &dyn AtomStore,
+    tag_store: &dyn TagStore,
+    wiki_store: &dyn WikiStore,
+) {
+    let tag = tag_store
+        .create_tag("Wiki Pending Tag", None)
+        .await
+        .unwrap();
+    let request = CreateAtomRequest {
+        content: "This atom has not been chunked yet.".to_string(),
+        source_url: None,
+        published_at: None,
+        tag_ids: vec![tag.id.clone()],
+        ..Default::default()
+    };
+    let atom_id = uuid::Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().to_rfc3339();
+    atom_store
+        .insert_atom(&atom_id, &request, &now)
+        .await
+        .unwrap();
+
+    let result = wiki_store
+        .get_wiki_update_chunks(&tag.id, "1970-01-01T00:00:00Z", 1024)
+        .await;
+
+    assert!(result.is_err());
+    assert!(result
+        .unwrap_err()
+        .to_string()
+        .contains("not ready for wiki update"));
 }
 
 // ==================== ChunkStore Tests ====================
@@ -293,6 +595,36 @@ async fn sqlite_delete_atom() {
 async fn sqlite_update_atom() {
     let (s, _dir) = sqlite_storage().await;
     test_update_atom(&s).await;
+}
+
+#[tokio::test]
+async fn sqlite_update_atom_if_unchanged_rejects_stale_write() {
+    let (s, _dir) = sqlite_storage().await;
+    test_update_atom_if_unchanged_rejects_stale_write(&s).await;
+}
+
+#[tokio::test]
+async fn sqlite_atom_links_materialized() {
+    let (s, _dir) = sqlite_storage().await;
+    test_atom_links_materialized(&s).await;
+}
+
+#[tokio::test]
+async fn sqlite_atom_links_replaced_on_update() {
+    let (s, _dir) = sqlite_storage().await;
+    test_atom_links_replaced_on_update(&s).await;
+}
+
+#[tokio::test]
+async fn sqlite_atom_links_mark_target_missing_on_delete() {
+    let (s, _dir) = sqlite_storage().await;
+    test_atom_links_mark_target_missing_on_delete(&s).await;
+}
+
+#[tokio::test]
+async fn sqlite_atom_link_suggestions_recent_and_title_ranked() {
+    let (s, _dir) = sqlite_storage().await;
+    test_atom_link_suggestions_recent_and_title_ranked(&s).await;
 }
 
 #[tokio::test]
@@ -355,6 +687,12 @@ async fn sqlite_delete_wiki() {
     test_delete_wiki(&s, &s).await;
 }
 
+#[tokio::test]
+async fn sqlite_wiki_update_chunks_pending_atom_errors() {
+    let (s, _dir) = sqlite_storage().await;
+    test_wiki_update_chunks_pending_atom_errors(&s, &s, &s).await;
+}
+
 // ==================== Postgres Test Runners ====================
 
 #[cfg(feature = "postgres")]
@@ -367,7 +705,10 @@ mod postgres_tests {
             #[tokio::test]
             async fn $name() {
                 let Some(ref s) = postgres_storage().await else {
-                    eprintln!("Skipping {} (ATOMIC_TEST_DATABASE_URL not set)", stringify!($name));
+                    eprintln!(
+                        "Skipping {} (ATOMIC_TEST_DATABASE_URL not set)",
+                        stringify!($name)
+                    );
                     return;
                 };
                 $body(s).await;
@@ -379,6 +720,23 @@ mod postgres_tests {
     pg_test!(pg_get_atom_not_found, test_get_atom_not_found);
     pg_test!(pg_delete_atom, test_delete_atom);
     pg_test!(pg_update_atom, test_update_atom);
+    pg_test!(
+        pg_update_atom_if_unchanged_rejects_stale_write,
+        test_update_atom_if_unchanged_rejects_stale_write
+    );
+    pg_test!(pg_atom_links_materialized, test_atom_links_materialized);
+    pg_test!(
+        pg_atom_links_replaced_on_update,
+        test_atom_links_replaced_on_update
+    );
+    pg_test!(
+        pg_atom_links_mark_target_missing_on_delete,
+        test_atom_links_mark_target_missing_on_delete
+    );
+    pg_test!(
+        pg_atom_link_suggestions_recent_and_title_ranked,
+        test_atom_link_suggestions_recent_and_title_ranked
+    );
     pg_test!(pg_get_all_atoms, test_get_all_atoms);
     pg_test!(pg_list_atoms_pagination, test_list_atoms_pagination);
     pg_test!(pg_create_and_get_tags, test_create_and_get_tags);
@@ -404,5 +762,14 @@ mod postgres_tests {
             return;
         };
         test_delete_wiki(s, s).await;
+    }
+
+    #[tokio::test]
+    async fn pg_wiki_update_chunks_pending_atom_errors() {
+        let Some(ref s) = postgres_storage().await else {
+            eprintln!("Skipping (ATOMIC_TEST_DATABASE_URL not set)");
+            return;
+        };
+        test_wiki_update_chunks_pending_atom_errors(s, s, s).await;
     }
 }

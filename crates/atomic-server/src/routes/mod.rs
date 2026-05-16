@@ -1,23 +1,24 @@
 //! Route configuration — registers all API route groups
 
-pub mod auth;
 pub mod atoms;
+pub mod auth;
 pub mod briefings;
 pub mod canvas;
 pub mod chat;
 pub mod clustering;
 pub mod databases;
 pub mod embedding;
+pub mod exports;
 pub mod feeds;
 pub mod graph;
 pub mod import;
-pub mod logs;
 pub mod ingest;
+pub mod logs;
 pub mod oauth;
 pub mod ollama;
 pub mod search;
-pub mod setup;
 pub mod settings;
+pub mod setup;
 pub mod utils;
 pub mod wiki;
 
@@ -29,10 +30,25 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
     cfg.route("/atoms", web::post().to(atoms::create_atom));
     cfg.route("/atoms/bulk", web::post().to(atoms::bulk_create_atoms));
     cfg.route("/atoms/sources", web::get().to(atoms::get_source_list));
-    cfg.route("/atoms/by-source-url", web::get().to(atoms::get_atom_by_source_url));
+    cfg.route(
+        "/atoms/link-suggestions",
+        web::get().to(atoms::get_atom_link_suggestions),
+    );
+    cfg.route(
+        "/atoms/by-source-url",
+        web::get().to(atoms::get_atom_by_source_url),
+    );
+    cfg.route("/atoms/{id}/links", web::get().to(atoms::get_atom_links));
     cfg.route("/atoms/{id}", web::get().to(atoms::get_atom));
     cfg.route("/atoms/{id}", web::put().to(atoms::update_atom));
-    cfg.route("/atoms/{id}/content", web::put().to(atoms::update_atom_content_only));
+    cfg.route(
+        "/atoms/{id}/content",
+        web::put().to(atoms::update_atom_content_only),
+    );
+    cfg.route(
+        "/atoms/{id}/process",
+        web::post().to(atoms::process_atom_pipeline),
+    );
     cfg.route("/atoms/{id}", web::delete().to(atoms::delete_atom));
     cfg.route("/atoms/{id}/similar", web::get().to(search::find_similar));
     cfg.route(
@@ -43,24 +59,44 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
     // Tags
     cfg.route("/tags", web::get().to(atoms::get_tags));
     cfg.route("/tags", web::post().to(atoms::create_tag));
-    cfg.route("/tags/configure-autotag-targets", web::post().to(atoms::configure_autotag_targets));
-    cfg.route("/tags/{id}/children", web::get().to(atoms::get_tag_children));
-    cfg.route("/tags/{id}/autotag-target", web::put().to(atoms::set_tag_autotag_target));
+    cfg.route(
+        "/tags/configure-autotag-targets",
+        web::post().to(atoms::configure_autotag_targets),
+    );
+    cfg.route(
+        "/tags/{id}/children",
+        web::get().to(atoms::get_tag_children),
+    );
+    cfg.route(
+        "/tags/{id}/autotag-target",
+        web::put().to(atoms::set_tag_autotag_target),
+    );
+    cfg.route(
+        "/tags/{id}/autotag-description",
+        web::put().to(atoms::set_tag_autotag_description),
+    );
     cfg.route("/tags/{id}", web::put().to(atoms::update_tag));
     cfg.route("/tags/{id}", web::delete().to(atoms::delete_tag));
 
     // Search
     cfg.route("/search", web::post().to(search::search));
+    cfg.route("/search/global", web::post().to(search::global_search));
 
     // Wiki
     cfg.route("/wiki", web::get().to(wiki::get_all_wiki_articles));
-    cfg.route("/wiki/suggestions", web::get().to(wiki::get_wiki_suggestions));
+    cfg.route(
+        "/wiki/suggestions",
+        web::get().to(wiki::get_wiki_suggestions),
+    );
     cfg.route(
         "/wiki/versions/{version_id}",
         web::get().to(wiki::get_wiki_version),
     );
     cfg.route("/wiki/{tag_id}", web::get().to(wiki::get_wiki));
-    cfg.route("/wiki/{tag_id}/status", web::get().to(wiki::get_wiki_status));
+    cfg.route(
+        "/wiki/{tag_id}/status",
+        web::get().to(wiki::get_wiki_status),
+    );
     cfg.route(
         "/wiki/{tag_id}/generate",
         web::post().to(wiki::generate_wiki),
@@ -84,10 +120,7 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
         "/wiki/{tag_id}/related",
         web::get().to(wiki::get_related_tags),
     );
-    cfg.route(
-        "/wiki/{tag_id}/links",
-        web::get().to(wiki::get_wiki_links),
-    );
+    cfg.route("/wiki/{tag_id}/links", web::get().to(wiki::get_wiki_links));
     cfg.route(
         "/wiki/{tag_id}/versions",
         web::get().to(wiki::list_wiki_versions),
@@ -98,19 +131,44 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
     );
 
     // Briefings
-    cfg.route("/briefings/latest", web::get().to(briefings::get_latest_briefing));
+    cfg.route(
+        "/briefings/schedule",
+        web::get().to(briefings::get_briefing_schedule),
+    );
+    cfg.route(
+        "/briefings/schedule",
+        web::put().to(briefings::set_briefing_schedule),
+    );
+    cfg.route(
+        "/briefings/latest",
+        web::get().to(briefings::get_latest_briefing),
+    );
     cfg.route("/briefings", web::get().to(briefings::list_briefings));
-    cfg.route("/briefings/run", web::post().to(briefings::run_briefing_now));
+    cfg.route(
+        "/briefings/run",
+        web::post().to(briefings::run_briefing_now),
+    );
     cfg.route("/briefings/{id}", web::get().to(briefings::get_briefing));
 
     // Settings
     cfg.route("/settings", web::get().to(settings::get_settings));
     cfg.route("/settings/{key}", web::put().to(settings::set_setting));
     cfg.route(
+        "/settings/{key}",
+        web::delete().to(settings::clear_setting_override),
+    );
+    cfg.route(
+        "/settings/{key}/overrides",
+        web::get().to(settings::list_setting_overrides),
+    );
+    cfg.route(
         "/settings/test-openrouter",
         web::post().to(settings::test_openrouter_connection),
     );
-    cfg.route("/settings/models", web::get().to(settings::get_available_llm_models));
+    cfg.route(
+        "/settings/models",
+        web::get().to(settings::get_available_llm_models),
+    );
     cfg.route(
         "/settings/embedding-models",
         web::get().to(settings::get_openrouter_embedding_models),
@@ -138,8 +196,20 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
         web::post().to(embedding::retry_tagging),
     );
     cfg.route(
+        "/embeddings/retry-failed",
+        web::post().to(embedding::retry_failed_embeddings),
+    );
+    cfg.route(
+        "/tagging/retry-failed",
+        web::post().to(embedding::retry_failed_tagging),
+    );
+    cfg.route(
         "/embeddings/reembed-all",
         web::post().to(embedding::reembed_all_atoms),
+    );
+    cfg.route(
+        "/tagging/retag-all",
+        web::post().to(embedding::retag_all_atoms),
     );
     cfg.route(
         "/embeddings/reset-stuck",
@@ -149,6 +219,10 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
         "/embeddings/status",
         web::get().to(embedding::get_pipeline_status),
     );
+    cfg.route(
+        "/embeddings/status/all",
+        web::get().to(embedding::get_all_pipeline_statuses),
+    );
 
     // Canvas
     cfg.route("/canvas/positions", web::get().to(canvas::get_positions));
@@ -157,14 +231,8 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
         "/canvas/atoms-with-embeddings",
         web::get().to(canvas::get_atoms_with_embeddings),
     );
-    cfg.route(
-        "/canvas/level",
-        web::post().to(canvas::get_canvas_level),
-    );
-    cfg.route(
-        "/canvas/global",
-        web::get().to(canvas::get_global_canvas),
-    );
+    cfg.route("/canvas/level", web::post().to(canvas::get_canvas_level));
+    cfg.route("/canvas/global", web::get().to(canvas::get_global_canvas));
 
     // Graph
     cfg.route("/graph/edges", web::get().to(graph::get_semantic_edges));
@@ -178,7 +246,10 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
     );
 
     // Clustering
-    cfg.route("/clustering/compute", web::post().to(clustering::compute_clusters));
+    cfg.route(
+        "/clustering/compute",
+        web::post().to(clustering::compute_clusters),
+    );
     cfg.route("/clustering", web::get().to(clustering::get_clusters));
     cfg.route(
         "/clustering/connection-counts",
@@ -188,10 +259,7 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
     // Chat / Conversations
     cfg.route("/conversations", web::post().to(chat::create_conversation));
     cfg.route("/conversations", web::get().to(chat::get_conversations));
-    cfg.route(
-        "/conversations/{id}",
-        web::get().to(chat::get_conversation),
-    );
+    cfg.route("/conversations/{id}", web::get().to(chat::get_conversation));
     cfg.route(
         "/conversations/{id}",
         web::put().to(chat::update_conversation),
@@ -246,10 +314,31 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
     cfg.route("/databases", web::get().to(databases::list_databases));
     cfg.route("/databases", web::post().to(databases::create_database));
     cfg.route("/databases/{id}", web::put().to(databases::rename_database));
-    cfg.route("/databases/{id}", web::delete().to(databases::delete_database));
-    cfg.route("/databases/{id}/activate", web::put().to(databases::activate_database));
-    cfg.route("/databases/{id}/default", web::put().to(databases::set_default_database));
-    cfg.route("/databases/{id}/stats", web::get().to(databases::database_stats));
+    cfg.route(
+        "/databases/{id}",
+        web::delete().to(databases::delete_database),
+    );
+    cfg.route(
+        "/databases/{id}/activate",
+        web::put().to(databases::activate_database),
+    );
+    cfg.route(
+        "/databases/{id}/default",
+        web::put().to(databases::set_default_database),
+    );
+    cfg.route(
+        "/databases/{id}/stats",
+        web::get().to(databases::database_stats),
+    );
+    cfg.route(
+        "/databases/{id}/exports/markdown",
+        web::post().to(exports::start_markdown_export),
+    );
+    cfg.route("/exports/{id}", web::get().to(exports::get_export_job));
+    cfg.route(
+        "/exports/{id}",
+        web::delete().to(exports::cancel_or_delete_export_job),
+    );
 
     // Import
     cfg.route(

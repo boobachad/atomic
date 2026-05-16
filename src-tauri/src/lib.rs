@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
+use std::path::Path;
 use std::sync::Mutex;
 use tauri::Manager;
+use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_shell::ShellExt;
 use tracing;
 
@@ -28,21 +30,122 @@ struct SidecarState {
 }
 
 #[tauri::command]
-fn get_local_server_config(
-    config: tauri::State<'_, LocalServerConfig>,
-) -> LocalServerConfig {
+fn get_local_server_config(config: tauri::State<'_, LocalServerConfig>) -> LocalServerConfig {
     config.inner().clone()
 }
 
 #[tauri::command]
 fn get_mcp_bridge_path() -> Result<String, String> {
     let exe_path = std::env::current_exe().map_err(|e| e.to_string())?;
-    let exe_dir = exe_path.parent().ok_or("Cannot determine executable directory")?;
+    let exe_dir = exe_path
+        .parent()
+        .ok_or("Cannot determine executable directory")?;
     #[cfg(windows)]
     let bridge_path = exe_dir.join("atomic-mcp-bridge.exe");
     #[cfg(not(windows))]
     let bridge_path = exe_dir.join("atomic-mcp-bridge");
     Ok(bridge_path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+async fn save_markdown_export(
+    app: tauri::AppHandle,
+    base_url: String,
+    download_path: String,
+    default_file_name: String,
+) -> Result<bool, String> {
+    let url = build_markdown_export_url(&base_url, &download_path)?;
+    let default_file_name = sanitize_export_file_name(&default_file_name);
+
+    let mut dialog = app
+        .dialog()
+        .file()
+        .set_title("Save Markdown Export")
+        .set_file_name(default_file_name)
+        .add_filter("ZIP Archive", &["zip"]);
+
+    if let Some(window) = app.get_webview_window("main") {
+        dialog = dialog.set_parent(&window);
+    }
+
+    let Some(file_path) = dialog.blocking_save_file() else {
+        return Ok(false);
+    };
+
+    let file_path = file_path
+        .into_path()
+        .map_err(|_| "Selected export destination is not a filesystem path".to_string())?;
+
+    let response = reqwest::get(url)
+        .await
+        .map_err(|e| format!("Failed to download export: {e}"))?;
+    let status = response.status();
+    if !status.is_success() {
+        let message = response.text().await.unwrap_or_else(|_| status.to_string());
+        return Err(if message.is_empty() {
+            format!("Download failed with status {status}")
+        } else {
+            message
+        });
+    }
+
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|e| format!("Failed to read export download: {e}"))?;
+
+    tauri::async_runtime::spawn_blocking(move || std::fs::write(file_path, bytes))
+        .await
+        .map_err(|e| format!("Failed to write export file: {e}"))?
+        .map_err(|e| format!("Failed to write export file: {e}"))?;
+
+    Ok(true)
+}
+
+fn build_markdown_export_url(base_url: &str, download_path: &str) -> Result<reqwest::Url, String> {
+    if !download_path.starts_with("/api/exports/") {
+        return Err("Invalid markdown export download path".to_string());
+    }
+
+    let base = reqwest::Url::parse(base_url).map_err(|e| format!("Invalid server URL: {e}"))?;
+    if !matches!(base.scheme(), "http" | "https") {
+        return Err("Export downloads must use http or https".to_string());
+    }
+
+    let url = base
+        .join(download_path)
+        .map_err(|e| format!("Invalid export download URL: {e}"))?;
+
+    let path_segments = url
+        .path_segments()
+        .map(|segments| segments.collect::<Vec<_>>())
+        .unwrap_or_default();
+    if path_segments.len() != 4
+        || path_segments[0] != "api"
+        || path_segments[1] != "exports"
+        || path_segments[2].is_empty()
+        || path_segments[3] != "download"
+    {
+        return Err("Invalid markdown export download path".to_string());
+    }
+
+    let has_token = url
+        .query_pairs()
+        .any(|(key, value)| key == "token" && !value.is_empty());
+    if !has_token {
+        return Err("Missing markdown export download token".to_string());
+    }
+
+    Ok(url)
+}
+
+fn sanitize_export_file_name(name: &str) -> String {
+    Path::new(name)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or("atomic-markdown-export.zip")
+        .to_string()
 }
 
 const PID_FILE_NAME: &str = "sidecar.pid";
@@ -55,7 +158,9 @@ fn kill_stale_sidecar(app_data_dir: &std::path::Path) {
             tracing::info!(pid, "Found stale sidecar PID file, killing process");
             #[cfg(unix)]
             {
-                let _ = std::process::Command::new("kill").arg(pid.to_string()).output();
+                let _ = std::process::Command::new("kill")
+                    .arg(pid.to_string())
+                    .output();
             }
             #[cfg(windows)]
             {
@@ -85,26 +190,27 @@ fn remove_pid_file(app_data_dir: &std::path::Path) {
 fn ensure_local_token(app_data_dir: &std::path::Path) -> String {
     let token_file = app_data_dir.join("local_server_token");
 
-    // Try to read existing token
+    // Open the registry before trusting the token file. `npm run db:drop` can
+    // remove registry.db while leaving local_server_token behind, and that raw
+    // token is useless until it is re-created in the fresh registry.
+    let manager = atomic_core::DatabaseManager::new(app_data_dir)
+        .expect("Failed to open database manager for token bootstrap");
+    let registry = manager.registry().expect("No registry database available");
+
+    // Try to read an existing token and verify that the current registry still
+    // knows about it.
     if let Ok(token) = std::fs::read_to_string(&token_file) {
         let token = token.trim().to_string();
-        if !token.is_empty() {
+        if !token.is_empty() && registry.verify_api_token(&token).is_ok_and(|v| v.is_some()) {
             return token;
         }
     }
 
-    // Create a new token via the DatabaseManager (opens registry + default db)
-    let manager = atomic_core::DatabaseManager::new(app_data_dir)
-        .expect("Failed to open database manager for token bootstrap");
-
-    let (_info, raw_token) = manager
-        .registry()
-        .expect("No registry database available")
+    let (_info, raw_token) = registry
         .create_api_token("desktop")
         .expect("Failed to create API token");
 
-    std::fs::write(&token_file, &raw_token)
-        .expect("Failed to write local server token file");
+    std::fs::write(&token_file, &raw_token).expect("Failed to write local server token file");
 
     raw_token
 }
@@ -187,17 +293,17 @@ pub fn run() {
                     while let Some(event) = rx.recv().await {
                         match event {
                             CommandEvent::Stdout(line) => {
-                                tracing::debug!(output = %String::from_utf8_lossy(&line), "sidecar stdout");
+                                tracing::info!(output = %String::from_utf8_lossy(&line), "sidecar stdout");
                             }
                             CommandEvent::Stderr(line) => {
-                                tracing::debug!(output = %String::from_utf8_lossy(&line), "sidecar stderr");
+                                tracing::warn!(output = %String::from_utf8_lossy(&line), "sidecar stderr");
                             }
                             CommandEvent::Terminated(payload) => {
                                 tracing::info!(?payload, "sidecar terminated");
                                 break;
                             }
                             CommandEvent::Error(err) => {
-                                tracing::debug!(error = %err, "sidecar error");
+                                tracing::warn!(error = %err, "sidecar error");
                             }
                             _ => {}
                         }
@@ -222,7 +328,7 @@ pub fn run() {
                         .send()
                     {
                         Ok(resp) if resp.status().is_success() => {
-                            tracing::debug!(url = %base_url, elapsed_ms = start.elapsed().as_millis(), "Sidecar ready");
+                            tracing::info!(url = %base_url, elapsed_ms = start.elapsed().as_millis(), "Sidecar ready");
                             break;
                         }
                         _ => {
@@ -237,6 +343,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_local_server_config,
             get_mcp_bridge_path,
+            save_markdown_export,
             apple_notes::read_apple_notes,
         ])
         .build(tauri::generate_context!())

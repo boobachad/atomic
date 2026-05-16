@@ -10,8 +10,10 @@
 //! [`crate::scheduler`] for the task that invokes this on a timer.
 
 pub mod agentic;
+pub mod schedule;
 pub mod task;
 
+pub use schedule::{BriefingFrequency, BriefingSchedule, BriefingScheduleStatus, BriefingWeekday};
 pub use task::DailyBriefingTask;
 
 use crate::error::AtomicCoreError;
@@ -103,14 +105,9 @@ pub async fn run_briefing(
     }
 
     // Run the agent loop.
-    let (content, citations) = agentic::generate(
-        core,
-        &since,
-        &new_atoms,
-        total_new,
-    )
-    .await
-    .map_err(AtomicCoreError::Wiki)?;
+    let (content, citations) = agentic::generate(core, &since, &new_atoms, total_new)
+        .await
+        .map_err(AtomicCoreError::Wiki)?;
 
     let id = uuid::Uuid::new_v4().to_string();
     let now = Utc::now().to_rfc3339();

@@ -16,7 +16,10 @@ pub fn configure_public_routes(cfg: &mut web::ServiceConfig) {
             "/api/checkout/session",
             web::get().to(checkout::exchange_session),
         )
-        .route("/api/stripe/webhook", web::post().to(webhooks::handle_webhook))
+        .route(
+            "/api/stripe/webhook",
+            web::post().to(webhooks::handle_webhook),
+        )
         .route("/api/auth/send", web::post().to(auth::send_magic_link))
         .route("/api/auth/verify", web::get().to(auth::verify_magic_link));
 }

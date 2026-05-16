@@ -1,5 +1,6 @@
 //! Admin routes — instance listing, stats, rollout triggers
 
+use crate::models::status;
 use crate::state::CloudState;
 use actix_web::{web, HttpResponse};
 
@@ -19,9 +20,18 @@ pub async fn stats(state: web::Data<CloudState>) -> HttpResponse {
     };
 
     let total = instances.len();
-    let running = instances.iter().filter(|i| i.status == "running").count();
-    let stopped = instances.iter().filter(|i| i.status == "stopped").count();
-    let provisioning = instances.iter().filter(|i| i.status == "provisioning").count();
+    let running = instances
+        .iter()
+        .filter(|i| i.status == status::RUNNING)
+        .count();
+    let stopped = instances
+        .iter()
+        .filter(|i| i.status == status::STOPPED)
+        .count();
+    let provisioning = instances
+        .iter()
+        .filter(|i| i.status == status::PROVISIONING)
+        .count();
 
     HttpResponse::Ok().json(serde_json::json!({
         "total_instances": total,
@@ -41,7 +51,7 @@ pub async fn trigger_rollout(state: web::Data<CloudState>) -> HttpResponse {
 
     let running: Vec<_> = instances
         .into_iter()
-        .filter(|i| i.status == "running" && i.fly_machine_id.is_some())
+        .filter(|i| i.status == status::RUNNING && i.fly_machine_id.is_some())
         .collect();
 
     let count = running.len();

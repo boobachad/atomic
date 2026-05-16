@@ -29,7 +29,10 @@ pub fn compute_2d_projection(embeddings: &[(String, Vec<f32>)]) -> Vec<(String, 
         .map(|(dim, _)| *dim)
         .unwrap_or(0);
     if d == 0 {
-        return embeddings.iter().map(|(id, _)| (id.clone(), 0.0, 0.0)).collect();
+        return embeddings
+            .iter()
+            .map(|(id, _)| (id.clone(), 0.0, 0.0))
+            .collect();
     }
 
     // Partition into matching and mismatched embeddings.
@@ -47,7 +50,10 @@ pub fn compute_2d_projection(embeddings: &[(String, Vec<f32>)]) -> Vec<(String, 
     }
 
     if matching.len() < 2 {
-        return embeddings.iter().map(|(id, _)| (id.clone(), 0.0, 0.0)).collect();
+        return embeddings
+            .iter()
+            .map(|(id, _)| (id.clone(), 0.0, 0.0))
+            .collect();
     }
 
     let embeddings: &[(String, Vec<f32>)] = &matching;
@@ -207,9 +213,7 @@ mod tests {
 
     #[test]
     fn test_single_atom() {
-        let result = compute_2d_projection(&[
-            ("a1".to_string(), vec![1.0, 2.0, 3.0]),
-        ]);
+        let result = compute_2d_projection(&[("a1".to_string(), vec![1.0, 2.0, 3.0])]);
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].0, "a1");
         assert_eq!(result[0].1, 0.0);
@@ -224,7 +228,8 @@ mod tests {
         ]);
         assert_eq!(result.len(), 2);
         // They should be separated
-        let dist = ((result[0].1 - result[1].1).powi(2) + (result[0].2 - result[1].2).powi(2)).sqrt();
+        let dist =
+            ((result[0].1 - result[1].1).powi(2) + (result[0].2 - result[1].2).powi(2)).sqrt();
         assert!(dist > 0.1, "atoms should be separated, got dist={}", dist);
     }
 
@@ -234,17 +239,11 @@ mod tests {
         let mut embeddings = Vec::new();
         for i in 0..10 {
             let noise = i as f32 * 0.01;
-            embeddings.push((
-                format!("cluster_a_{}", i),
-                vec![1.0 + noise, 0.0, 0.0, 0.0],
-            ));
+            embeddings.push((format!("cluster_a_{}", i), vec![1.0 + noise, 0.0, 0.0, 0.0]));
         }
         for i in 0..10 {
             let noise = i as f32 * 0.01;
-            embeddings.push((
-                format!("cluster_b_{}", i),
-                vec![0.0, 0.0, 1.0 + noise, 0.0],
-            ));
+            embeddings.push((format!("cluster_b_{}", i), vec![0.0, 0.0, 1.0 + noise, 0.0]));
         }
 
         let result = compute_2d_projection(&embeddings);
@@ -262,17 +261,28 @@ mod tests {
                 by += y;
             }
         }
-        ax /= 10.0; ay /= 10.0;
-        bx /= 10.0; by /= 10.0;
+        ax /= 10.0;
+        ay /= 10.0;
+        bx /= 10.0;
+        by /= 10.0;
 
         let cluster_dist = ((ax - bx).powi(2) + (ay - by).powi(2)).sqrt();
-        assert!(cluster_dist > 0.5, "clusters should be well separated, got dist={}", cluster_dist);
+        assert!(
+            cluster_dist > 0.5,
+            "clusters should be well separated, got dist={}",
+            cluster_dist
+        );
     }
 
     #[test]
     fn test_deterministic() {
         let embeddings: Vec<(String, Vec<f32>)> = (0..5)
-            .map(|i| (format!("a{}", i), vec![i as f32, (i * 2) as f32, (i * 3) as f32]))
+            .map(|i| {
+                (
+                    format!("a{}", i),
+                    vec![i as f32, (i * 2) as f32, (i * 3) as f32],
+                )
+            })
             .collect();
 
         let r1 = compute_2d_projection(&embeddings);
@@ -280,8 +290,14 @@ mod tests {
 
         for i in 0..r1.len() {
             assert_eq!(r1[i].0, r2[i].0);
-            assert!((r1[i].1 - r2[i].1).abs() < 1e-10, "x should be deterministic");
-            assert!((r1[i].2 - r2[i].2).abs() < 1e-10, "y should be deterministic");
+            assert!(
+                (r1[i].1 - r2[i].1).abs() < 1e-10,
+                "x should be deterministic"
+            );
+            assert!(
+                (r1[i].2 - r2[i].2).abs() < 1e-10,
+                "y should be deterministic"
+            );
         }
     }
 }

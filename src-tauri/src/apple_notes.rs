@@ -101,10 +101,16 @@ pub enum AppleNotesErrorKind {
 
 impl AppleNotesError {
     fn permission_denied(msg: impl Into<String>) -> Self {
-        Self { kind: AppleNotesErrorKind::PermissionDenied, message: msg.into() }
+        Self {
+            kind: AppleNotesErrorKind::PermissionDenied,
+            message: msg.into(),
+        }
     }
     fn not_found(msg: impl Into<String>) -> Self {
-        Self { kind: AppleNotesErrorKind::NotFound, message: msg.into() }
+        Self {
+            kind: AppleNotesErrorKind::NotFound,
+            message: msg.into(),
+        }
     }
     fn no_home_dir() -> Self {
         Self {
@@ -113,7 +119,10 @@ impl AppleNotesError {
         }
     }
     fn other(msg: impl Into<String>) -> Self {
-        Self { kind: AppleNotesErrorKind::Other, message: msg.into() }
+        Self {
+            kind: AppleNotesErrorKind::Other,
+            message: msg.into(),
+        }
     }
 }
 
@@ -211,7 +220,11 @@ fn read_notes_from_db(db_path: &Path) -> Result<AppleNotesData, AppleNotesError>
     let folders = load_folders(&conn, keys.ic_folder)?;
     let notes = load_notes(&conn, keys.ic_note)?;
 
-    Ok(AppleNotesData { accounts, folders, notes })
+    Ok(AppleNotesData {
+        accounts,
+        folders,
+        notes,
+    })
 }
 
 struct PrimaryKeys {
@@ -236,13 +249,16 @@ fn load_primary_keys(conn: &Connection) -> Result<PrimaryKeys, rusqlite::Error> 
             _ => {}
         }
     }
-    Ok(PrimaryKeys { ic_account, ic_folder, ic_note })
+    Ok(PrimaryKeys {
+        ic_account,
+        ic_folder,
+        ic_note,
+    })
 }
 
 fn load_accounts(conn: &Connection, ic_account: i64) -> Result<Vec<Account>, rusqlite::Error> {
-    let mut stmt = conn.prepare(
-        "SELECT z_pk, zname, zidentifier FROM ziccloudsyncingobject WHERE z_ent = ?1",
-    )?;
+    let mut stmt = conn
+        .prepare("SELECT z_pk, zname, zidentifier FROM ziccloudsyncingobject WHERE z_ent = ?1")?;
     let rows = stmt.query_map([ic_account], |r| {
         Ok(Account {
             pk: r.get(0)?,
@@ -451,8 +467,10 @@ mod tests {
         // the OS actually returned.
         let path = Path::new("/private/var/root");
         let direct = std::fs::File::open(path.join(NOTE_DB));
-        if matches!(direct.as_ref().err().map(|e| e.kind()), Some(std::io::ErrorKind::PermissionDenied))
-        {
+        if matches!(
+            direct.as_ref().err().map(|e| e.kind()),
+            Some(std::io::ErrorKind::PermissionDenied)
+        ) {
             let err = read_apple_notes_inner(path).unwrap_err();
             assert!(matches!(err.kind, AppleNotesErrorKind::PermissionDenied));
         }
@@ -491,7 +509,11 @@ mod tests {
             .unwrap();
         assert_eq!(decoded, b"hello-protobuf");
 
-        let locked = data.notes.iter().find(|n| n.title == "Locked Note").unwrap();
+        let locked = data
+            .notes
+            .iter()
+            .find(|n| n.title == "Locked Note")
+            .unwrap();
         assert!(locked.is_password_protected);
 
         let corrupt = data.notes.iter().find(|n| n.title == "Corrupt").unwrap();
@@ -509,7 +531,9 @@ mod tests {
     #[test]
     fn gunzip_round_trip() {
         let encoded = gunzip_to_base64(&gzip(b"payload")).unwrap();
-        let decoded = base64::engine::general_purpose::STANDARD.decode(encoded).unwrap();
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .unwrap();
         assert_eq!(decoded, b"payload");
     }
 

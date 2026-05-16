@@ -158,8 +158,7 @@ pub fn parse_obsidian_note(
     let content =
         fs::read_to_string(file_path).map_err(|e| format!("Failed to read file: {}", e))?;
 
-    let metadata =
-        fs::metadata(file_path).map_err(|e| format!("Failed to get metadata: {}", e))?;
+    let metadata = fs::metadata(file_path).map_err(|e| format!("Failed to get metadata: {}", e))?;
 
     let (frontmatter, body) = parse_frontmatter(&content);
 

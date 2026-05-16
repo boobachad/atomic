@@ -12,8 +12,8 @@ async fn fetch_conversation_tags(
     conversation_id: &str,
     db_id: &str,
 ) -> StorageResult<Vec<Tag>> {
-    let rows = sqlx::query_as::<_, (String, String, Option<String>, String, bool)>(
-        "SELECT t.id, t.name, t.parent_id, t.created_at, t.is_autotag_target
+    let rows = sqlx::query_as::<_, (String, String, Option<String>, String, bool, String)>(
+        "SELECT t.id, t.name, t.parent_id, t.created_at, t.is_autotag_target, t.autotag_description
          FROM tags t
          JOIN conversation_tags ct ON ct.tag_id = t.id
          WHERE ct.conversation_id = $1 AND ct.db_id = $2 AND t.db_id = $2
@@ -27,13 +27,16 @@ async fn fetch_conversation_tags(
 
     Ok(rows
         .into_iter()
-        .map(|(id, name, parent_id, created_at, is_autotag_target)| Tag {
-            id,
-            name,
-            parent_id,
-            created_at,
-            is_autotag_target,
-        })
+        .map(
+            |(id, name, parent_id, created_at, is_autotag_target, autotag_description)| Tag {
+                id,
+                name,
+                parent_id,
+                created_at,
+                is_autotag_target,
+                autotag_description,
+            },
+        )
         .collect())
 }
 
@@ -120,8 +123,8 @@ async fn batch_fetch_conversation_tags(
         return Ok(HashMap::new());
     }
 
-    let rows = sqlx::query_as::<_, (String, String, String, Option<String>, String, bool)>(
-        "SELECT ct.conversation_id, t.id, t.name, t.parent_id, t.created_at, t.is_autotag_target
+    let rows = sqlx::query_as::<_, (String, String, String, Option<String>, String, bool, String)>(
+        "SELECT ct.conversation_id, t.id, t.name, t.parent_id, t.created_at, t.is_autotag_target, t.autotag_description
          FROM conversation_tags ct
          JOIN tags t ON ct.tag_id = t.id
          WHERE ct.conversation_id = ANY($1) AND ct.db_id = $2 AND t.db_id = $2
@@ -134,13 +137,14 @@ async fn batch_fetch_conversation_tags(
     .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
 
     let mut map: HashMap<String, Vec<Tag>> = HashMap::new();
-    for (conv_id, id, name, parent_id, created_at, is_autotag_target) in rows {
+    for (conv_id, id, name, parent_id, created_at, is_autotag_target, autotag_description) in rows {
         map.entry(conv_id).or_default().push(Tag {
             id,
             name,
             parent_id,
             created_at,
             is_autotag_target,
+            autotag_description,
         });
     }
 
@@ -279,13 +283,15 @@ impl ChatStore for PostgresStorage {
             .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
 
             rows.into_iter()
-                .map(|(id, title, created_at, updated_at, is_archived)| Conversation {
-                    id,
-                    title,
-                    created_at,
-                    updated_at,
-                    is_archived: is_archived != 0,
-                })
+                .map(
+                    |(id, title, created_at, updated_at, is_archived)| Conversation {
+                        id,
+                        title,
+                        created_at,
+                        updated_at,
+                        is_archived: is_archived != 0,
+                    },
+                )
                 .collect()
         } else {
             let rows = sqlx::query_as::<_, (String, Option<String>, String, String, i32)>(
@@ -303,13 +309,15 @@ impl ChatStore for PostgresStorage {
             .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
 
             rows.into_iter()
-                .map(|(id, title, created_at, updated_at, is_archived)| Conversation {
-                    id,
-                    title,
-                    created_at,
-                    updated_at,
-                    is_archived: is_archived != 0,
-                })
+                .map(
+                    |(id, title, created_at, updated_at, is_archived)| Conversation {
+                        id,
+                        title,
+                        created_at,
+                        updated_at,
+                        is_archived: is_archived != 0,
+                    },
+                )
                 .collect()
         };
 
@@ -319,7 +327,8 @@ impl ChatStore for PostgresStorage {
 
         let conv_ids: Vec<String> = conversations.iter().map(|c| c.id.clone()).collect();
         let tag_map = batch_fetch_conversation_tags(&self.pool, &conv_ids, &self.db_id).await?;
-        let summary_map = batch_fetch_conversation_summaries(&self.pool, &conv_ids, &self.db_id).await?;
+        let summary_map =
+            batch_fetch_conversation_summaries(&self.pool, &conv_ids, &self.db_id).await?;
 
         let result = conversations
             .into_iter()
@@ -419,7 +428,17 @@ impl ChatStore for PostgresStorage {
         .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
 
         let mut tool_calls_map: HashMap<String, Vec<ChatToolCall>> = HashMap::new();
-        for (id, message_id, tool_name, tool_input, tool_output, status, created_at, completed_at) in tc_rows {
+        for (
+            id,
+            message_id,
+            tool_name,
+            tool_input,
+            tool_output,
+            status,
+            created_at,
+            completed_at,
+        ) in tc_rows
+        {
             let tc = ChatToolCall {
                 id,
                 message_id: message_id.clone(),
@@ -435,16 +454,17 @@ impl ChatStore for PostgresStorage {
         }
 
         // Batch fetch citations
-        let cit_rows = sqlx::query_as::<_, (String, String, String, Option<i32>, String, Option<f32>)>(
-            "SELECT id, message_id, atom_id, chunk_index, excerpt, relevance_score
+        let cit_rows =
+            sqlx::query_as::<_, (String, String, String, Option<i32>, String, Option<f32>)>(
+                "SELECT id, message_id, atom_id, chunk_index, excerpt, relevance_score
              FROM chat_citations
              WHERE message_id = ANY($1) AND db_id = $2",
-        )
-        .bind(&msg_ids)
-        .bind(&self.db_id)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+            )
+            .bind(&msg_ids)
+            .bind(&self.db_id)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
 
         let mut citations_map: HashMap<String, Vec<ChatCitation>> = HashMap::new();
         // The Postgres schema lacks citation_index; we assign based on order.
@@ -467,14 +487,8 @@ impl ChatStore for PostgresStorage {
         let messages_with_context = messages
             .into_iter()
             .map(|message| {
-                let tool_calls = tool_calls_map
-                    .get(&message.id)
-                    .cloned()
-                    .unwrap_or_default();
-                let citations = citations_map
-                    .get(&message.id)
-                    .cloned()
-                    .unwrap_or_default();
+                let tool_calls = tool_calls_map.get(&message.id).cloned().unwrap_or_default();
+                let citations = citations_map.get(&message.id).cloned().unwrap_or_default();
                 ChatMessageWithContext {
                     message,
                     tool_calls,
@@ -533,9 +547,7 @@ impl ChatStore for PostgresStorage {
         .fetch_optional(&self.pool)
         .await
         .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?
-        .ok_or_else(|| {
-            AtomicCoreError::NotFound(format!("Conversation not found: {}", id))
-        })?;
+        .ok_or_else(|| AtomicCoreError::NotFound(format!("Conversation not found: {}", id)))?;
 
         Ok(Conversation {
             id: row.0,
@@ -708,8 +720,7 @@ impl ChatStore for PostgresStorage {
         tool_calls: &[ChatToolCall],
     ) -> StorageResult<()> {
         for tool_call in tool_calls {
-            let tool_input_str =
-                serde_json::to_string(&tool_call.tool_input).unwrap_or_default();
+            let tool_input_str = serde_json::to_string(&tool_call.tool_input).unwrap_or_default();
             let tool_result_str = tool_call
                 .tool_output
                 .as_ref()
@@ -758,10 +769,7 @@ impl ChatStore for PostgresStorage {
         Ok(())
     }
 
-    async fn get_scope_tag_ids(
-        &self,
-        conversation_id: &str,
-    ) -> StorageResult<Vec<String>> {
+    async fn get_scope_tag_ids(&self, conversation_id: &str) -> StorageResult<Vec<String>> {
         let rows = sqlx::query_scalar::<_, String>(
             "SELECT tag_id FROM conversation_tags WHERE conversation_id = $1 AND db_id = $2",
         )
@@ -774,10 +782,7 @@ impl ChatStore for PostgresStorage {
         Ok(rows)
     }
 
-    async fn get_scope_description(
-        &self,
-        tag_ids: &[String],
-    ) -> StorageResult<String> {
+    async fn get_scope_description(&self, tag_ids: &[String]) -> StorageResult<String> {
         if tag_ids.is_empty() {
             return Ok("You have access to ALL atoms in the knowledge base.".to_string());
         }

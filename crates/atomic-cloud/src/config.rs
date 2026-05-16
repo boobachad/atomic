@@ -51,7 +51,11 @@ pub enum Command {
         fly_region: String,
 
         /// Docker image for customer instances
-        #[arg(long, default_value = "registry.fly.io/atomic:latest", env = "ATOMIC_IMAGE")]
+        #[arg(
+            long,
+            default_value = "registry.fly.io/atomic:latest",
+            env = "ATOMIC_IMAGE"
+        )]
         atomic_image: String,
 
         /// Base domain for customer subdomains
@@ -67,7 +71,11 @@ pub enum Command {
         mailgun_domain: String,
 
         /// Mailgun sender address
-        #[arg(long, default_value = "Atomic <noreply@atomicapp.ai>", env = "MAILGUN_FROM")]
+        #[arg(
+            long,
+            default_value = "Atomic <noreply@atomicapp.ai>",
+            env = "MAILGUN_FROM"
+        )]
         mailgun_from: String,
 
         /// Admin API key for management routes

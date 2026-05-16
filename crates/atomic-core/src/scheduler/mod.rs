@@ -40,17 +40,14 @@ pub trait ScheduledTask: Send + Sync {
 
     /// Execute the task. The task is responsible for checking enablement,
     /// reading its own state, and updating `last_run` on success.
-    async fn run(
-        &self,
-        core: &crate::AtomicCore,
-        ctx: &TaskContext,
-    ) -> Result<(), TaskError>;
+    async fn run(&self, core: &crate::AtomicCore, ctx: &TaskContext) -> Result<(), TaskError>;
 }
 
 /// Context passed to each task run. Currently just a callback sink so tasks
 /// can emit events without knowing about the host transport.
 pub struct TaskContext {
     pub event_cb: Arc<dyn Fn(TaskEvent) + Send + Sync>,
+    pub embedding_event_cb: Arc<dyn Fn(crate::EmbeddingEvent) + Send + Sync>,
 }
 
 /// Events emitted by scheduled tasks. The host runtime adapts these into its
@@ -129,16 +126,9 @@ impl TaskRegistry {
 
     /// Try to acquire the per-(task, db) lock. Returns `None` if the lock is
     /// already held (task still running from a previous tick).
-    pub fn try_lock(
-        &self,
-        task_id: &str,
-        db_id: &str,
-    ) -> Option<tokio::sync::OwnedMutexGuard<()>> {
+    pub fn try_lock(&self, task_id: &str, db_id: &str) -> Option<tokio::sync::OwnedMutexGuard<()>> {
         let lock = {
-            let mut map = self
-                .locks
-                .lock()
-                .expect("scheduler locks mutex poisoned");
+            let mut map = self.locks.lock().expect("scheduler locks mutex poisoned");
             map.entry((task_id.to_string(), db_id.to_string()))
                 .or_insert_with(|| Arc::new(AsyncMutex::new(())))
                 .clone()
