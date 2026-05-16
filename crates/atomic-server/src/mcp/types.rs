@@ -95,6 +95,19 @@ pub struct EditOperation {
     pub content: Option<String>,
 }
 
+impl From<&EditOperation> for atomic_core::AtomEditOperation {
+    fn from(value: &EditOperation) -> Self {
+        Self {
+            operation: value.operation.clone(),
+            old_text: value.old_text.clone(),
+            new_text: value.new_text.clone(),
+            anchor_text: value.anchor_text.clone(),
+            text: value.text.clone(),
+            content: value.content.clone(),
+        }
+    }
+}
+
 /// Input parameters for edit_atom tool
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct EditAtomParams {

@@ -3,6 +3,7 @@ use crate::mcp::types::*;
 use crate::state::ServerEvent;
 use atomic_core::manager::DatabaseManager;
 use atomic_core::AtomicCore;
+use atomic_core::{apply_atom_edits, AtomEditOperation};
 use rmcp::{
     handler::server::tool::ToolRouter,
     handler::server::wrapper::Parameters,
@@ -56,91 +57,6 @@ impl AtomicMcpServer {
                 .map_err(|e| ErrorData::internal_error(e.to_string(), None)),
         }
     }
-}
-
-fn exact_match_range(
-    content: &str,
-    needle: &str,
-    edit_index: usize,
-) -> Result<(usize, usize), String> {
-    if needle.is_empty() {
-        return Err(format!("Edit {} has empty anchor text", edit_index + 1));
-    }
-
-    let mut matches = content.match_indices(needle);
-    let Some((start, matched)) = matches.next() else {
-        return Err(format!(
-            "Edit {} anchor text was not found exactly once",
-            edit_index + 1
-        ));
-    };
-    if matches.next().is_some() {
-        return Err(format!(
-            "Edit {} anchor text matched more than once; use a more specific anchor",
-            edit_index + 1
-        ));
-    }
-
-    Ok((start, start + matched.len()))
-}
-
-fn apply_atom_edits(content: &str, edits: &[EditOperation]) -> Result<String, String> {
-    if edits.is_empty() {
-        return Err("At least one edit is required".to_string());
-    }
-
-    let mut updated = content.to_string();
-    for (index, edit) in edits.iter().enumerate() {
-        match edit.operation.as_str() {
-            "replace" => {
-                let old_text = edit
-                    .old_text
-                    .as_deref()
-                    .ok_or_else(|| format!("Edit {} is missing old_text", index + 1))?;
-                let new_text = edit
-                    .new_text
-                    .as_deref()
-                    .ok_or_else(|| format!("Edit {} is missing new_text", index + 1))?;
-                let (start, end) = exact_match_range(&updated, old_text, index)?;
-                updated.replace_range(start..end, new_text);
-            }
-            "insert_after" => {
-                let anchor_text = edit
-                    .anchor_text
-                    .as_deref()
-                    .ok_or_else(|| format!("Edit {} is missing anchor_text", index + 1))?;
-                let text = edit
-                    .text
-                    .as_deref()
-                    .ok_or_else(|| format!("Edit {} is missing text", index + 1))?;
-                let (_, end) = exact_match_range(&updated, anchor_text, index)?;
-                updated.insert_str(end, text);
-            }
-            "append" => {
-                let text = edit
-                    .text
-                    .as_deref()
-                    .ok_or_else(|| format!("Edit {} is missing text", index + 1))?;
-                updated.push_str(text);
-            }
-            "replace_all" => {
-                let content = edit
-                    .content
-                    .as_deref()
-                    .ok_or_else(|| format!("Edit {} is missing content", index + 1))?;
-                updated = content.to_string();
-            }
-            operation => {
-                return Err(format!(
-                    "Edit {} has unsupported operation '{}'",
-                    index + 1,
-                    operation
-                ));
-            }
-        }
-    }
-
-    Ok(updated)
 }
 
 #[tool_router]
@@ -449,7 +365,12 @@ impl AtomicMcpServer {
             Err(e) => return Err(ErrorData::internal_error(e.to_string(), None)),
         };
 
-        let content = match apply_atom_edits(&existing.atom.content, &params.edits) {
+        let edits = params
+            .edits
+            .iter()
+            .map(AtomEditOperation::from)
+            .collect::<Vec<_>>();
+        let content = match apply_atom_edits(&existing.atom.content, &edits) {
             Ok(content) => content,
             Err(error) => return Ok(CallToolResult::success(vec![Content::text(error)])),
         };

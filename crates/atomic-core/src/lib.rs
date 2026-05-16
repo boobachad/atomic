@@ -28,6 +28,7 @@
 //! ```
 
 pub mod agent;
+pub mod atom_edit;
 pub(crate) mod atom_links;
 pub mod briefing;
 pub mod canvas_level;
@@ -59,6 +60,7 @@ pub mod wiki;
 
 // Re-exports for convenience
 pub use agent::{CanvasClusterSummary, CanvasContext, ChatEvent, PageContext};
+pub use atom_edit::{apply_atom_edits, AtomEditOperation};
 pub use briefing::{
     Briefing, BriefingCitation, BriefingFrequency, BriefingSchedule, BriefingScheduleStatus,
     BriefingWeekday, BriefingWithCitations,

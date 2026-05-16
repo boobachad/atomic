@@ -4,6 +4,7 @@
 //! retrieves atoms, and generates responses with citations.
 //! Uses a callback-based event system (same pattern as EmbeddingEvent).
 
+use crate::atom_edit::{apply_atom_edits, AtomEditOperation};
 use crate::chunking::count_tokens;
 use crate::embedding::EmbeddingEvent;
 use crate::models::{
@@ -652,86 +653,6 @@ fn enqueue_agent_pipeline_in_background(
     });
 }
 
-fn exact_match_range(
-    content: &str,
-    needle: &str,
-    edit_index: usize,
-) -> Result<(usize, usize), String> {
-    if needle.is_empty() {
-        return Err(format!("Edit {} has empty anchor text", edit_index + 1));
-    }
-
-    let mut matches = content.match_indices(needle);
-    let Some((start, matched)) = matches.next() else {
-        return Err(format!(
-            "Edit {} anchor text was not found exactly once",
-            edit_index + 1
-        ));
-    };
-    if matches.next().is_some() {
-        return Err(format!(
-            "Edit {} anchor text matched more than once; use a more specific anchor",
-            edit_index + 1
-        ));
-    }
-
-    Ok((start, start + matched.len()))
-}
-
-fn apply_atom_edits(content: &str, edits: &[serde_json::Value]) -> Result<String, String> {
-    if edits.is_empty() {
-        return Err("At least one edit is required".to_string());
-    }
-
-    let mut updated = content.to_string();
-    for (index, edit) in edits.iter().enumerate() {
-        let operation = edit["operation"].as_str().unwrap_or("");
-        match operation {
-            "replace" => {
-                let old_text = edit["old_text"]
-                    .as_str()
-                    .ok_or_else(|| format!("Edit {} is missing old_text", index + 1))?;
-                let new_text = edit["new_text"]
-                    .as_str()
-                    .ok_or_else(|| format!("Edit {} is missing new_text", index + 1))?;
-                let (start, end) = exact_match_range(&updated, old_text, index)?;
-                updated.replace_range(start..end, new_text);
-            }
-            "insert_after" => {
-                let anchor_text = edit["anchor_text"]
-                    .as_str()
-                    .ok_or_else(|| format!("Edit {} is missing anchor_text", index + 1))?;
-                let text = edit["text"]
-                    .as_str()
-                    .ok_or_else(|| format!("Edit {} is missing text", index + 1))?;
-                let (_, end) = exact_match_range(&updated, anchor_text, index)?;
-                updated.insert_str(end, text);
-            }
-            "append" => {
-                let text = edit["text"]
-                    .as_str()
-                    .ok_or_else(|| format!("Edit {} is missing text", index + 1))?;
-                updated.push_str(text);
-            }
-            "replace_all" => {
-                let content = edit["content"]
-                    .as_str()
-                    .ok_or_else(|| format!("Edit {} is missing content", index + 1))?;
-                updated = content.to_string();
-            }
-            _ => {
-                return Err(format!(
-                    "Edit {} has unsupported operation '{}'",
-                    index + 1,
-                    operation
-                ));
-            }
-        }
-    }
-
-    Ok(updated)
-}
-
 async fn execute_edit_atom(
     storage: &StorageBackend,
     tool_args: &serde_json::Value,
@@ -748,10 +669,14 @@ async fn execute_edit_atom(
         return Ok(None);
     };
 
-    let edits = tool_args["edits"]
-        .as_array()
-        .ok_or_else(|| "edits must be an array".to_string())?;
-    let content = apply_atom_edits(&existing.atom.content, edits)?;
+    let edits: Vec<AtomEditOperation> = serde_json::from_value(
+        tool_args
+            .get("edits")
+            .cloned()
+            .ok_or_else(|| "edits must be an array".to_string())?,
+    )
+    .map_err(|e| format!("edits must be valid edit operations: {}", e))?;
+    let content = apply_atom_edits(&existing.atom.content, &edits)?;
     if content == existing.atom.content {
         return Err("Edits did not change the atom content".to_string());
     }
@@ -1511,77 +1436,6 @@ where
     });
 
     Ok(result)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::apply_atom_edits;
-    use serde_json::json;
-
-    #[test]
-    fn apply_atom_edits_supports_replace_insert_and_append() {
-        let edits = vec![
-            json!({
-                "operation": "replace",
-                "old_text": "old item",
-                "new_text": "new item",
-            }),
-            json!({
-                "operation": "insert_after",
-                "anchor_text": "## Tasks\n",
-                "text": "\nIntro line\n",
-            }),
-            json!({
-                "operation": "append",
-                "text": "\n\nDone.",
-            }),
-        ];
-
-        let updated = apply_atom_edits("# Note\n\n## Tasks\n- old item", &edits).unwrap();
-
-        assert_eq!(
-            updated,
-            "# Note\n\n## Tasks\n\nIntro line\n- new item\n\nDone."
-        );
-    }
-
-    #[test]
-    fn apply_atom_edits_supports_replace_all() {
-        let edits = vec![json!({
-            "operation": "replace_all",
-            "content": "# Replacement\n\nFull body.",
-        })];
-
-        let updated = apply_atom_edits("# Original\n\nOld body.", &edits).unwrap();
-
-        assert_eq!(updated, "# Replacement\n\nFull body.");
-    }
-
-    #[test]
-    fn apply_atom_edits_rejects_missing_anchor() {
-        let edits = vec![json!({
-            "operation": "replace",
-            "old_text": "missing",
-            "new_text": "replacement",
-        })];
-
-        let error = apply_atom_edits("content", &edits).unwrap_err();
-
-        assert!(error.contains("not found"));
-    }
-
-    #[test]
-    fn apply_atom_edits_rejects_ambiguous_anchor() {
-        let edits = vec![json!({
-            "operation": "insert_after",
-            "anchor_text": "same",
-            "text": "!",
-        })];
-
-        let error = apply_atom_edits("same and same", &edits).unwrap_err();
-
-        assert!(error.contains("matched more than once"));
-    }
 }
 
 /// Like `send_chat_message_with_settings` but with optional UI context for
