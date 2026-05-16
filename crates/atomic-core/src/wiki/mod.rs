@@ -283,7 +283,7 @@ pub(crate) fn section_ops_schema() -> serde_json::Value {
                         },
                         "content": {
                             "type": "string",
-                            "description": "New markdown content for the operation. For NoChange: empty string."
+                            "description": "New markdown content for the operation. Only NoChange may use empty content. AppendToSection, ReplaceSection, and InsertSection must provide non-empty markdown content with citations."
                         }
                     },
                     "required": ["op", "heading", "after_heading", "content"],
@@ -594,6 +594,7 @@ Operations (value of the `op` field):
 
 Rules:
 - `heading` and `after_heading` values must EXACTLY match one of the headings listed under CURRENT SECTION HEADINGS when they reference existing sections. Do not paraphrase, reword, or change capitalization. Sub-headings appear indented under their parent in the list; use the exact heading text without any # prefix characters.
+- Only NoChange may have empty content. AppendToSection, ReplaceSection, and InsertSection MUST have non-empty markdown content with citations. If you have no content to add for a section, do not emit an edit operation for that section. If there are no non-empty edits to make, return exactly one NoChange operation.
 - Prefer AppendToSection over ReplaceSection. Prefer editing an existing section over creating a new one.
 - Every new factual claim MUST have a [N] citation using the next-available citation numbers shown in the user message.
 - Keep tone consistent with the existing article.

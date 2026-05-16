@@ -132,7 +132,6 @@ pub fn apply_section_ops(existing: &str, ops: &[WikiSectionOp]) -> Result<String
     let (preamble, mut sections) = parse_sections(existing);
 
     let mut errors: Vec<String> = Vec::new();
-    let mut applied_count: usize = 0;
     for op in ops {
         match op {
             WikiSectionOp::NoChange => {
@@ -144,7 +143,6 @@ pub fn apply_section_ops(existing: &str, ops: &[WikiSectionOp]) -> Result<String
                 match find_section_idx(&sections, heading) {
                     Some(idx) => {
                         append_to_body(&mut sections[idx].body, content);
-                        applied_count += 1;
                     }
                     None => {
                         let e = format!(
@@ -161,7 +159,6 @@ pub fn apply_section_ops(existing: &str, ops: &[WikiSectionOp]) -> Result<String
                 match find_section_idx(&sections, heading) {
                     Some(idx) => {
                         sections[idx].body = ensure_trailing_blank(content);
-                        applied_count += 1;
                     }
                     None => {
                         let e = format!(
@@ -195,7 +192,6 @@ pub fn apply_section_ops(existing: &str, ops: &[WikiSectionOp]) -> Result<String
                                         body: ensure_trailing_blank(content),
                                     },
                                 );
-                                applied_count += 1;
                             }
                             None => {
                                 let e = format!(
@@ -214,17 +210,16 @@ pub fn apply_section_ops(existing: &str, ops: &[WikiSectionOp]) -> Result<String
                             heading: heading.clone(),
                             body: ensure_trailing_blank(content),
                         });
-                        applied_count += 1;
                     }
                 }
             }
         }
     }
 
-    // If no meaningful op applied, propagate the first error unchanged (same
-    // behaviour as before — a proposal with nothing valid should not land).
-    // If only some ops failed, accept the partial merge; warnings already logged.
-    if !errors.is_empty() && applied_count == 0 {
+    // A partially applied proposal is not safe to save: accepting it would
+    // advance the wiki baseline for all selected sources even though facts
+    // covered by skipped ops never landed in the article.
+    if !errors.is_empty() {
         return Err(errors.remove(0));
     }
 
@@ -750,12 +745,13 @@ Status body.
         assert!(follow_up_pos < status_pos);
     }
 
-    // ── Soft-fail tests ──────────────────────────────────────────────────────
+    // ── Unmatched heading tests ─────────────────────────────────────────────
 
     #[test]
-    fn soft_fail_skips_bad_op_keeps_good_ops() {
-        // One hallucinated heading + one valid op: the valid op lands, the bad
-        // one is silently skipped and the function succeeds.
+    fn unmatched_heading_rejects_mixed_valid_and_invalid_ops() {
+        // One hallucinated heading + one valid op must reject the whole
+        // proposal. Saving a partial merge would advance the wiki baseline for
+        // sources that were never incorporated.
         let ops = vec![
             WikiSectionOp::AppendToSection {
                 heading: "Nonexistent Section".to_string(),
@@ -766,13 +762,12 @@ Status body.
                 content: "Valid addition [3].".to_string(),
             },
         ];
-        let out = apply_section_ops(SAMPLE, &ops).unwrap();
-        assert!(out.contains("Valid addition [3]."));
-        assert!(!out.contains("should be dropped"));
+        let err = apply_section_ops(SAMPLE, &ops).unwrap_err();
+        assert!(err.contains("Nonexistent Section"));
     }
 
     #[test]
-    fn soft_fail_keeps_append_to_end_insert() {
+    fn unmatched_heading_rejects_even_when_append_to_end_insert_is_valid() {
         let ops = vec![
             WikiSectionOp::InsertSection {
                 after_heading: None,
@@ -784,15 +779,12 @@ Status body.
                 content: "should be dropped".to_string(),
             },
         ];
-        let out = apply_section_ops(SAMPLE, &ops).unwrap();
-        assert!(out.contains("## Appendix\n\nAppendix content [3]."));
-        assert!(!out.contains("should be dropped"));
+        let err = apply_section_ops(SAMPLE, &ops).unwrap_err();
+        assert!(err.contains("Nonexistent Section"));
     }
 
     #[test]
-    fn soft_fail_all_bad_ops_returns_error() {
-        // When every fallible op has an unmatched heading the call still fails
-        // — we do not silently return an unchanged article.
+    fn all_bad_ops_returns_error() {
         let ops = vec![
             WikiSectionOp::AppendToSection {
                 heading: "Ghost Section".to_string(),
