@@ -22,14 +22,32 @@ const SIZE_DEPTH_2 = 7;
  * returns null and crashes on its first GL call (e.g. `gl.blendFunc`).
  * `WEBGL_lose_context.loseContext()` frees the slot immediately.
  */
+function releaseCanvasWebGlContext(canvas: HTMLCanvasElement) {
+  const gl =
+    (canvas.getContext('webgl2') as WebGL2RenderingContext | null) ??
+    (canvas.getContext('webgl') as WebGLRenderingContext | null);
+  gl?.getExtension('WEBGL_lose_context')?.loseContext();
+}
+
+function releaseCanvases(canvases: HTMLCanvasElement[]) {
+  for (const canvas of canvases) {
+    releaseCanvasWebGlContext(canvas);
+  }
+}
+
 function releaseSigma(sigma: Sigma, container: HTMLElement) {
   const canvases = Array.from(container.querySelectorAll('canvas'));
   sigma.kill();
-  for (const canvas of canvases) {
-    const gl =
-      (canvas.getContext('webgl2') as WebGL2RenderingContext | null) ??
-      (canvas.getContext('webgl') as WebGLRenderingContext | null);
-    gl?.getExtension('WEBGL_lose_context')?.loseContext();
+  releaseCanvases(canvases);
+}
+
+function releasePartialSigmaCanvases(container: HTMLElement, existingCanvases: Set<HTMLCanvasElement>) {
+  const partialCanvases = Array.from(container.querySelectorAll('canvas')).filter(
+    canvas => !existingCanvases.has(canvas)
+  );
+  releaseCanvases(partialCanvases);
+  for (const canvas of partialCanvases) {
+    canvas.remove();
   }
 }
 
@@ -351,6 +369,7 @@ export function LocalGraphView() {
     neighborsRef.current = neighbors;
 
     let sigma: Sigma;
+    const existingCanvases = new Set(container.querySelectorAll('canvas'));
     try {
       sigma = new Sigma(g, container, {
         // Labels are rendered by our overlay canvas (always-on with collision avoidance).
@@ -407,6 +426,7 @@ export function LocalGraphView() {
       // context limit. Surface a graceful error instead of letting the crash
       // bubble up to the route-level Error Boundary and blank the page.
       console.error('LocalGraphView: failed to initialize graph renderer', err);
+      releasePartialSigmaCanvases(container, existingCanvases);
       setError('Could not initialize the graph renderer. Try closing other tabs that use graph or 3D views, or reload the page.');
       graphRef.current = null;
       return;
