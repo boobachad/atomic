@@ -143,6 +143,30 @@ pub struct WikiProposalDraft {
     pub new_atom_count: i32,
 }
 
+/// Result of attempting to build a wiki update proposal.
+pub enum WikiProposalOutcome {
+    Draft(WikiProposalDraft),
+    /// The selector found no chunks to send to the LLM.
+    NoUpdateChunks,
+    /// The LLM reviewed update chunks and explicitly found no useful change.
+    NoChange,
+}
+
+/// Propose an update to an existing wiki article using the given strategy.
+///
+/// Returns `None` if no update is warranted (no new atoms, empty ops, or the
+/// LLM returns `NoChange`).
+pub async fn strategy_propose(
+    strategy: &WikiStrategy,
+    ctx: &WikiStrategyContext,
+    existing: &WikiArticleWithCitations,
+) -> Result<Option<WikiProposalDraft>, String> {
+    match strategy_propose_outcome(strategy, ctx, existing).await? {
+        WikiProposalOutcome::Draft(draft) => Ok(Some(draft)),
+        WikiProposalOutcome::NoUpdateChunks | WikiProposalOutcome::NoChange => Ok(None),
+    }
+}
+
 /// Propose an update to an existing wiki article using the given strategy.
 ///
 /// Composes two independent steps:
@@ -155,17 +179,17 @@ pub struct WikiProposalDraft {
 ///    applier merges them into the existing content, and citations are extracted
 ///    from the merged output.
 ///
-/// Returns `None` if no update is warranted (no new atoms, empty ops, or the
-/// LLM returns `NoChange`).
-pub async fn strategy_propose(
+/// Returns a typed no-op outcome so callers can distinguish "nothing was sent
+/// to the LLM" from "the LLM reviewed new chunks and returned `NoChange`".
+pub async fn strategy_propose_outcome(
     strategy: &WikiStrategy,
     ctx: &WikiStrategyContext,
     existing: &WikiArticleWithCitations,
-) -> Result<Option<WikiProposalDraft>, String> {
+) -> Result<WikiProposalOutcome, String> {
     let Some((new_chunks, total_atom_count)) =
         select_update_chunks(strategy, ctx, existing).await?
     else {
-        return Ok(None);
+        return Ok(WikiProposalOutcome::NoUpdateChunks);
     };
 
     // New-atom count is the delta against the baseline the live article was
@@ -174,7 +198,10 @@ pub async fn strategy_propose(
     // since the last accepted version.
     let new_atom_count = (total_atom_count - existing.article.atom_count).max(0);
 
-    generate_section_ops_proposal(ctx, existing, &new_chunks, new_atom_count).await
+    match generate_section_ops_proposal(ctx, existing, &new_chunks, new_atom_count).await? {
+        Some(draft) => Ok(WikiProposalOutcome::Draft(draft)),
+        None => Ok(WikiProposalOutcome::NoChange),
+    }
 }
 
 /// Strategy-specific chunk selection for the propose path.

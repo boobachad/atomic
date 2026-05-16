@@ -1562,24 +1562,50 @@ impl AtomicCore {
 
         let (strategy, ctx) = self.build_wiki_strategy_context(tag_id, tag_name).await?;
 
-        let draft = match wiki::strategy_propose(&strategy, &ctx, &existing)
+        let draft = match wiki::strategy_propose_outcome(&strategy, &ctx, &existing)
             .await
             .map_err(|e| AtomicCoreError::Wiki(e))?
         {
-            Some(d) => d,
-            None => {
-                // The LLM either found no new chunks or evaluated them and decided
-                // nothing needs to change. Advance the article's atom_count and
-                // updated_at to the current values so the "N new atoms" banner
-                // clears and the same atoms are not re-evaluated on every
-                // subsequent "Generate Update" click.
-                if let Err(e) = self.storage.advance_wiki_baseline_sync(tag_id).await {
+            wiki::WikiProposalOutcome::Draft(d) => d,
+            wiki::WikiProposalOutcome::NoChange => {
+                // The LLM evaluated update chunks and decided nothing needs to
+                // change. Advance the baseline so the same atoms are not
+                // re-evaluated on every subsequent "Generate Update" click.
+                if let Err(e) = self.storage.advance_wiki_baseline_sync(tag_id, None).await {
                     tracing::warn!(tag_id, error = %e, "[wiki] Failed to advance article baseline on no-change");
                 } else {
                     tracing::info!(
                         tag_id,
                         "[wiki] No update warranted; article baseline advanced"
                     );
+                }
+                return Ok(None);
+            }
+            wiki::WikiProposalOutcome::NoUpdateChunks => {
+                // No chunks were selected. This can mean there are truly no new
+                // atoms, but it can also mean older atoms were newly associated
+                // with this tag hierarchy. Only advance if the current tag count
+                // has not increased beyond the article's recorded baseline.
+                match self
+                    .storage
+                    .advance_wiki_baseline_sync(tag_id, Some(existing.article.atom_count))
+                    .await
+                {
+                    Ok(true) => {
+                        tracing::info!(
+                            tag_id,
+                            "[wiki] No update chunks selected; article baseline advanced"
+                        );
+                    }
+                    Ok(false) => {
+                        tracing::info!(
+                            tag_id,
+                            "[wiki] No update chunks selected; article baseline left unchanged because atom count increased"
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!(tag_id, error = %e, "[wiki] Failed to advance article baseline after empty update selection");
+                    }
                 }
                 return Ok(None);
             }
@@ -4824,6 +4850,58 @@ mod tests {
             })
             .unwrap();
         assert_eq!(remaining_fts, 0);
+    }
+
+    #[tokio::test]
+    async fn test_guarded_wiki_baseline_advance_keeps_older_retagged_atoms_pending() {
+        let (db, _temp) = create_empty_test_db();
+        let tag = db.create_tag("Retagged", None).await.unwrap();
+        let article_updated_at = "2026-01-02T00:00:00+00:00";
+
+        {
+            let sqlite = db.storage.as_sqlite().unwrap();
+            let conn = sqlite.db.conn.lock().unwrap();
+            for atom_id in ["atom1", "atom2"] {
+                conn.execute(
+                    "INSERT INTO atoms (id, content, created_at, updated_at)
+                     VALUES (?1, ?2, ?3, ?3)",
+                    rusqlite::params![atom_id, "older atom content", "2026-01-01T00:00:00+00:00"],
+                )
+                .unwrap();
+                conn.execute(
+                    "INSERT INTO atom_tags (atom_id, tag_id) VALUES (?1, ?2)",
+                    rusqlite::params![atom_id, &tag.id],
+                )
+                .unwrap();
+            }
+            conn.execute(
+                "INSERT INTO wiki_articles (id, tag_id, content, created_at, updated_at, atom_count)
+                 VALUES (?1, ?2, ?3, ?4, ?4, 1)",
+                rusqlite::params![
+                    "wiki1",
+                    &tag.id,
+                    "Existing article",
+                    article_updated_at
+                ],
+            )
+            .unwrap();
+        }
+
+        let advanced = db
+            .storage
+            .advance_wiki_baseline_sync(&tag.id, Some(1))
+            .await
+            .unwrap();
+        assert!(
+            !advanced,
+            "baseline must not advance when current atom count increased"
+        );
+
+        let status = db.get_wiki_status(&tag.id).await.unwrap();
+        assert_eq!(status.article_atom_count, 1);
+        assert_eq!(status.current_atom_count, 2);
+        assert_eq!(status.new_atoms_available, 1);
+        assert_eq!(status.updated_at.as_deref(), Some(article_updated_at));
     }
 
     #[tokio::test]

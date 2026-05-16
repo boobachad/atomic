@@ -553,7 +553,7 @@ dispatch! {
         => sqlite: get_wiki_proposal_sync, pg_trait: WikiStore, pg_method: get_wiki_proposal;
     fn delete_wiki_proposal_sync(&self, tag_id: &str) -> Result<(), AtomicCoreError>
         => sqlite: delete_wiki_proposal_sync, pg_trait: WikiStore, pg_method: delete_wiki_proposal;
-    fn advance_wiki_baseline_sync(&self, tag_id: &str) -> Result<(), AtomicCoreError>
+    fn advance_wiki_baseline_sync(&self, tag_id: &str, max_current_count: Option<i32>) -> Result<bool, AtomicCoreError>
         => sqlite: advance_wiki_baseline_sync, pg_trait: WikiStore, pg_method: advance_wiki_baseline;
 
     // ---- BriefingStore ----

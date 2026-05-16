@@ -448,7 +448,11 @@ impl SqliteStorage {
         Ok(())
     }
 
-    pub(crate) fn advance_wiki_baseline_sync(&self, tag_id: &str) -> StorageResult<()> {
+    pub(crate) fn advance_wiki_baseline_sync(
+        &self,
+        tag_id: &str,
+        max_current_count: Option<i32>,
+    ) -> StorageResult<bool> {
         let conn = self
             .db
             .conn
@@ -471,13 +475,18 @@ impl SqliteStorage {
             .map_err(|e| {
                 AtomicCoreError::Wiki(format!("Failed to count atoms for baseline advance: {}", e))
             })?;
+
+        if matches!(max_current_count, Some(max) if current_count > max) {
+            return Ok(false);
+        }
+
         let now = chrono::Utc::now().to_rfc3339();
         conn.execute(
             "UPDATE wiki_articles SET atom_count = ?1, updated_at = ?2 WHERE tag_id = ?3",
             (current_count, &now, tag_id),
         )
         .map_err(|e| AtomicCoreError::Wiki(format!("Failed to advance wiki baseline: {}", e)))?;
-        Ok(())
+        Ok(true)
     }
 }
 
@@ -640,11 +649,17 @@ impl WikiStore for SqliteStorage {
             .map_err(|e| AtomicCoreError::Lock(e.to_string()))?
     }
 
-    async fn advance_wiki_baseline(&self, tag_id: &str) -> StorageResult<()> {
+    async fn advance_wiki_baseline(
+        &self,
+        tag_id: &str,
+        max_current_count: Option<i32>,
+    ) -> StorageResult<bool> {
         let storage = self.clone();
         let tag_id = tag_id.to_string();
-        tokio::task::spawn_blocking(move || storage.advance_wiki_baseline_sync(&tag_id))
-            .await
-            .map_err(|e| AtomicCoreError::Lock(e.to_string()))?
+        tokio::task::spawn_blocking(move || {
+            storage.advance_wiki_baseline_sync(&tag_id, max_current_count)
+        })
+        .await
+        .map_err(|e| AtomicCoreError::Lock(e.to_string()))?
     }
 }

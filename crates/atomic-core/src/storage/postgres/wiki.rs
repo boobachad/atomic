@@ -851,35 +851,43 @@ impl WikiStore for PostgresStorage {
         Ok(())
     }
 
-    async fn advance_wiki_baseline(&self, tag_id: &str) -> StorageResult<()> {
-        // Use the same descendant CTE as get_article_status so the counts agree.
-        let current_count: Option<i64> = sqlx::query_scalar(
+    async fn advance_wiki_baseline(
+        &self,
+        tag_id: &str,
+        max_current_count: Option<i32>,
+    ) -> StorageResult<bool> {
+        let now = chrono::Utc::now().to_rfc3339();
+        let advanced = sqlx::query_scalar::<_, bool>(
             "WITH RECURSIVE descendant_tags(id) AS (
-                SELECT $1
+                SELECT $1::text
                 UNION ALL
                 SELECT t.id FROM tags t
                 INNER JOIN descendant_tags dt ON t.parent_id = dt.id
+                WHERE t.db_id = $2
+            ),
+            current_total(atom_count) AS (
+                SELECT COUNT(DISTINCT atom_id)::int FROM atom_tags
+                WHERE tag_id IN (SELECT id FROM descendant_tags) AND db_id = $2
+            ),
+            updated AS (
+                UPDATE wiki_articles
+                SET atom_count = current_total.atom_count, updated_at = $3
+                FROM current_total
+                WHERE wiki_articles.tag_id = $1
+                  AND wiki_articles.db_id = $2
+                  AND ($4::int IS NULL OR current_total.atom_count <= $4)
+                RETURNING 1
             )
-            SELECT COUNT(DISTINCT atom_id) FROM atom_tags
-            WHERE tag_id IN (SELECT id FROM descendant_tags) AND db_id = $2",
+            SELECT EXISTS(SELECT 1 FROM updated)",
         )
         .bind(tag_id)
         .bind(&self.db_id)
+        .bind(&now)
+        .bind(max_current_count)
         .fetch_one(&self.pool)
         .await
         .map_err(|e| AtomicCoreError::Wiki(e.to_string()))?;
-        let now = chrono::Utc::now().to_rfc3339();
-        sqlx::query(
-            "UPDATE wiki_articles SET atom_count = $1, updated_at = $2 WHERE tag_id = $3 AND db_id = $4",
-        )
-        .bind(current_count.unwrap_or(0) as i32)
-        .bind(&now)
-        .bind(tag_id)
-        .bind(&self.db_id)
-        .execute(&self.pool)
-        .await
-        .map_err(|e| AtomicCoreError::Wiki(e.to_string()))?;
-        Ok(())
+        Ok(advanced)
     }
 }
 
