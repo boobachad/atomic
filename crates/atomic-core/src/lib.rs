@@ -938,6 +938,7 @@ impl AtomicCore {
                 tag_requested: true,
                 not_before: None,
                 reason: "create_atom".to_string(),
+                replace_existing: false,
             };
             self.storage.enqueue_pipeline_jobs_sync(&[job]).await?;
             self.process_queued_pipeline_jobs(on_event).await?;
@@ -1027,6 +1028,7 @@ impl AtomicCore {
                     tag_requested: true,
                     not_before: None,
                     reason: "create_atoms_bulk".to_string(),
+                    replace_existing: false,
                 })
                 .collect();
             self.storage.enqueue_pipeline_jobs_sync(&jobs).await?;
@@ -1062,6 +1064,7 @@ impl AtomicCore {
             tag_requested: true,
             not_before: None,
             reason: "update_atom".to_string(),
+            replace_existing: false,
         };
         self.storage.enqueue_pipeline_jobs_sync(&[job]).await?;
         self.process_queued_pipeline_jobs(on_event).await?;
@@ -1095,6 +1098,7 @@ impl AtomicCore {
             tag_requested: true,
             not_before: None,
             reason: "update_atom_if_unchanged".to_string(),
+            replace_existing: false,
         };
         self.storage.enqueue_pipeline_jobs_sync(&[job]).await?;
         self.process_queued_pipeline_jobs(on_event).await?;
@@ -2021,6 +2025,7 @@ impl AtomicCore {
             tag_requested: tagging_status == "pending",
             not_before: None,
             reason: "retry_embedding".to_string(),
+            replace_existing: false,
         };
         self.storage.enqueue_pipeline_jobs_sync(&[job]).await?;
         self.process_queued_pipeline_jobs(on_event).await?;
@@ -2048,6 +2053,7 @@ impl AtomicCore {
                     tag_requested: false,
                     not_before: None,
                     reason: "spawn_reembed_pending".to_string(),
+                    replace_existing: true,
                 })
                 .collect();
             self.storage.enqueue_pipeline_jobs_sync(&jobs).await?;
@@ -2078,6 +2084,7 @@ impl AtomicCore {
                     tag_requested: false,
                     not_before: None,
                     reason: "reembed_all_atoms".to_string(),
+                    replace_existing: true,
                 })
                 .collect();
             self.storage.enqueue_pipeline_jobs_sync(&jobs).await?;
@@ -2113,6 +2120,7 @@ impl AtomicCore {
                     tag_requested: true,
                     not_before: None,
                     reason: "retag_all_atoms".to_string(),
+                    replace_existing: false,
                 })
                 .collect();
             self.storage.enqueue_pipeline_jobs_sync(&jobs).await?;
@@ -2156,6 +2164,7 @@ impl AtomicCore {
             tag_requested: true,
             not_before: None,
             reason: "retry_tagging".to_string(),
+            replace_existing: false,
         };
         self.storage.enqueue_pipeline_jobs_sync(&[job]).await?;
         embedding::process_queued_pipeline_jobs_with_settings(
@@ -2759,6 +2768,7 @@ impl AtomicCore {
             tag_requested: true,
             not_before: None,
             reason: "process_atom_pipeline".to_string(),
+            replace_existing: false,
         };
         self.storage.enqueue_pipeline_jobs_sync(&[job]).await?;
         self.process_queued_pipeline_jobs(on_event).await?;
@@ -3242,6 +3252,7 @@ impl AtomicCore {
                     tag_requested: true,
                     not_before: None,
                     reason: "import_markdown".to_string(),
+                    replace_existing: false,
                 })
                 .collect();
             self.canvas_cache.invalidate();

@@ -839,8 +839,14 @@ impl SqliteStorage {
                  FROM atoms
                  WHERE id = ?1
                  ON CONFLICT(atom_id) DO UPDATE SET
-                    embed_requested = MAX(atom_pipeline_jobs.embed_requested, excluded.embed_requested),
-                    tag_requested = MAX(atom_pipeline_jobs.tag_requested, excluded.tag_requested),
+                    embed_requested = CASE
+                        WHEN ?7 THEN excluded.embed_requested
+                        ELSE MAX(atom_pipeline_jobs.embed_requested, excluded.embed_requested)
+                    END,
+                    tag_requested = CASE
+                        WHEN ?7 THEN excluded.tag_requested
+                        ELSE MAX(atom_pipeline_jobs.tag_requested, excluded.tag_requested)
+                    END,
                     reason = excluded.reason,
                     not_before = MIN(atom_pipeline_jobs.not_before, excluded.not_before),
                     state = 'pending',
@@ -855,6 +861,7 @@ impl SqliteStorage {
                     &job.reason,
                     not_before,
                     &now,
+                    job.replace_existing,
                 ],
             )?;
             count += changed as i32;
@@ -1449,6 +1456,7 @@ mod tests {
             tag_requested: true,
             not_before: None,
             reason: "initial".to_string(),
+            replace_existing: false,
         };
         core.storage()
             .enqueue_pipeline_jobs_sync(&[initial_job])
@@ -1547,6 +1555,7 @@ mod tests {
             tag_requested: true,
             not_before: None,
             reason: "newer".to_string(),
+            replace_existing: false,
         };
         core.storage()
             .enqueue_pipeline_jobs_sync(&[newer_job])
@@ -1567,6 +1576,59 @@ mod tests {
             .expect("newer pipeline job should remain");
         assert_eq!(row.0, "pending");
         assert_eq!(row.1, newer_updated_at);
+    }
+
+    #[tokio::test]
+    async fn replacement_pipeline_job_overrides_stale_stage_flags() {
+        let dir = TempDir::new().expect("create tempdir");
+        let core = AtomicCore::open_or_create(dir.path().join("pipeline.db"))
+            .expect("open sqlite test db");
+        let created = core
+            .create_atom(
+                CreateAtomRequest {
+                    content: String::new(),
+                    ..Default::default()
+                },
+                |_| {},
+            )
+            .await
+            .expect("create atom")
+            .expect("atom inserted");
+
+        let original_claim = enqueue_and_claim_pipeline_job(&core, &created.atom.id).await;
+        assert_eq!(original_claim.len(), 1);
+        assert!(original_claim[0].tag_requested);
+
+        let replacement_job = crate::models::AtomPipelineJobRequest {
+            atom_id: created.atom.id.clone(),
+            embed_requested: true,
+            tag_requested: false,
+            not_before: None,
+            reason: "reembed_all_atoms".to_string(),
+            replace_existing: true,
+        };
+        core.storage()
+            .enqueue_pipeline_jobs_sync(&[replacement_job])
+            .await
+            .expect("enqueue replacement job");
+
+        core.storage()
+            .clear_pipeline_jobs_sync(&original_claim)
+            .await
+            .expect("clear original claim should not delete replacement job");
+
+        let claimed = core
+            .storage()
+            .claim_pipeline_jobs_sync(10, "2099-01-01T00:31:00+00:00", "2099-01-01T00:01:00+00:00")
+            .await
+            .expect("claim replacement job");
+
+        assert_eq!(claimed.len(), 1);
+        assert!(claimed[0].embed_requested);
+        assert!(
+            !claimed[0].tag_requested,
+            "replacement re-embed job should not preserve stale tagging request"
+        );
     }
 
     #[tokio::test]

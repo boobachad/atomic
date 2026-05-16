@@ -345,21 +345,23 @@ pub fn event_collector() -> (
     (cb, rx)
 }
 
-/// Wait until both `EmbeddingComplete` and a terminal tagging event
-/// (`TaggingComplete` / `TaggingSkipped` / `TaggingFailed`) have fired for
-/// `atom_id`. Returns the captured events so tests can assert on payloads.
+/// Wait until both `EmbeddingComplete`, a terminal tagging event
+/// (`TaggingComplete` / `TaggingSkipped` / `TaggingFailed`), and the owning
+/// queue run's completion have fired. Returns the captured target-atom events
+/// so tests can assert on payloads.
 pub async fn await_pipeline(rx: &mut EventRx, atom_id: &str) -> Vec<atomic_core::EmbeddingEvent> {
     use atomic_core::EmbeddingEvent;
 
     let mut captured = Vec::new();
     let mut embedding_done = false;
     let mut tagging_done = false;
+    let mut queue_done = false;
 
     // A generous budget — the mock responds instantly, but CI runners can
     // stall under load. Fails loudly instead of hanging forever.
     let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
 
-    while !(embedding_done && tagging_done) {
+    while !(embedding_done && tagging_done && queue_done) {
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         if remaining.is_zero() {
             panic!(
@@ -386,8 +388,11 @@ pub async fn await_pipeline(rx: &mut EventRx, atom_id: &str) -> Vec<atomic_core:
             | EmbeddingEvent::TaggingFailed { atom_id: id, .. } => id == atom_id,
             EmbeddingEvent::BatchProgress { .. }
             | EmbeddingEvent::PipelineQueueStarted { .. }
-            | EmbeddingEvent::PipelineQueueProgress { .. }
-            | EmbeddingEvent::PipelineQueueCompleted { .. } => false,
+            | EmbeddingEvent::PipelineQueueProgress { .. } => false,
+            EmbeddingEvent::PipelineQueueCompleted { .. } => {
+                queue_done = true;
+                false
+            }
         };
 
         if matches_target {

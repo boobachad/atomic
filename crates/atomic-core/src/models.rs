@@ -862,6 +862,7 @@ pub struct AtomPipelineJobRequest {
     pub tag_requested: bool,
     pub not_before: Option<String>,
     pub reason: String,
+    pub replace_existing: bool,
 }
 
 /// Existing chunk content reused by embed-only re-embedding.

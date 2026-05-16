@@ -590,6 +590,7 @@ async fn enqueue_and_process_agent_pipeline(
         tag_requested: true,
         not_before: None,
         reason: reason.to_string(),
+        replace_existing: false,
     };
     storage
         .enqueue_pipeline_jobs_sync(&[job])
