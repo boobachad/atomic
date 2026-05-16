@@ -2,6 +2,13 @@
 
 All notable changes to Atomic are documented here.
 
+## v1.38.0 — 2026-05-16
+
+- Add `edit_atom` MCP tool for surgical atom edits (replace, insert after, append, replace all) usable by Claude and other MCP clients
+- Improve wiki updates to recognize multi-level headings (h3+) as addressable sections, and gracefully skip invalid operations instead of aborting the entire update
+- Fix wiki "N new atoms available" banner miscounting atoms in child tags, which could trigger spurious update prompts
+- Fix wiki update banner reappearing after a no-op update by advancing the baseline when no changes are proposed
+
 ## v1.37.1 — 2026-05-14
 
 - Improve MCP server reliability by replacing third-party HTTP transport with a custom implementation that handles strict client requirements for status codes and content types
