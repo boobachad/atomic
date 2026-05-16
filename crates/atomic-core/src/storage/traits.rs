@@ -706,7 +706,9 @@ pub trait WikiStore: Send + Sync {
     /// Select chunks for wiki article update (new atoms since last update).
     ///
     /// Returns None if no new atoms have been added since `last_update`.
-    /// Otherwise returns (new_chunks, atom_count).
+    /// Otherwise returns (new_chunks, atom_count). If new atoms exist but no
+    /// selectable chunks are available yet, returns an error so callers do not
+    /// advance the article baseline before the async chunking pipeline catches up.
     async fn get_wiki_update_chunks(
         &self,
         tag_id: &str,
@@ -722,6 +724,16 @@ pub trait WikiStore: Send + Sync {
 
     /// Delete the pending wiki proposal for a tag (idempotent).
     async fn delete_wiki_proposal(&self, tag_id: &str) -> StorageResult<()>;
+
+    /// Advance the article baseline without changing content: update `atom_count`
+    /// to the current tag-hierarchy total and `updated_at` to now. If
+    /// `max_current_count` is set and the current total exceeds it, leave the
+    /// article unchanged and return `false`.
+    async fn advance_wiki_baseline(
+        &self,
+        tag_id: &str,
+        max_current_count: Option<i32>,
+    ) -> StorageResult<bool>;
 }
 
 // ==================== Briefing Storage ====================

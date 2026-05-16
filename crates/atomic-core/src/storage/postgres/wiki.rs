@@ -533,11 +533,18 @@ impl WikiStore for PostgresStorage {
         last_update: &str,
         max_source_tokens: usize,
     ) -> StorageResult<Option<(Vec<ChunkWithContext>, i32)>> {
-        // Get atoms added after the last update
+        // Get atoms added after the last update, spanning the full tag hierarchy.
         let new_atom_ids: Vec<String> = sqlx::query_scalar(
-            "SELECT DISTINCT a.id FROM atoms a
+            "WITH RECURSIVE descendant_tags(id) AS (
+                 SELECT $1
+                 UNION ALL
+                 SELECT t.id FROM tags t
+                 INNER JOIN descendant_tags dt ON t.parent_id = dt.id
+             )
+             SELECT DISTINCT a.id FROM atoms a
              INNER JOIN atom_tags at ON a.id = at.atom_id
-             WHERE at.tag_id = $1 AND a.created_at > $2 AND a.db_id = $3 AND at.db_id = $3",
+             WHERE at.tag_id IN (SELECT id FROM descendant_tags)
+               AND a.created_at > $2 AND a.db_id = $3 AND at.db_id = $3",
         )
         .bind(tag_id)
         .bind(last_update)
@@ -560,7 +567,7 @@ impl WikiStore for PostgresStorage {
         .await
         .map_err(|e| AtomicCoreError::Wiki(e.to_string()))?;
 
-        let new_chunks = if let Some(ref centroid_vec) = centroid {
+        let mut new_chunks = if let Some(ref centroid_vec) = centroid {
             let rows: Vec<(String, i32, String, f64)> = sqlx::query_as(
                 "SELECT ac.atom_id, ac.chunk_index, ac.content,
                         1 - (e.embedding <=> $1::vector) as similarity
@@ -622,17 +629,58 @@ impl WikiStore for PostgresStorage {
             chunks
         };
 
-        if new_chunks.is_empty() {
-            return Ok(None);
+        if new_chunks.is_empty() && centroid.is_some() {
+            let rows: Vec<(String, i32, String)> = sqlx::query_as(
+                "SELECT atom_id, chunk_index, content FROM atom_chunks
+                 WHERE atom_id = ANY($1) AND db_id = $2 ORDER BY atom_id, chunk_index",
+            )
+            .bind(&new_atom_ids)
+            .bind(&self.db_id)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| AtomicCoreError::Wiki(e.to_string()))?;
+
+            let mut chunks = Vec::new();
+            let mut total_tokens = 0;
+            for (atom_id, chunk_index, content) in rows {
+                let tokens = count_tokens(&content);
+                if total_tokens + tokens > max_source_tokens && !chunks.is_empty() {
+                    break;
+                }
+                total_tokens += tokens;
+                chunks.push(ChunkWithContext {
+                    atom_id,
+                    chunk_index,
+                    content,
+                    similarity_score: 1.0,
+                });
+            }
+            new_chunks = chunks;
         }
 
-        let atom_count: Option<i64> =
-            sqlx::query_scalar("SELECT COUNT(*) FROM atom_tags WHERE tag_id = $1 AND db_id = $2")
-                .bind(tag_id)
-                .bind(&self.db_id)
-                .fetch_one(&self.pool)
-                .await
-                .map_err(|e| AtomicCoreError::Wiki(e.to_string()))?;
+        if new_chunks.is_empty() {
+            return Err(AtomicCoreError::Wiki(
+                "New atoms are not ready for wiki update yet; chunking or embedding is still pending"
+                    .to_string(),
+            ));
+        }
+
+        // Count uses the same descendant CTE as get_article_status.
+        let atom_count: Option<i64> = sqlx::query_scalar(
+            "WITH RECURSIVE descendant_tags(id) AS (
+                 SELECT $1
+                 UNION ALL
+                 SELECT t.id FROM tags t
+                 INNER JOIN descendant_tags dt ON t.parent_id = dt.id
+             )
+             SELECT COUNT(DISTINCT atom_id) FROM atom_tags
+             WHERE tag_id IN (SELECT id FROM descendant_tags) AND db_id = $2",
+        )
+        .bind(tag_id)
+        .bind(&self.db_id)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| AtomicCoreError::Wiki(e.to_string()))?;
 
         Ok(Some((new_chunks, atom_count.unwrap_or(0) as i32)))
     }
@@ -801,6 +849,45 @@ impl WikiStore for PostgresStorage {
             .await
             .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
         Ok(())
+    }
+
+    async fn advance_wiki_baseline(
+        &self,
+        tag_id: &str,
+        max_current_count: Option<i32>,
+    ) -> StorageResult<bool> {
+        let now = chrono::Utc::now().to_rfc3339();
+        let advanced = sqlx::query_scalar::<_, bool>(
+            "WITH RECURSIVE descendant_tags(id) AS (
+                SELECT $1::text
+                UNION ALL
+                SELECT t.id FROM tags t
+                INNER JOIN descendant_tags dt ON t.parent_id = dt.id
+                WHERE t.db_id = $2
+            ),
+            current_total(atom_count) AS (
+                SELECT COUNT(DISTINCT atom_id)::int FROM atom_tags
+                WHERE tag_id IN (SELECT id FROM descendant_tags) AND db_id = $2
+            ),
+            updated AS (
+                UPDATE wiki_articles
+                SET atom_count = current_total.atom_count, updated_at = $3
+                FROM current_total
+                WHERE wiki_articles.tag_id = $1
+                  AND wiki_articles.db_id = $2
+                  AND ($4::int IS NULL OR current_total.atom_count <= $4)
+                RETURNING 1
+            )
+            SELECT EXISTS(SELECT 1 FROM updated)",
+        )
+        .bind(tag_id)
+        .bind(&self.db_id)
+        .bind(&now)
+        .bind(max_current_count)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| AtomicCoreError::Wiki(e.to_string()))?;
+        Ok(advanced)
     }
 }
 

@@ -167,7 +167,7 @@
               "type": "string"
             },
             "content": {
-              "description": "New markdown content for the operation. For NoChange: empty string.",
+              "description": "New markdown content for the operation. Only NoChange may use empty content. AppendToSection, ReplaceSection, and InsertSection must provide non-empty markdown content with citations.",
               "type": "string"
             },
             "heading": {

@@ -532,6 +532,40 @@ async fn test_delete_wiki(tag_store: &dyn TagStore, wiki_store: &dyn WikiStore) 
     assert!(fetched.is_none());
 }
 
+async fn test_wiki_update_chunks_pending_atom_errors(
+    atom_store: &dyn AtomStore,
+    tag_store: &dyn TagStore,
+    wiki_store: &dyn WikiStore,
+) {
+    let tag = tag_store
+        .create_tag("Wiki Pending Tag", None)
+        .await
+        .unwrap();
+    let request = CreateAtomRequest {
+        content: "This atom has not been chunked yet.".to_string(),
+        source_url: None,
+        published_at: None,
+        tag_ids: vec![tag.id.clone()],
+        ..Default::default()
+    };
+    let atom_id = uuid::Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().to_rfc3339();
+    atom_store
+        .insert_atom(&atom_id, &request, &now)
+        .await
+        .unwrap();
+
+    let result = wiki_store
+        .get_wiki_update_chunks(&tag.id, "1970-01-01T00:00:00Z", 1024)
+        .await;
+
+    assert!(result.is_err());
+    assert!(result
+        .unwrap_err()
+        .to_string()
+        .contains("not ready for wiki update"));
+}
+
 // ==================== ChunkStore Tests ====================
 
 // Embedding status tests need both AtomStore and ChunkStore together,
@@ -653,6 +687,12 @@ async fn sqlite_delete_wiki() {
     test_delete_wiki(&s, &s).await;
 }
 
+#[tokio::test]
+async fn sqlite_wiki_update_chunks_pending_atom_errors() {
+    let (s, _dir) = sqlite_storage().await;
+    test_wiki_update_chunks_pending_atom_errors(&s, &s, &s).await;
+}
+
 // ==================== Postgres Test Runners ====================
 
 #[cfg(feature = "postgres")]
@@ -722,5 +762,14 @@ mod postgres_tests {
             return;
         };
         test_delete_wiki(s, s).await;
+    }
+
+    #[tokio::test]
+    async fn pg_wiki_update_chunks_pending_atom_errors() {
+        let Some(ref s) = postgres_storage().await else {
+            eprintln!("Skipping (ATOMIC_TEST_DATABASE_URL not set)");
+            return;
+        };
+        test_wiki_update_chunks_pending_atom_errors(s, s, s).await;
     }
 }
