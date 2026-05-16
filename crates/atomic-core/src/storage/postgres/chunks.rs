@@ -1178,8 +1178,14 @@ impl ChunkStore for PostgresStorage {
                  FROM atoms
                  WHERE id = $1 AND db_id = $2
                  ON CONFLICT(atom_id, db_id) DO UPDATE SET
-                    embed_requested = atom_pipeline_jobs.embed_requested OR EXCLUDED.embed_requested,
-                    tag_requested = atom_pipeline_jobs.tag_requested OR EXCLUDED.tag_requested,
+                    embed_requested = CASE
+                        WHEN $8 THEN EXCLUDED.embed_requested
+                        ELSE atom_pipeline_jobs.embed_requested OR EXCLUDED.embed_requested
+                    END,
+                    tag_requested = CASE
+                        WHEN $8 THEN EXCLUDED.tag_requested
+                        ELSE atom_pipeline_jobs.tag_requested OR EXCLUDED.tag_requested
+                    END,
                     reason = EXCLUDED.reason,
                     not_before = LEAST(atom_pipeline_jobs.not_before, EXCLUDED.not_before),
                     state = 'pending',
@@ -1195,13 +1201,11 @@ impl ChunkStore for PostgresStorage {
             .bind(&job.reason)
             .bind(not_before)
             .bind(&now)
+            .bind(job.replace_existing)
             .execute(&mut *tx)
             .await
             .map_err(|e| {
-                AtomicCoreError::DatabaseOperation(format!(
-                    "Failed to enqueue pipeline job: {}",
-                    e
-                ))
+                AtomicCoreError::DatabaseOperation(format!("Failed to enqueue pipeline job: {}", e))
             })?;
             count += result.rows_affected() as i32;
         }

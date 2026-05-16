@@ -15,7 +15,7 @@ use atomic_core::db::Database;
 use atomic_core::models::*;
 use atomic_core::storage::traits::*;
 use atomic_core::storage::SqliteStorage;
-use atomic_core::{CreateAtomRequest, ListAtomsParams, UpdateAtomRequest};
+use atomic_core::{AtomicCoreError, CreateAtomRequest, ListAtomsParams, UpdateAtomRequest};
 use std::sync::Arc;
 use tempfile::TempDir;
 
@@ -128,6 +128,48 @@ async fn test_update_atom(storage: &dyn AtomStore) {
 
     let fetched = storage.get_atom(&id).await.unwrap().unwrap();
     assert_eq!(fetched.atom.content, "Updated content");
+}
+
+async fn test_update_atom_if_unchanged_rejects_stale_write(storage: &dyn AtomStore) {
+    let id = uuid::Uuid::new_v4().to_string();
+    let created_at = "2024-01-01T00:00:00Z";
+    storage
+        .insert_atom(
+            &id,
+            &CreateAtomRequest {
+                content: "Original content".to_string(),
+                ..Default::default()
+            },
+            created_at,
+        )
+        .await
+        .unwrap();
+
+    let update = UpdateAtomRequest {
+        content: "First edit".to_string(),
+        source_url: None,
+        published_at: None,
+        tag_ids: None,
+    };
+    storage
+        .update_atom_if_unchanged(&id, &update, "2024-01-02T00:00:00Z", created_at)
+        .await
+        .unwrap();
+
+    let stale_update = UpdateAtomRequest {
+        content: "Stale edit".to_string(),
+        source_url: None,
+        published_at: None,
+        tag_ids: None,
+    };
+    let error = storage
+        .update_atom_if_unchanged(&id, &stale_update, "2024-01-03T00:00:00Z", created_at)
+        .await
+        .unwrap_err();
+
+    assert!(matches!(error, AtomicCoreError::Conflict(_)));
+    let fetched = storage.get_atom(&id).await.unwrap().unwrap();
+    assert_eq!(fetched.atom.content, "First edit");
 }
 
 async fn test_atom_links_materialized(storage: &dyn AtomStore) {
@@ -522,6 +564,12 @@ async fn sqlite_update_atom() {
 }
 
 #[tokio::test]
+async fn sqlite_update_atom_if_unchanged_rejects_stale_write() {
+    let (s, _dir) = sqlite_storage().await;
+    test_update_atom_if_unchanged_rejects_stale_write(&s).await;
+}
+
+#[tokio::test]
 async fn sqlite_atom_links_materialized() {
     let (s, _dir) = sqlite_storage().await;
     test_atom_links_materialized(&s).await;
@@ -632,6 +680,10 @@ mod postgres_tests {
     pg_test!(pg_get_atom_not_found, test_get_atom_not_found);
     pg_test!(pg_delete_atom, test_delete_atom);
     pg_test!(pg_update_atom, test_update_atom);
+    pg_test!(
+        pg_update_atom_if_unchanged_rejects_stale_write,
+        test_update_atom_if_unchanged_rejects_stale_write
+    );
     pg_test!(pg_atom_links_materialized, test_atom_links_materialized);
     pg_test!(
         pg_atom_links_replaced_on_update,

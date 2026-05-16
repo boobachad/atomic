@@ -28,6 +28,7 @@
 //! ```
 
 pub mod agent;
+pub mod atom_edit;
 pub(crate) mod atom_links;
 pub mod briefing;
 pub mod canvas_level;
@@ -59,6 +60,7 @@ pub mod wiki;
 
 // Re-exports for convenience
 pub use agent::{CanvasClusterSummary, CanvasContext, ChatEvent, PageContext};
+pub use atom_edit::{apply_atom_edits, AtomEditOperation};
 pub use briefing::{
     Briefing, BriefingCitation, BriefingFrequency, BriefingSchedule, BriefingScheduleStatus,
     BriefingWeekday, BriefingWithCitations,
@@ -936,6 +938,7 @@ impl AtomicCore {
                 tag_requested: true,
                 not_before: None,
                 reason: "create_atom".to_string(),
+                replace_existing: false,
             };
             self.storage.enqueue_pipeline_jobs_sync(&[job]).await?;
             self.process_queued_pipeline_jobs(on_event).await?;
@@ -1025,6 +1028,7 @@ impl AtomicCore {
                     tag_requested: true,
                     not_before: None,
                     reason: "create_atoms_bulk".to_string(),
+                    replace_existing: false,
                 })
                 .collect();
             self.storage.enqueue_pipeline_jobs_sync(&jobs).await?;
@@ -1060,6 +1064,41 @@ impl AtomicCore {
             tag_requested: true,
             not_before: None,
             reason: "update_atom".to_string(),
+            replace_existing: false,
+        };
+        self.storage.enqueue_pipeline_jobs_sync(&[job]).await?;
+        self.process_queued_pipeline_jobs(on_event).await?;
+
+        Ok(atom_with_tags)
+    }
+
+    /// Update an atom only if its `updated_at` still matches the caller's
+    /// previously-read value, then trigger re-embedding and re-tagging.
+    pub async fn update_atom_if_unchanged<F>(
+        &self,
+        id: &str,
+        request: UpdateAtomRequest,
+        expected_updated_at: &str,
+        on_event: F,
+    ) -> Result<AtomWithTags, AtomicCoreError>
+    where
+        F: Fn(EmbeddingEvent) + Send + Sync + 'static,
+    {
+        let now = Utc::now().to_rfc3339();
+
+        let atom_with_tags = self
+            .storage
+            .update_atom_if_unchanged_impl(id, &request, &now, expected_updated_at)
+            .await?;
+        self.canvas_cache.invalidate();
+
+        let job = AtomPipelineJobRequest {
+            atom_id: id.to_string(),
+            embed_requested: true,
+            tag_requested: true,
+            not_before: None,
+            reason: "update_atom_if_unchanged".to_string(),
+            replace_existing: false,
         };
         self.storage.enqueue_pipeline_jobs_sync(&[job]).await?;
         self.process_queued_pipeline_jobs(on_event).await?;
@@ -1986,6 +2025,7 @@ impl AtomicCore {
             tag_requested: tagging_status == "pending",
             not_before: None,
             reason: "retry_embedding".to_string(),
+            replace_existing: false,
         };
         self.storage.enqueue_pipeline_jobs_sync(&[job]).await?;
         self.process_queued_pipeline_jobs(on_event).await?;
@@ -2013,6 +2053,7 @@ impl AtomicCore {
                     tag_requested: false,
                     not_before: None,
                     reason: "spawn_reembed_pending".to_string(),
+                    replace_existing: true,
                 })
                 .collect();
             self.storage.enqueue_pipeline_jobs_sync(&jobs).await?;
@@ -2043,6 +2084,7 @@ impl AtomicCore {
                     tag_requested: false,
                     not_before: None,
                     reason: "reembed_all_atoms".to_string(),
+                    replace_existing: true,
                 })
                 .collect();
             self.storage.enqueue_pipeline_jobs_sync(&jobs).await?;
@@ -2078,6 +2120,7 @@ impl AtomicCore {
                     tag_requested: true,
                     not_before: None,
                     reason: "retag_all_atoms".to_string(),
+                    replace_existing: false,
                 })
                 .collect();
             self.storage.enqueue_pipeline_jobs_sync(&jobs).await?;
@@ -2121,6 +2164,7 @@ impl AtomicCore {
             tag_requested: true,
             not_before: None,
             reason: "retry_tagging".to_string(),
+            replace_existing: false,
         };
         self.storage.enqueue_pipeline_jobs_sync(&[job]).await?;
         embedding::process_queued_pipeline_jobs_with_settings(
@@ -2724,6 +2768,7 @@ impl AtomicCore {
             tag_requested: true,
             not_before: None,
             reason: "process_atom_pipeline".to_string(),
+            replace_existing: false,
         };
         self.storage.enqueue_pipeline_jobs_sync(&[job]).await?;
         self.process_queued_pipeline_jobs(on_event).await?;
@@ -3207,6 +3252,7 @@ impl AtomicCore {
                     tag_requested: true,
                     not_before: None,
                     reason: "import_markdown".to_string(),
+                    replace_existing: false,
                 })
                 .collect();
             self.canvas_cache.invalidate();

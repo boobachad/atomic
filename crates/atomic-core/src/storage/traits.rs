@@ -55,6 +55,15 @@ pub trait AtomStore: Send + Sync {
         updated_at: &str,
     ) -> StorageResult<AtomWithTags>;
 
+    /// Update an atom only if it has not changed since the caller read it.
+    async fn update_atom_if_unchanged(
+        &self,
+        id: &str,
+        request: &UpdateAtomRequest,
+        updated_at: &str,
+        expected_updated_at: &str,
+    ) -> StorageResult<AtomWithTags>;
+
     /// Update atom content/metadata without resetting embedding status.
     /// Used by auto-save during inline editing. Defaults to regular update_atom.
     async fn update_atom_content_only(

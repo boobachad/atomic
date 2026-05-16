@@ -3,6 +3,7 @@ use crate::mcp::types::*;
 use crate::state::ServerEvent;
 use atomic_core::manager::DatabaseManager;
 use atomic_core::AtomicCore;
+use atomic_core::{apply_atom_edits, AtomEditOperation};
 use rmcp::{
     handler::server::tool::ToolRouter,
     handler::server::wrapper::Parameters,
@@ -263,9 +264,9 @@ impl AtomicMcpServer {
         Ok(CallToolResult::success(vec![Content::text(response_text)]))
     }
 
-    /// Update an existing atom's content
+    /// Update an existing atom with optional full-content, metadata, or tag changes
     #[tool(
-        description = "Revise an existing atom. Use this when you find an atom with outdated or incomplete information instead of creating a duplicate. Search first to find the atom to update."
+        description = "Compatibility full/partial atom update. Omitted fields are preserved. Content is optional so callers can update metadata or tag_ids without rewriting markdown. Prefer edit_atom for content changes unless replacing the whole atom intentionally."
     )]
     async fn update_atom(
         &self,
@@ -274,9 +275,8 @@ impl AtomicMcpServer {
     ) -> Result<CallToolResult, ErrorData> {
         let core = self.resolve_core(&context).await?;
 
-        // Verify the atom exists first
-        match core.get_atom(&params.atom_id).await {
-            Ok(Some(_)) => {}
+        let existing = match core.get_atom(&params.atom_id).await {
+            Ok(Some(atom)) => atom,
             Ok(None) => {
                 return Ok(CallToolResult::success(vec![Content::text(format!(
                     "Atom not found: {}",
@@ -284,19 +284,124 @@ impl AtomicMcpServer {
                 ))]));
             }
             Err(e) => return Err(ErrorData::internal_error(e.to_string(), None)),
+        };
+
+        if params.content.is_none()
+            && params.source_url.is_none()
+            && params.published_at.is_none()
+            && params.tag_ids.is_none()
+        {
+            return Ok(CallToolResult::success(vec![Content::text(
+                "No update fields provided".to_string(),
+            )]));
+        }
+
+        let content = match params.content {
+            Some(content) => {
+                if content.trim().is_empty() {
+                    return Ok(CallToolResult::success(vec![Content::text(
+                        "Cannot update an atom to empty content".to_string(),
+                    )]));
+                }
+                content
+            }
+            None => existing.atom.content.clone(),
+        };
+
+        let source_url = params.source_url.or(existing.atom.source_url.clone());
+        let published_at = params.published_at.or(existing.atom.published_at.clone());
+
+        let request = atomic_core::UpdateAtomRequest {
+            content,
+            source_url,
+            published_at,
+            tag_ids: params.tag_ids,
+        };
+
+        let on_event = embedding_event_callback(self.event_tx.clone());
+
+        let result = core
+            .update_atom_if_unchanged(
+                &params.atom_id,
+                request,
+                &existing.atom.updated_at,
+                on_event,
+            )
+            .await
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+
+        let response = AtomResponse {
+            atom_id: result.atom.id.clone(),
+            content_preview: result.atom.content.chars().take(200).collect(),
+            tags: result.tags.iter().map(|t| t.name.clone()).collect(),
+            embedding_status: result.atom.embedding_status.clone(),
+        };
+
+        let response_text = serde_json::to_string_pretty(&response)
+            .map_err(|e| ErrorData::internal_error(format!("Serialization error: {}", e), None))?;
+
+        Ok(CallToolResult::success(vec![Content::text(response_text)]))
+    }
+
+    /// Apply targeted edits to an atom's markdown content
+    #[tool(
+        description = "Apply safe edits to an existing atom. Supports replace, insert_after, append, and replace_all. replace and insert_after require exact text that appears exactly once. The whole operation fails without saving if any edit is invalid. Prefer this over update_atom for markdown changes."
+    )]
+    async fn edit_atom(
+        &self,
+        context: RequestContext<RoleServer>,
+        Parameters(params): Parameters<EditAtomParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let core = self.resolve_core(&context).await?;
+
+        let existing = match core.get_atom(&params.atom_id).await {
+            Ok(Some(atom)) => atom,
+            Ok(None) => {
+                return Ok(CallToolResult::success(vec![Content::text(format!(
+                    "Atom not found: {}",
+                    params.atom_id
+                ))]));
+            }
+            Err(e) => return Err(ErrorData::internal_error(e.to_string(), None)),
+        };
+
+        let edits = params
+            .edits
+            .iter()
+            .map(AtomEditOperation::from)
+            .collect::<Vec<_>>();
+        let content = match apply_atom_edits(&existing.atom.content, &edits) {
+            Ok(content) => content,
+            Err(error) => return Ok(CallToolResult::success(vec![Content::text(error)])),
+        };
+
+        if content == existing.atom.content {
+            return Ok(CallToolResult::success(vec![Content::text(
+                "Edits did not change the atom content".to_string(),
+            )]));
+        }
+        if content.trim().is_empty() {
+            return Ok(CallToolResult::success(vec![Content::text(
+                "Cannot update an atom to empty content".to_string(),
+            )]));
         }
 
         let request = atomic_core::UpdateAtomRequest {
-            content: params.content,
-            source_url: params.source_url,
-            published_at: None,
+            content,
+            source_url: existing.atom.source_url.clone(),
+            published_at: existing.atom.published_at.clone(),
             tag_ids: None,
         };
 
         let on_event = embedding_event_callback(self.event_tx.clone());
 
         let result = core
-            .update_atom(&params.atom_id, request, on_event)
+            .update_atom_if_unchanged(
+                &params.atom_id,
+                request,
+                &existing.atom.updated_at,
+                on_event,
+            )
             .await
             .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
 

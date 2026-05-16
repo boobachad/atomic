@@ -356,7 +356,17 @@ impl SqliteStorage {
         request: &UpdateAtomRequest,
         updated_at: &str,
     ) -> StorageResult<AtomWithTags> {
-        self.update_atom_inner(id, request, updated_at, true)
+        self.update_atom_inner(id, request, updated_at, true, None)
+    }
+
+    pub(crate) fn update_atom_if_unchanged_impl(
+        &self,
+        id: &str,
+        request: &UpdateAtomRequest,
+        updated_at: &str,
+        expected_updated_at: &str,
+    ) -> StorageResult<AtomWithTags> {
+        self.update_atom_inner(id, request, updated_at, true, Some(expected_updated_at))
     }
 
     /// Content-only update: saves content/metadata but does NOT reset embedding_status.
@@ -367,7 +377,7 @@ impl SqliteStorage {
         request: &UpdateAtomRequest,
         updated_at: &str,
     ) -> StorageResult<AtomWithTags> {
-        self.update_atom_inner(id, request, updated_at, false)
+        self.update_atom_inner(id, request, updated_at, false, None)
     }
 
     fn update_atom_inner(
@@ -376,6 +386,7 @@ impl SqliteStorage {
         request: &UpdateAtomRequest,
         updated_at: &str,
         reset_embedding_status: bool,
+        expected_updated_at: Option<&str>,
     ) -> StorageResult<AtomWithTags> {
         let (title, snippet) = extract_title_and_snippet(&request.content, 300);
         let source = request.source_url.as_deref().map(parse_source);
@@ -390,6 +401,25 @@ impl SqliteStorage {
             conn.execute_batch("BEGIN")?;
 
             if let Err(e) = (|| -> Result<(), AtomicCoreError> {
+                if let Some(expected) = expected_updated_at {
+                    let current: Option<String> = conn
+                        .query_row("SELECT updated_at FROM atoms WHERE id = ?1", [id], |row| {
+                            row.get(0)
+                        })
+                        .optional()?;
+
+                    match current {
+                        Some(current) if current == expected => {}
+                        Some(_) => {
+                            return Err(AtomicCoreError::Conflict(format!(
+                                "Atom {} changed before edits could be saved; reload the atom and retry",
+                                id
+                            )));
+                        }
+                        None => return Err(AtomicCoreError::NotFound(format!("Atom {}", id))),
+                    }
+                }
+
                 let content_changed = if reset_embedding_status {
                     true
                 } else {
@@ -403,33 +433,73 @@ impl SqliteStorage {
 
                 if reset_embedding_status {
                     atoms_fts_delete(&conn, id)?;
-                    conn.execute(
-                        "UPDATE atoms
-                         SET content = ?1,
-                             source_url = ?2,
-                             source = ?3,
-                             published_at = ?4,
-                             updated_at = ?5,
-                             embedding_status = ?6,
-                             tagging_status = ?7,
-                             embedding_error = NULL,
-                             tagging_error = NULL,
-                             title = ?8,
-                             snippet = ?9
-                         WHERE id = ?10",
-                        (
-                            &request.content,
-                            &request.source_url,
-                            &source,
-                            &request.published_at,
-                            updated_at,
-                            "pending",
-                            "pending",
-                            &title,
-                            &snippet,
-                            id,
-                        ),
-                    )?;
+                    let changed = if let Some(expected) = expected_updated_at {
+                        conn.execute(
+                            "UPDATE atoms
+                             SET content = ?1,
+                                 source_url = ?2,
+                                 source = ?3,
+                                 published_at = ?4,
+                                 updated_at = ?5,
+                                 embedding_status = ?6,
+                                 tagging_status = ?7,
+                                 embedding_error = NULL,
+                                 tagging_error = NULL,
+                                 title = ?8,
+                                 snippet = ?9
+                             WHERE id = ?10 AND updated_at = ?11",
+                            (
+                                &request.content,
+                                &request.source_url,
+                                &source,
+                                &request.published_at,
+                                updated_at,
+                                "pending",
+                                "pending",
+                                &title,
+                                &snippet,
+                                id,
+                                expected,
+                            ),
+                        )?
+                    } else {
+                        conn.execute(
+                            "UPDATE atoms
+                             SET content = ?1,
+                                 source_url = ?2,
+                                 source = ?3,
+                                 published_at = ?4,
+                                 updated_at = ?5,
+                                 embedding_status = ?6,
+                                 tagging_status = ?7,
+                                 embedding_error = NULL,
+                                 tagging_error = NULL,
+                                 title = ?8,
+                                 snippet = ?9
+                             WHERE id = ?10",
+                            (
+                                &request.content,
+                                &request.source_url,
+                                &source,
+                                &request.published_at,
+                                updated_at,
+                                "pending",
+                                "pending",
+                                &title,
+                                &snippet,
+                                id,
+                            ),
+                        )?
+                    };
+                    if changed == 0 {
+                        return match expected_updated_at {
+                            Some(_) => Err(AtomicCoreError::Conflict(format!(
+                                "Atom {} changed before edits could be saved; reload the atom and retry",
+                                id
+                            ))),
+                            None => Err(AtomicCoreError::NotFound(format!("Atom {}", id))),
+                        };
+                    }
                     atoms_fts_insert(&conn, id)?;
                     replace_atom_links_for_content(&conn, id, &request.content, updated_at)?;
                 } else {
@@ -1401,6 +1471,16 @@ impl AtomStore for SqliteStorage {
         updated_at: &str,
     ) -> StorageResult<AtomWithTags> {
         self.update_atom_impl(id, request, updated_at)
+    }
+
+    async fn update_atom_if_unchanged(
+        &self,
+        id: &str,
+        request: &UpdateAtomRequest,
+        updated_at: &str,
+        expected_updated_at: &str,
+    ) -> StorageResult<AtomWithTags> {
+        self.update_atom_if_unchanged_impl(id, request, updated_at, expected_updated_at)
     }
 
     async fn update_atom_content_only(
